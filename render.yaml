@@ -1,7 +1,7 @@
 # Render Blueprint — School Management Platform
 # One-click deploy: Render Dashboard → New → Blueprint → pick this repo.
 # Creates a free PostgreSQL database + a free Docker web service (backend).
-# Free Postgres expires after 90 days — back up regularly (scripts/backup.sh).
+# Free Postgres expires after 30 days — back up regularly (scripts/backup.sh).
 # Free web service sleeps when idle (~50s wake on first request).
 #
 # After the Blueprint deploy finishes, set these two env vars on the web
@@ -23,8 +23,6 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
-      - key: PORT
-        value: 4000
       - key: DATABASE_URL
         fromDatabase:
           name: school-management-db
