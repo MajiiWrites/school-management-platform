@@ -1,0 +1,53 @@
+# Render Blueprint — School Management Platform
+# One-click deploy: Render Dashboard → New → Blueprint → pick this repo.
+# Creates a free PostgreSQL database + a free Docker web service (backend).
+# Free Postgres expires after 90 days — back up regularly (scripts/backup.sh).
+# Free web service sleeps when idle (~50s wake on first request).
+#
+# After the Blueprint deploy finishes, set these two env vars on the web
+# service in the Render dashboard (values are generated for you — see the
+# deploy handoff, never commit real secrets to this repo):
+#   PHONE_ENC_KEY  — 32 bytes, base64 (the API refuses to boot without it)
+#   FRONTEND_URL   — the public Vercel URL of the frontend (for CORS)
+# FRONTEND_URL must be set BEFORE the frontend is built on Vercel, and the
+# Vercel URL must be pasted here — the two deploys depend on each other.
+
+services:
+  - type: web
+    name: school-management-api
+    env: docker
+    plan: free
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 4000
+      - key: DATABASE_URL
+        fromDatabase:
+          name: school-management-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: SMS_DEVICE_SECRET
+        generateValue: true
+      - key: PHONE_ENC_KEY
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: UPLOAD_DIR
+        value: /app/uploads
+      - key: SEED_ON_BOOT
+        value: "true"
+      - key: OCR_PROVIDER
+        value: tesseract
+      - key: OCR_LANGS
+        value: eng+urd
+
+databases:
+  - name: school-management-db
+    plan: free

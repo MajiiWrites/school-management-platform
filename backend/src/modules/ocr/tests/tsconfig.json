@@ -1,0 +1,1 @@
+{"compilerOptions":{"esModuleInterop":true,"forceConsistentCasingInFileNames":true,"module":"NodeNext","moduleResolution":"NodeNext","noUnusedLocals":true,"noUnusedParameters":true,"outDir":"./.tsbuild","rootDir":"../../..","skipLibCheck":true,"strict":true,"target":"ES2022","types":["node"]},"include":["../*.ts","./*.ts","../../../types/express.d.ts"]}

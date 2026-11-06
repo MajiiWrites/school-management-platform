@@ -1,0 +1,7 @@
+<resources>
+    <style name="Theme.SchoolSms" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:colorPrimary">#14532D</item>
+        <item name="android:colorPrimaryDark">#14532D</item>
+        <item name="android:colorAccent">#F59E0B</item>
+    </style>
+</resources>

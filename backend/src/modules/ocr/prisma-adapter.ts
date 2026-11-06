@@ -1,0 +1,126 @@
+// Maps a PrismaClient onto the narrow OcrDb interface the service needs.
+// Keeps the service unit-testable (fake OcrDb) while the real path uses Prisma.
+//
+// INTEGRATION (Phase 3): the model/field names below are the REAL generated
+// client names from backend/prisma/schema.prisma (singular camelCase models,
+// camelCase fields). The OcrDb interface itself keeps its snake_case shapes
+// (service + tests use them); this adapter translates at the boundary:
+// Prisma camelCase rows -> OcrDb snake_case records on the way out,
+// OcrDb snake_case inputs -> Prisma camelCase on the way in.
+import type { OcrDb, UploadRecord } from './service.js';
+
+/** Minimal structural type for the Prisma client subset this module uses. */
+export interface PrismaLike {
+  class: {
+    findFirst(args: { where: { id: string; schoolId: string } }): Promise<{ id: string } | null>;
+  };
+  student: {
+    findMany(args: {
+      where: { schoolId: string; classId: string };
+      select: { name: true; rollNo: true; parentPhoneHash: true };
+    }): Promise<{ name: string; rollNo: number | null; parentPhoneHash: string | null }[]>;
+    createMany(args: {
+      data: {
+        schoolId: string;
+        classId: string;
+        name: string;
+        nameUr: string | null;
+        rollNo: number | null;
+        parentPhoneEnc: string | null;
+        parentPhoneHash: string | null;
+      }[];
+      skipDuplicates?: boolean;
+    }): Promise<{ count: number }>;
+  };
+  ocrUpload: {
+    create(args: { data: { schoolId: string; classId: string; filePath: string; status: string } }): Promise<{ id: string }>;
+    findFirst(args: { where: { id: string; schoolId: string } }): Promise<{
+      id: string;
+      schoolId: string;
+      classId: string;
+      filePath: string;
+      status: string;
+      rawText: string | null;
+    } | null>;
+    update(args: { where: { id: string }; data: { status?: string; rawText?: string } }): Promise<unknown>;
+  };
+  auditLog: {
+    create(args: { data: { schoolId: string; actorId: string | null; actorType: string; action: string; entity: string; entityId: string | null; details: object } }): Promise<unknown>;
+  };
+}
+
+function toUploadRecord(r: {
+  id: string;
+  schoolId: string;
+  classId: string;
+  filePath: string;
+  status: string;
+  rawText: string | null;
+}): UploadRecord {
+  return {
+    id: r.id,
+    school_id: r.schoolId,
+    class_id: r.classId,
+    file_path: r.filePath,
+    status: r.status as UploadRecord['status'],
+    raw_text: r.rawText,
+  };
+}
+
+export function prismaOcrDb(prisma: PrismaLike): OcrDb {
+  return {
+    async getClass(schoolId, classId) {
+      return prisma.class.findFirst({ where: { id: classId, schoolId } });
+    },
+    async listStudents(schoolId, classId) {
+      const rows = await prisma.student.findMany({
+        where: { schoolId, classId },
+        select: { name: true, rollNo: true, parentPhoneHash: true },
+      });
+      return rows.map((r) => ({ name: r.name, roll_no: r.rollNo, parent_phone_hash: r.parentPhoneHash }));
+    },
+    async createUpload(data) {
+      return prisma.ocrUpload.create({
+        data: { schoolId: data.school_id, classId: data.class_id, filePath: data.file_path, status: 'processing' },
+      });
+    },
+    async getUpload(schoolId, uploadId) {
+      const row = await prisma.ocrUpload.findFirst({ where: { id: uploadId, schoolId } });
+      return row ? toUploadRecord(row) : null;
+    },
+    async updateUpload(uploadId, data) {
+      const updateData: { status?: string; rawText?: string } = {};
+      if (data.status !== undefined) updateData.status = data.status;
+      if (data.raw_text !== undefined) updateData.rawText = data.raw_text;
+      await prisma.ocrUpload.update({ where: { id: uploadId }, data: updateData });
+    },
+    async createStudents(schoolId, classId, rows) {
+      const res = await prisma.student.createMany({
+        data: rows.map((r) => ({
+          schoolId,
+          classId,
+          name: r.name,
+          nameUr: r.name_ur,
+          rollNo: r.roll_no,
+          parentPhoneEnc: r.parent_phone_enc,
+          parentPhoneHash: r.parent_phone_hash,
+        })),
+        skipDuplicates: true,
+      });
+      return { created: res.count };
+    },
+    async createAuditLog(entry) {
+      await prisma.auditLog.create({
+        data: {
+          schoolId: entry.school_id,
+          actorId: entry.actor_id,
+          actorType: entry.actor_type,
+          action: entry.action,
+          entity: entry.entity,
+          entityId: entry.entity_id,
+          details: entry.details,
+        },
+      });
+    },
+  };
+}

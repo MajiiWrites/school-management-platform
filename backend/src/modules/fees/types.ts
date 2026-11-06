@@ -1,0 +1,104 @@
+// Fee module shared types.
+// Money is integer PKR everywhere. Status is derived from amounts
+// (see computeFeeStatus in service.ts) and mirrors the contract's
+// GENERATED status column semantics.
+
+export type FeeStatus = 'unpaid' | 'partial' | 'paid';
+
+export interface PayFeeInput {
+  month: string; // YYYY-MM
+  amount_paid: number; // PKR, integer > 0
+  discount?: number; // PKR, integer >= 0, default 0
+  payment_method?: string; // e.g. 'cash' | 'jazzcash' | 'easypaisa' | 'bank'
+  receipt?: string; // optional payer reference / note (stored on audit log, not a column)
+}
+
+export interface FeeStructureInput {
+  class_id: string;
+  monthly_amount: number; // PKR, integer > 0
+  effective_from: string; // YYYY-MM-DD
+}
+
+export interface FeeListItem {
+  student_id: string;
+  student_name: string;
+  roll_no: number | null;
+  class_id: string;
+  class_name: string; // e.g. '5-A'
+  month: string;
+  amount_due: number;
+  amount_paid: number;
+  discount: number;
+  balance: number;
+  status: FeeStatus;
+  receipt_no: string | null;
+  paid_at: string | null;
+  payment_method: string | null;
+  record_exists: boolean;
+  no_structure: boolean; // true when no fee structure covers this class/month
+}
+
+export interface FeeListResult {
+  items: FeeListItem[];
+  total: number;
+  page: number;
+  pages: number;
+  month: string;
+}
+
+export interface ReceiptData {
+  receipt_no: string;
+  school_name: string;
+  school_slug: string;
+  student_id: string;
+  student_name: string;
+  roll_no: number | null;
+  class_name: string;
+  month: string;
+  amount_due: number;
+  discount: number;
+  amount_paid: number;
+  balance: number;
+  status: FeeStatus;
+  payment_method: string | null;
+  paid_at: string | null;
+  issued_at: string; // ISO timestamp of receipt generation
+}
+
+export interface FeeStructureView {
+  id: string;
+  class_id: string;
+  class_name: string;
+  monthly_amount: number;
+  effective_from: string; // YYYY-MM-DD
+  created_at: string;
+}
+
+export interface MonthlyFeeReport {
+  month: string;
+  collected: number;
+  pending: number;
+  total_due: number;
+  paid_count: number;
+  partial_count: number;
+  unpaid_count: number;
+  missing_records: number; // active students with no fee_record this month
+  by_class: Array<{
+    class_id: string;
+    class_name: string;
+    collected: number;
+    pending: number;
+    total_due: number;
+    paid_count: number;
+    partial_count: number;
+    unpaid_count: number;
+    missing_records: number;
+  }>;
+}
+
+export interface RolloverResult {
+  month: string;
+  created: number;
+  already_existed: number;
+  classes_without_structure: string[]; // class ids skipped (no structure)
+}

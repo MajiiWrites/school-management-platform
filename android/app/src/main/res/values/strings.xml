@@ -1,0 +1,17 @@
+<resources>
+    <string name="app_name">School SMS</string>
+    <string name="login_title">Connect this phone</string>
+    <string name="login_subtitle">This phone sends the school SMS from its own SIM. Get the device ID and API key from the portal: Messages → SMS status → Register device.</string>
+    <string name="server_url">Server URL (e.g. https://api.yourschool.pk)</string>
+    <string name="device_id">Device ID</string>
+    <string name="device_name">Device name (e.g. Admin phone)</string>
+    <string name="api_key">Device API key</string>
+    <string name="connect">Connect &amp; start sending</string>
+    <string name="permission_title">SMS permission needed</string>
+    <string name="permission_body">Without SEND_SMS permission this phone cannot send parent messages. Please grant it to continue.</string>
+    <string name="grant_permission">Grant SMS permission</string>
+    <string name="status_connected">SIM connected — polling</string>
+    <string name="status_offline">Offline — will retry</string>
+    <string name="sync_now">Sync now</string>
+    <string name="sign_out">Sign out (unregister this phone)</string>
+</resources>

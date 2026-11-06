@@ -1,0 +1,321 @@
+import bcrypt from 'bcrypt';
+import { config } from '../../config';
+import { ApiError } from '../../lib/errors';
+import { todayInTz, currentMonthInTz, isValidDateString, isNonSchoolDay, dateOnly } from '../../lib/dates';
+import { writeAudit } from '../../lib/audit';
+import { paginatedResponse, parsePagination } from '../../lib/pagination';
+import type { Db } from '../../lib/db';
+
+// ---------------------------------------------------------------------------
+// Dashboard
+// ---------------------------------------------------------------------------
+
+export async function getDashboard(db: Db, schoolId: string): Promise<Record<string, unknown>> {
+  const school = await db.school.findUnique({ where: { id: schoolId } });
+  if (!school) throw ApiError.notFound('School not found');
+  const tz = school.timezone;
+  const today = todayInTz(tz);
+  const month = currentMonthInTz(tz);
+  const nonSchoolDay = await isNonSchoolDay(db, schoolId, today);
+
+  const classes = await db.class.findMany({ where: { schoolId: schoolId } });
+  const days = nonSchoolDay ? [] : await db.attendanceDay.findMany({ where: { schoolId: schoolId, date: dateOnly(today) } });
+  const submittedIds = new Set(days.map((d: any) => d.classId));
+  let present = 0;
+  let absent = 0;
+  if (days.length > 0) {
+    const records = await db.attendanceRecord.findMany({ where: { attendanceDayId: { in: days.map((d: any) => d.id) } } });
+    for (const r of records) {
+      if (r.status === 'present') present += 1;
+      if (r.status === 'absent') absent += 1;
+    }
+  }
+  const teacherRows = nonSchoolDay ? [] : await db.teacherAttendance.findMany({ where: { schoolId: schoolId, date: dateOnly(today) } });
+  const teachersPresent = teacherRows.filter((r: any) => r.status === 'present').length;
+  const teachersAbsent = teacherRows.filter((r: any) => r.status === 'absent').length;
+
+  const feeRecords = await db.feeRecord.findMany({ where: { schoolId: schoolId, month } });
+  let feeCollected = 0;
+  let feePending = 0;
+  for (const r of feeRecords) {
+    feeCollected += r.amountPaid ?? 0;
+    feePending += Math.max(0, (r.amountDue ?? 0) - (r.discount ?? 0) - (r.amountPaid ?? 0));
+  }
+  const notifications = await db.notification.findMany({
+    where: { schoolId: schoolId },
+    orderBy: [{ isRead: 'asc' }, { createdAt: 'desc' }],
+    take: 10,
+  });
+  return {
+    date: today,
+    non_school_day: nonSchoolDay,
+    classes_total: classes.length,
+    classes_submitted: days.length,
+    classes_pending: nonSchoolDay ? 0 : classes.length - submittedIds.size,
+    present,
+    absent,
+    teachers_present: teachersPresent,
+    teachers_absent: teachersAbsent,
+    fee_collected_this_month: feeCollected,
+    fee_pending_this_month: feePending,
+    recent_notifications: notifications,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------
+
+const SETTING_KEYS = [
+  'teacher_reminder_time',
+  'fee_auto_send',
+  'fee_require_approval',
+  'fee_followup_day',
+  'sms_provider',
+  'teacher_attendance_mode',
+  'message_language',
+] as const;
+
+export function validateSettings(patch: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(patch)) {
+    if (!(SETTING_KEYS as readonly string[]).includes(key)) {
+      throw ApiError.validation(`Unknown setting: ${key}`);
+    }
+    switch (key) {
+      case 'teacher_reminder_time':
+        if (typeof value !== 'string' || !/^\d{2}:\d{2}$/.test(value)) throw ApiError.validation('teacher_reminder_time must be HH:MM');
+        out[key] = value;
+        break;
+      case 'fee_auto_send':
+      case 'fee_require_approval':
+        if (typeof value !== 'boolean') throw ApiError.validation(`${key} must be a boolean`);
+        out[key] = value;
+        break;
+      case 'fee_followup_day':
+        if (value !== null && (typeof value !== 'number' || value < 1 || value > 28)) {
+          throw ApiError.validation('fee_followup_day must be null or an integer 1–28');
+        }
+        out[key] = value;
+        break;
+      case 'sms_provider':
+        if (value !== 'sim' && value !== 'gateway') throw ApiError.validation("sms_provider must be 'sim' or 'gateway'");
+        out[key] = value;
+        break;
+      case 'teacher_attendance_mode':
+        if (value !== 'admin' && value !== 'link') throw ApiError.validation("teacher_attendance_mode must be 'admin' or 'link'");
+        out[key] = value;
+        break;
+      case 'message_language':
+        if (value !== 'en' && value !== 'ur') throw ApiError.validation("message_language must be 'en' or 'ur'");
+        out[key] = value;
+        break;
+    }
+  }
+  return out;
+}
+
+export async function getSettings(db: Db, schoolId: string): Promise<Record<string, unknown>> {
+  const school = await db.school.findUnique({ where: { id: schoolId } });
+  if (!school) throw ApiError.notFound('School not found');
+  return {
+    teacher_reminder_time: '08:00',
+    fee_auto_send: false,
+    fee_require_approval: true,
+    fee_followup_day: null,
+    sms_provider: 'sim',
+    teacher_attendance_mode: 'admin',
+    message_language: 'en',
+    ...((school.settings as Record<string, unknown>) ?? {}),
+  };
+}
+
+export async function updateSettings(db: Db, schoolId: string, patch: Record<string, unknown>, adminId: string): Promise<Record<string, unknown>> {
+  const valid = validateSettings(patch);
+  const school = await db.school.findUnique({ where: { id: schoolId } });
+  if (!school) throw ApiError.notFound('School not found');
+  const merged = { ...((school.settings as Record<string, unknown>) ?? {}), ...valid };
+  await db.school.update({ where: { id: schoolId }, data: { settings: merged } });
+  await writeAudit(db, { schoolId, actorId: adminId, actorType: 'user', action: 'settings.update', entity: 'school', entityId: schoolId, details: valid });
+  return getSettings(db, schoolId);
+}
+
+// ---------------------------------------------------------------------------
+// Users / clerks
+// ---------------------------------------------------------------------------
+
+export async function createClerk(db: Db, schoolId: string, input: { email: string; password: string }, adminId: string): Promise<any> {
+  const email = input.email.trim().toLowerCase();
+  const existing = await db.user.findFirst({ where: { email } });
+  if (existing) throw ApiError.conflict('An account with this email already exists');
+  const passwordHash = await bcrypt.hash(input.password, config.bcryptRounds);
+  const clerk = await db.user.create({
+    data: { schoolId: schoolId, email, passwordHash: passwordHash, role: 'clerk', emailVerified: true },
+  });
+  await writeAudit(db, { schoolId, actorId: adminId, actorType: 'user', action: 'user.clerk_create', entity: 'user', entityId: clerk.id, details: { email } });
+  return { id: clerk.id, email: clerk.email, role: clerk.role, school_id: clerk.schoolId, email_verified: clerk.emailVerified };
+}
+
+export async function listUsers(db: Db, schoolId: string): Promise<any[]> {
+  const users = await db.user.findMany({ where: { schoolId: schoolId }, orderBy: [{ createdAt: 'asc' }] });
+  return users.map((u: any) => ({ id: u.id, email: u.email, role: u.role, email_verified: u.emailVerified, last_login_at: u.lastLoginAt, created_at: u.createdAt }));
+}
+
+export async function deleteUser(db: Db, schoolId: string, id: string, adminId: string): Promise<void> {
+  if (id === adminId) throw ApiError.validation('You cannot delete your own account');
+  const target = await db.user.findFirst({ where: { id, schoolId: schoolId } });
+  if (!target) throw ApiError.notFound('User not found');
+  if (target.role === 'admin') {
+    const admins = await db.user.count({ where: { schoolId: schoolId, role: 'admin' } });
+    if (admins <= 1) throw ApiError.conflict('Cannot delete the last admin of the school');
+  }
+  await db.user.delete({ where: { id } });
+  await writeAudit(db, { schoolId, actorId: adminId, actorType: 'user', action: 'user.delete', entity: 'user', entityId: id, details: { email: target.email, role: target.role } });
+}
+
+// ---------------------------------------------------------------------------
+// Holidays
+// ---------------------------------------------------------------------------
+
+export async function listHolidays(db: Db, schoolId: string): Promise<any[]> {
+  return db.holiday.findMany({ where: { schoolId: schoolId }, orderBy: [{ date: 'asc' }] });
+}
+
+export async function createHoliday(db: Db, schoolId: string, input: { date: string; name: string }, adminId: string): Promise<any> {
+  if (!isValidDateString(input.date)) throw ApiError.validation('Date must be YYYY-MM-DD');
+  const existing = await db.holiday.findFirst({ where: { schoolId: schoolId, date: dateOnly(input.date) } });
+  if (existing) throw ApiError.conflict('This date is already a holiday');
+  const created = await db.holiday.create({ data: { schoolId: schoolId, date: dateOnly(input.date), name: input.name.trim() } });
+  await writeAudit(db, { schoolId, actorId: adminId, actorType: 'user', action: 'holiday.create', entity: 'holiday', entityId: created.id, details: { date: input.date, name: input.name } });
+  return created;
+}
+
+export async function deleteHoliday(db: Db, schoolId: string, id: string, adminId: string): Promise<void> {
+  const existing = await db.holiday.findFirst({ where: { id, schoolId: schoolId } });
+  if (!existing) throw ApiError.notFound('Holiday not found');
+  await db.holiday.delete({ where: { id } });
+  await writeAudit(db, { schoolId, actorId: adminId, actorType: 'user', action: 'holiday.delete', entity: 'holiday', entityId: id, details: { date: existing.date } });
+}
+
+// ---------------------------------------------------------------------------
+// Academic sessions
+// ---------------------------------------------------------------------------
+
+export async function listSessions(db: Db, schoolId: string): Promise<any[]> {
+  return db.academicSession.findMany({ where: { schoolId: schoolId }, orderBy: [{ startDate: 'desc' }] });
+}
+
+export async function createSession(db: Db, schoolId: string, input: { name: string; start_date: string; end_date: string }, adminId: string): Promise<any> {
+  if (!isValidDateString(input.start_date) || !isValidDateString(input.end_date)) throw ApiError.validation('Dates must be YYYY-MM-DD');
+  if (input.start_date >= input.end_date) throw ApiError.validation('start_date must be before end_date');
+  const created = await db.academicSession.create({ data: { schoolId: schoolId, name: input.name.trim(), startDate: dateOnly(input.start_date), endDate: dateOnly(input.end_date), isCurrent: false } });
+  await writeAudit(db, { schoolId, actorId: adminId, actorType: 'user', action: 'session.create', entity: 'academic_session', entityId: created.id, details: { name: input.name } });
+  return created;
+}
+
+export async function makeSessionCurrent(db: Db, schoolId: string, id: string, adminId: string): Promise<any> {
+  const session = await db.academicSession.findFirst({ where: { id, schoolId: schoolId } });
+  if (!session) throw ApiError.notFound('Session not found');
+  await db.$transaction(async (tx) => {
+    await tx.academicSession.updateMany({ where: { schoolId: schoolId, isCurrent: true }, data: { isCurrent: false } });
+    await tx.academicSession.update({ where: { id }, data: { isCurrent: true } });
+  });
+  await writeAudit(db, { schoolId, actorId: adminId, actorType: 'user', action: 'session.make_current', entity: 'academic_session', entityId: id });
+  return { ...session, is_current: true };
+}
+
+// ---------------------------------------------------------------------------
+// Promotions
+// ---------------------------------------------------------------------------
+
+export async function promoteStudents(
+  db: Db,
+  schoolId: string,
+  input: { session_id: string; mappings: Array<{ student_id: string; to_class_id: string }> },
+  adminId: string,
+): Promise<{ promoted: number }> {
+  const session = await db.academicSession.findFirst({ where: { id: input.session_id, schoolId: schoolId } });
+  if (!session) throw ApiError.notFound('Session not found');
+  if (!Array.isArray(input.mappings) || input.mappings.length === 0) throw ApiError.validation('mappings must be a non-empty array');
+  for (const m of input.mappings) {
+    const student = await db.student.findFirst({ where: { id: m.student_id, schoolId: schoolId } });
+    if (!student) throw ApiError.validation(`Student not found: ${m.student_id}`);
+    const toClass = await db.class.findFirst({ where: { id: m.to_class_id, schoolId: schoolId } });
+    if (!toClass) throw ApiError.validation(`Class not found: ${m.to_class_id}`);
+  }
+  await db.$transaction(async (tx) => {
+    for (const m of input.mappings) {
+      const student = await tx.student.findUnique({ where: { id: m.student_id } });
+      await tx.promotion.create({
+        data: { schoolId: schoolId, studentId: m.student_id, fromClassId: (student as any).classId, toClassId: m.to_class_id, sessionId: input.session_id, promotedAt: new Date(), promotedBy: adminId },
+      });
+      await tx.student.update({ where: { id: m.student_id }, data: { classId: m.to_class_id } });
+    }
+  });
+  await writeAudit(db, { schoolId, actorId: adminId, actorType: 'user', action: 'promotion.run', entity: 'academic_session', entityId: input.session_id, details: { promoted: input.mappings.length } });
+  return { promoted: input.mappings.length };
+}
+
+// ---------------------------------------------------------------------------
+// Leave applications
+// ---------------------------------------------------------------------------
+
+export async function createLeave(db: Db, schoolId: string, input: { student_id: string; from_date: string; to_date: string; reason: string }, adminId: string): Promise<any> {
+  if (!isValidDateString(input.from_date) || !isValidDateString(input.to_date)) throw ApiError.validation('Dates must be YYYY-MM-DD');
+  if (input.from_date > input.to_date) throw ApiError.validation('from_date must be on or before to_date');
+  const student = await db.student.findFirst({ where: { id: input.student_id, schoolId: schoolId } });
+  if (!student) throw ApiError.notFound('Student not found');
+  const created = await db.leaveApplication.create({
+    data: { schoolId: schoolId, studentId: input.student_id, fromDate: dateOnly(input.from_date), toDate: dateOnly(input.to_date), reason: input.reason.trim(), status: 'pending' },
+  });
+  await writeAudit(db, { schoolId, actorId: adminId, actorType: 'user', action: 'leave.create', entity: 'leave_application', entityId: created.id, details: { student_id: input.student_id } });
+  return created;
+}
+
+export async function listLeaves(db: Db, schoolId: string, query: Record<string, any>): Promise<any[]> {
+  const where: Record<string, unknown> = { schoolId: schoolId };
+  if (query.student_id) where.studentId = String(query.student_id);
+  if (query.status) where.status = String(query.status);
+  return db.leaveApplication.findMany({ where, orderBy: [{ createdAt: 'desc' }] });
+}
+
+export async function decideLeave(db: Db, schoolId: string, id: string, status: 'approved' | 'rejected', adminId: string): Promise<any> {
+  const leave = await db.leaveApplication.findFirst({ where: { id, schoolId: schoolId } });
+  if (!leave) throw ApiError.notFound('Leave application not found');
+  const updated = await db.leaveApplication.update({ where: { id }, data: { status, decidedBy: adminId } });
+  await writeAudit(db, { schoolId, actorId: adminId, actorType: 'user', action: 'leave.decide', entity: 'leave_application', entityId: id, details: { status } });
+  return updated;
+}
+
+// ---------------------------------------------------------------------------
+// Audit logs & notifications
+// ---------------------------------------------------------------------------
+
+export async function listAuditLogs(db: Db, schoolId: string, query: Record<string, any>): Promise<{ items: any[]; total: number; page: number; pages: number }> {
+  const { page, limit, skip } = parsePagination(query);
+  const where: Record<string, unknown> = { schoolId: schoolId };
+  if (query.entity) where.entity = String(query.entity);
+  if (query.action) where.action = String(query.action);
+  const [items, total] = await Promise.all([
+    db.auditLog.findMany({ where, orderBy: [{ createdAt: 'desc' }], skip, take: limit }),
+    db.auditLog.count({ where }),
+  ]);
+  return paginatedResponse(items, total, { page, limit, skip });
+}
+
+export async function listNotifications(db: Db, schoolId: string, query: Record<string, any>): Promise<{ items: any[]; total: number; page: number; pages: number }> {
+  const { page, limit, skip } = parsePagination(query);
+  const where: Record<string, unknown> = { schoolId: schoolId };
+  if (query.unread_only === 'true') where.isRead = false;
+  const [items, total] = await Promise.all([
+    db.notification.findMany({ where, orderBy: [{ isRead: 'asc' }, { createdAt: 'desc' }], skip, take: limit }),
+    db.notification.count({ where }),
+  ]);
+  return paginatedResponse(items, total, { page, limit, skip });
+}
+
+export async function markNotificationRead(db: Db, schoolId: string, id: string): Promise<any> {
+  const n = await db.notification.findFirst({ where: { id, schoolId: schoolId } });
+  if (!n) throw ApiError.notFound('Notification not found');
+  return db.notification.update({ where: { id }, data: { isRead: true } });
+}

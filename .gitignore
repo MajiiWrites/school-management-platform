@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+*/node_modules/
+
+# Build output
+dist/
+*/dist/
+build/
+
+# Environment & secrets — NEVER commit
+.env
+.env.*
+!.env.example
+backend/.env
+frontend/.env
+
+# Uploads (user data, OCR images)
+uploads/
+backend/uploads/
+frontend/uploads/
+
+# Logs & OS
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+
+# Editor / tooling
+.vscode/
+.idea/
+*.swp
+
+# Test / coverage
+coverage/
+.nyc_output/
+
+# Deploy secrets handoff (generated values for the Render dashboard)
+.deploy-secrets
+
+# Android build outputs
+android/app/build/
+android/.gradle/
+*.apk
+local.properties
