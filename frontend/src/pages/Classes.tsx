@@ -150,7 +150,7 @@ function ClassCard({
         <div>
           <h2 className="text-lg font-bold text-slate-900">Class {displayClass(c)}</h2>
           <p className="text-sm text-slate-500">
-            {c.teacher_name} · {c.students_count ?? 0} students
+            {c.teacher_name} · {c.student_count ?? 0} students
           </p>
         </div>
         {c.submitted_today ? <Badge tone="green">Submitted ✓</Badge> : <Badge tone="amber">Pending today</Badge>}

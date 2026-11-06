@@ -32,9 +32,9 @@ const STUDENTS: Student[] = [
 ];
 
 const CLASSES: ClassItem[] = [
-  { id: 'cl-1', name: '5', section: 'A', teacher_name: 'Ms. Shazia Parveen', teacher_phone: '+92 3XX XXXX901', students_count: 8, submitted_today: true, absent_today: 2, present_today: 6, attendance_link: 'http://localhost:5173/t/demo-token-5a' },
-  { id: 'cl-2', name: '6', section: 'B', teacher_name: 'Mr. Naveed Akhtar', teacher_phone: '+92 3XX XXXX902', students_count: 4, submitted_today: false, absent_today: 0, present_today: 0, attendance_link: 'http://localhost:5173/t/demo-token-6b' },
-  { id: 'cl-3', name: '1', section: 'A', teacher_name: 'Ms. Rabia Anwar', teacher_phone: '+92 3XX XXXX903', students_count: 3, submitted_today: true, absent_today: 0, present_today: 3, attendance_link: 'http://localhost:5173/t/demo-token-1a' },
+  { id: 'cl-1', name: '5', section: 'A', teacher_name: 'Ms. Shazia Parveen', teacher_phone: '+92 3XX XXXX901', student_count: 8, submitted_today: true, absent_today: 2, present_today: 6, attendance_link: 'http://localhost:5173/t/demo-token-5a' },
+  { id: 'cl-2', name: '6', section: 'B', teacher_name: 'Mr. Naveed Akhtar', teacher_phone: '+92 3XX XXXX902', student_count: 4, submitted_today: false, absent_today: 0, present_today: 0, attendance_link: 'http://localhost:5173/t/demo-token-6b' },
+  { id: 'cl-3', name: '1', section: 'A', teacher_name: 'Ms. Rabia Anwar', teacher_phone: '+92 3XX XXXX903', student_count: 3, submitted_today: true, absent_today: 0, present_today: 3, attendance_link: 'http://localhost:5173/t/demo-token-1a' },
 ];
 
 const FEES: FeeRow[] = STUDENTS.map((s, i) => ({
@@ -134,7 +134,7 @@ export async function mockRequest<T>(path: string, method: string, body?: unknow
   if (rawPath === '/classes' && method === 'GET') return page(CLASSES) as T;
   if (rawPath === '/classes' && method === 'POST') {
     const b = body as { name: string; section: string; teacher_name: string; teacher_phone?: string };
-    return { id: `cl-${Date.now()}`, name: b.name, section: b.section, teacher_name: b.teacher_name, teacher_phone: b.teacher_phone ?? null, students_count: 0, submitted_today: false, absent_today: 0, present_today: 0 } as T;
+    return { id: `cl-${Date.now()}`, name: b.name, section: b.section, teacher_name: b.teacher_name, teacher_phone: b.teacher_phone ?? null, student_count: 0, submitted_today: false, absent_today: 0, present_today: 0 } as T;
   }
   if (seg[0] === 'classes' && seg.length === 2 && method === 'GET') {
     return (CLASSES.find((c) => c.id === seg[1]) ?? CLASSES[0]) as T;
@@ -233,7 +233,7 @@ export async function mockRequest<T>(path: string, method: string, body?: unknow
 
   // Reports
   if (rawPath.startsWith('/reports/attendance/daily')) {
-    return page(CLASSES.map((c) => ({ class: `${c.name}-${c.section}`, present: c.present_today ?? 0, absent: c.absent_today ?? 0, total: c.students_count ?? 0 }))) as T;
+    return page(CLASSES.map((c) => ({ class: `${c.name}-${c.section}`, present: c.present_today ?? 0, absent: c.absent_today ?? 0, total: c.student_count ?? 0 }))) as T;
   }
   if (rawPath.startsWith('/reports/attendance/weekly') || rawPath.startsWith('/reports/attendance/monthly')) {
     return page(STUDENTS.slice(0, 8).map((s) => ({ student: s.name, class: s.class_name ?? '', present: 18, absent: 2, total: 20 }))) as T;

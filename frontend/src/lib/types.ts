@@ -54,7 +54,7 @@ export interface ClassItem {
   section: string;
   teacher_name: string;
   teacher_phone?: string | null;
-  students_count?: number;
+  student_count?: number;
   submitted_today?: boolean;
   absent_today?: number;
   present_today?: number;
