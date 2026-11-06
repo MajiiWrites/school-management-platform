@@ -24,7 +24,8 @@ cp .env.example .env
 docker compose up -d --build
 docker compose logs -f api        # watch migrations + seed, then Ctrl-C
 curl http://localhost:4000/health # {"ok":true,"data":{"status":"up",...}}
-# Open http://localhost  →  demo login: demo@school.pk / Demo1234!
+# Open http://localhost  →  sign up a school account in the UI.
+# There is no demo account (demo seeding is off by default).
 ```
 
 Useful commands: `docker compose ps`, `docker compose logs -f api`,
@@ -78,7 +79,8 @@ cp .env.example .env
 #   node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 npm install
 npx prisma migrate deploy
-npx prisma db seed              # demo school: demo@school.pk / Demo1234!
+npx prisma db seed              # local dev only: seeds the demo school
+                                # (see backend/prisma/README.md) — never on live
 npm run dev                     # API on http://localhost:4000
 
 # 3. Frontend (new terminal, from the project root)
@@ -134,7 +136,7 @@ Run through [`docs/TEST-CHECKLIST.md`](TEST-CHECKLIST.md) — or the
 automated version used in QA (adapt paths to your machine). The shortest
 smoke test:
 
-1. Log in as `demo@school.pk` / `Demo1234!` → dashboard loads.
+1. Sign up a new school (or log in with the locally seeded demo admin — local dev only, see `backend/prisma/README.md`) → dashboard loads.
 2. Classes → 5-A → regenerate the teacher link → open it in a private
    browser window (no login) → mark 1 student absent → Save → 201.
 3. Dashboard shows "Absent today: 1" on class 5-A.

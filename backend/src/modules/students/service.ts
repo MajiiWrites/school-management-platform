@@ -2,6 +2,7 @@ import ExcelJS from 'exceljs';
 import { ApiError } from '../../lib/errors';
 import { normalizePhone, encryptPhone, decryptPhone, sha256Hex, maskPhone, normalizeName } from '../../lib/crypto';
 import { writeAudit } from '../../lib/audit';
+import { writeChangeLogs, softDeleteEntity } from '../hardening/helpers';
 import { paginatedResponse, parsePagination } from '../../lib/pagination';
 import type { Db } from '../../lib/db';
 
@@ -11,6 +12,22 @@ export interface StudentInput {
   roll_no?: number | null;
   parent_name?: string | null;
   parent_phone?: string | null;
+  parent_opt_out?: boolean;
+  // v2 extended profile (contracts/SCHEMA.md §1)
+  father_name?: string | null;
+  admission_no?: string | null;
+  date_of_birth?: string | null;
+  gender?: string | null;
+  address?: string | null;
+  admission_date?: string | null;
+  parent2_name?: string | null;
+  parent2_phone?: string | null;
+  parent2_opt_out?: boolean;
+}
+
+function toISODate(d: Date | string | null | undefined): string | null {
+  if (!d) return null;
+  return new Date(d).toISOString().slice(0, 10);
 }
 
 export function toPublicStudent(s: any): Record<string, unknown> {
@@ -26,8 +43,44 @@ export function toPublicStudent(s: any): Record<string, unknown> {
     parent_has_phone: Boolean(s.parentPhoneEnc),
     parent_opt_out: s.parentOptOut,
     status: s.status,
+    father_name: s.fatherName ?? null,
+    admission_no: s.admissionNo ?? null,
+    date_of_birth: toISODate(s.dateOfBirth),
+    gender: s.gender ?? null,
+    address: s.address ?? null,
+    admission_date: toISODate(s.admissionDate),
+    parent2_name: s.parent2Name ?? null,
+    parent2_phone_masked: s.parent2PhoneEnc ? maskPhone(decryptPhone(s.parent2PhoneEnc)) : null,
+    parent2_opt_out: s.parent2OptOut ?? false,
+    id_card_issued_at: s.idCardIssuedAt ?? null,
     created_at: s.createdAt,
     updated_at: s.updatedAt,
+  };
+}
+
+/**
+ * Display-safe view of a student row for change_logs: phones are masked
+ * (ciphertext / hashes must never land in change history).
+ */
+function changeView(s: any): Record<string, unknown> {
+  return {
+    name: s.name,
+    name_ur: s.nameUr ?? null,
+    roll_no: s.rollNo ?? null,
+    class_id: s.classId,
+    parent_name: s.parentName ?? null,
+    parent_phone: s.parentPhoneEnc ? maskPhone(decryptPhone(s.parentPhoneEnc)) : null,
+    parent_opt_out: s.parentOptOut,
+    status: s.status,
+    father_name: s.fatherName ?? null,
+    admission_no: s.admissionNo ?? null,
+    date_of_birth: toISODate(s.dateOfBirth),
+    gender: s.gender ?? null,
+    address: s.address ?? null,
+    admission_date: toISODate(s.admissionDate),
+    parent2_name: s.parent2Name ?? null,
+    parent2_phone: s.parent2PhoneEnc ? maskPhone(decryptPhone(s.parent2PhoneEnc)) : null,
+    parent2_opt_out: s.parent2OptOut ?? false,
   };
 }
 
@@ -39,7 +92,7 @@ function parentPhoneFields(phone: string | null | undefined): { enc: string | nu
 }
 
 async function assertClassInSchool(db: Db, schoolId: string, classId: string): Promise<any> {
-  const c = await db.class.findFirst({ where: { id: classId, schoolId: schoolId } });
+  const c = await db.class.findFirst({ where: { id: classId, schoolId: schoolId, deletedAt: null } });
   if (!c) throw ApiError.notFound('Class not found');
   return c;
 }
@@ -54,7 +107,7 @@ async function findDuplicate(
   excludeId?: string,
 ): Promise<string | null> {
   const norm = normalizeName(name);
-  const inClass = await db.student.findMany({ where: { classId: classId } });
+  const inClass = await db.student.findMany({ where: { schoolId: schoolId, classId: classId, deletedAt: null } });
   for (const s of inClass) {
     if (excludeId && s.id === excludeId) continue;
     if (normalizeName(s.name) === norm) return `A student named "${s.name}" already exists in this class`;
@@ -63,7 +116,7 @@ async function findDuplicate(
     }
   }
   if (phoneHash) {
-    const samePhone = await db.student.findMany({ where: { schoolId: schoolId, parentPhoneHash: phoneHash } });
+    const samePhone = await db.student.findMany({ where: { schoolId: schoolId, parentPhoneHash: phoneHash, deletedAt: null } });
     for (const s of samePhone) {
       if (excludeId && s.id === excludeId) continue;
       if (normalizeName(s.name) === norm) return `A student named "${s.name}" with the same parent number already exists in this school`;
@@ -72,20 +125,38 @@ async function findDuplicate(
   return null;
 }
 
-async function assertRollUnique(db: Db, classId: string, rollNo: number | null | undefined, excludeId?: string): Promise<void> {
+async function assertRollUnique(db: Db, schoolId: string, classId: string, rollNo: number | null | undefined, excludeId?: string): Promise<void> {
   if (rollNo === null || rollNo === undefined) return;
-  const existing = await db.student.findFirst({ where: { classId: classId, rollNo: rollNo } });
+  const existing = await db.student.findFirst({ where: { schoolId: schoolId, classId: classId, rollNo: rollNo, deletedAt: null } });
   if (existing && existing.id !== excludeId) {
     throw ApiError.conflict(`Roll number ${rollNo} is already used in this class`);
+  }
+}
+
+/**
+ * 6B: admission_no is unique per school (SCHEMA.md §1; DB unique
+ * (schoolId, admissionNo), NULLs never collide). Checked in the app layer
+ * so the error is a clean 409 instead of a Prisma P2002.
+ */
+async function assertAdmissionNoUnique(db: Db, schoolId: string, admissionNo: string | null | undefined, excludeId?: string): Promise<void> {
+  if (!admissionNo || !admissionNo.trim()) return;
+  const existing = await db.student.findFirst({ where: { schoolId: schoolId, admissionNo: admissionNo.trim(), deletedAt: null } });
+  if (existing && existing.id !== excludeId) {
+    throw ApiError.conflict(`Admission number ${admissionNo.trim()} is already used in this school`);
   }
 }
 
 export async function createStudent(db: Db, schoolId: string, classId: string, input: StudentInput, actorId?: string): Promise<any> {
   await assertClassInSchool(db, schoolId, classId);
   const phone = parentPhoneFields(input.parent_phone);
+  const phone2 = parentPhoneFields(input.parent2_phone);
   const dup = await findDuplicate(db, schoolId, classId, input.name.trim(), phone.hash);
   if (dup) throw ApiError.conflict(dup);
-  await assertRollUnique(db, classId, input.roll_no);
+  await assertRollUnique(db, schoolId, classId, input.roll_no);
+  await assertAdmissionNoUnique(db, schoolId, input.admission_no);
+  if (input.gender !== undefined && input.gender !== null && !['male', 'female', 'other'].includes(input.gender)) {
+    throw ApiError.validation("gender must be 'male', 'female' or 'other'");
+  }
   const created = await db.student.create({
     data: {
       schoolId: schoolId,
@@ -96,7 +167,18 @@ export async function createStudent(db: Db, schoolId: string, classId: string, i
       parentName: input.parent_name?.trim() || null,
       parentPhoneEnc: phone.enc,
       parentPhoneHash: phone.hash,
+      parentOptOut: input.parent_opt_out ?? false,
       status: 'active',
+      fatherName: input.father_name?.trim() || null,
+      admissionNo: input.admission_no?.trim() || null,
+      dateOfBirth: input.date_of_birth ? new Date(input.date_of_birth) : null,
+      gender: input.gender ?? null,
+      address: input.address?.trim() || null,
+      admissionDate: input.admission_date ? new Date(input.admission_date) : null,
+      parent2Name: input.parent2_name?.trim() || null,
+      parent2PhoneEnc: phone2.enc,
+      parent2PhoneHash: phone2.hash,
+      parent2OptOut: input.parent2_opt_out ?? false,
     },
   });
   await writeAudit(db, { schoolId, actorId: actorId ?? null, actorType: 'user', action: 'student.create', entity: 'student', entityId: created.id, details: { class_id: classId, name: created.name } });
@@ -113,7 +195,7 @@ export async function listStudents(
   const { page, limit, skip } = parsePagination(query);
   const search = String(query.search ?? '').trim();
   const status = String(query.status ?? '').trim();
-  const where: Record<string, unknown> = { schoolId: schoolId, classId: classId };
+  const where: Record<string, unknown> = { schoolId: schoolId, classId: classId, deletedAt: null };
   if (status) where.status = status;
   const or: Record<string, unknown>[] = [];
   if (search) {
@@ -132,7 +214,7 @@ export async function listStudents(
 }
 
 export async function getStudent(db: Db, schoolId: string, id: string): Promise<any> {
-  const s = await db.student.findFirst({ where: { id, schoolId: schoolId } });
+  const s = await db.student.findFirst({ where: { id, schoolId: schoolId, deletedAt: null } });
   if (!s) throw ApiError.notFound('Student not found');
   return s;
 }
@@ -149,38 +231,153 @@ export async function updateStudent(db: Db, schoolId: string, id: string, patch:
     phoneEnc = phone.enc;
     phoneHash = phone.hash;
   }
+  let phone2Hash = existing.parent2PhoneHash as string | null;
+  let phone2Enc = existing.parent2PhoneEnc as string | null;
+  if (patch.parent2_phone !== undefined) {
+    const phone2 = parentPhoneFields(patch.parent2_phone);
+    phone2Enc = phone2.enc;
+    phone2Hash = phone2.hash;
+  }
   const dup = await findDuplicate(db, schoolId, targetClassId, name, phoneHash, id);
   if (dup) throw ApiError.conflict(dup);
-  await assertRollUnique(db, targetClassId, patch.roll_no !== undefined ? patch.roll_no : existing.rollNo, id);
+  await assertRollUnique(db, schoolId, targetClassId, patch.roll_no !== undefined ? patch.roll_no : existing.rollNo, id);
+  if (patch.admission_no !== undefined) await assertAdmissionNoUnique(db, schoolId, patch.admission_no, id);
   const data: Record<string, unknown> = {
     name,
     classId: targetClassId,
     parentPhoneEnc: phoneEnc,
     parentPhoneHash: phoneHash,
+    parent2PhoneEnc: phone2Enc,
+    parent2PhoneHash: phone2Hash,
   };
   if (patch.name_ur !== undefined) data.nameUr = patch.name_ur?.trim() || null;
   if (patch.roll_no !== undefined) data.rollNo = patch.roll_no ?? null;
   if (patch.parent_name !== undefined) data.parentName = patch.parent_name?.trim() || null;
+  if (patch.parent_opt_out !== undefined) data.parentOptOut = patch.parent_opt_out;
   if (patch.status !== undefined) {
-    if (!['active', 'left', 'graduated'].includes(patch.status)) throw ApiError.validation('Invalid status');
+    if (!['active', 'left', 'struck_off', 'graduated'].includes(patch.status)) throw ApiError.validation('Invalid status');
     data.status = patch.status;
   }
+  if (patch.father_name !== undefined) data.fatherName = patch.father_name?.trim() || null;
+  if (patch.admission_no !== undefined) data.admissionNo = patch.admission_no?.trim() || null;
+  if (patch.date_of_birth !== undefined) data.dateOfBirth = patch.date_of_birth ? new Date(patch.date_of_birth) : null;
+  if (patch.gender !== undefined) {
+    if (patch.gender !== null && !['male', 'female', 'other'].includes(patch.gender)) {
+      throw ApiError.validation("gender must be 'male', 'female' or 'other'");
+    }
+    data.gender = patch.gender;
+  }
+  if (patch.address !== undefined) data.address = patch.address?.trim() || null;
+  if (patch.admission_date !== undefined) data.admissionDate = patch.admission_date ? new Date(patch.admission_date) : null;
+  if (patch.parent2_name !== undefined) data.parent2Name = patch.parent2_name?.trim() || null;
+  if (patch.parent2_opt_out !== undefined) data.parent2OptOut = patch.parent2_opt_out;
+  // Snapshot the before-view BEFORE the update: some DB layers mutate the
+  // fetched row object in place, which would erase the old values.
+  const beforeView = changeView(existing);
   const updated = await db.student.update({ where: { id }, data });
+  await writeChangeLogs(db, {
+    schoolId,
+    actorId: actorId ?? null,
+    entity: 'student',
+    entityId: id,
+    before: beforeView,
+    after: changeView(updated),
+  });
   await writeAudit(db, { schoolId, actorId: actorId ?? null, actorType: 'user', action: 'student.update', entity: 'student', entityId: id, details: { name } });
   return updated;
 }
 
+/**
+ * 6B: move a student between sections/classes (e.g. 5-A -> 5-B, or 5-A ->
+ * 6-A). The target class must belong to the same school; roll number and
+ * name must be free in the target class. Writes change_logs (class_id) +
+ * audit `student.move`. The caller (route) wraps this in a ConfirmDialog.
+ */
+export async function moveStudent(db: Db, schoolId: string, id: string, toClassId: string, actorId?: string): Promise<any> {
+  const existing = await getStudent(db, schoolId, id);
+  if (existing.classId === toClassId) throw ApiError.validation('Student is already in that class');
+  await assertClassInSchool(db, schoolId, toClassId);
+  await assertRollUnique(db, schoolId, toClassId, existing.rollNo, id);
+  const dup = await findDuplicate(db, schoolId, toClassId, existing.name, existing.parentPhoneHash as string | null, id);
+  if (dup) throw ApiError.conflict(dup);
+  const beforeView = changeView(existing);
+  const updated = await db.student.update({ where: { id }, data: { classId: toClassId } });
+  await writeChangeLogs(db, {
+    schoolId,
+    actorId: actorId ?? null,
+    entity: 'student',
+    entityId: id,
+    before: beforeView,
+    after: changeView(updated),
+  });
+  await writeAudit(db, { schoolId, actorId: actorId ?? null, actorType: 'user', action: 'student.move', entity: 'student', entityId: id, details: { name: existing.name, from_class_id: existing.classId, to_class_id: toClassId } });
+  return updated;
+}
+
+/** 6B: stamp the ID-card-issued flag (contracts/API.md).
+ * NOTE: the live route for this is POST /students/:id/issue-id-card in
+ * the 6C-2 certificates router; this helper is kept for the approval
+ * applier / service-level callers. */
+export async function issueIdCard(db: Db, schoolId: string, id: string, actorId?: string): Promise<any> {
+  const existing = await getStudent(db, schoolId, id);
+  const beforeView = changeView(existing);
+  const updated = await db.student.update({ where: { id }, data: { idCardIssuedAt: new Date() } });
+  await writeChangeLogs(db, {
+    schoolId,
+    actorId: actorId ?? null,
+    entity: 'student',
+    entityId: id,
+    before: { ...beforeView, id_card_issued_at: existing.idCardIssuedAt ? new Date(existing.idCardIssuedAt).toISOString() : null },
+    after: { ...changeView(updated), id_card_issued_at: (updated.idCardIssuedAt as Date).toISOString() },
+  });
+  await writeAudit(db, { schoolId, actorId: actorId ?? null, actorType: 'user', action: 'student.issue_id_card', entity: 'student', entityId: id, details: { name: existing.name } });
+  return updated;
+}
+
+/**
+ * 6B: school-wide student search (contracts/API.md `GET /students`):
+ * filter by admission_no, status (incl. struck_off/graduated), class_id,
+ * free-text search over name / admission_no. Soft-deleted rows excluded.
+ */
+export async function listStudentsSchoolWide(
+  db: Db,
+  schoolId: string,
+  query: Record<string, any>,
+): Promise<{ items: any[]; total: number; page: number; pages: number }> {
+  const { page, limit, skip } = parsePagination(query);
+  const search = String(query.search ?? '').trim();
+  const status = String(query.status ?? '').trim();
+  const admissionNo = String(query.admission_no ?? '').trim();
+  const classId = String(query.class_id ?? '').trim();
+  const where: Record<string, unknown> = { schoolId: schoolId, deletedAt: null };
+  if (status) where.status = status;
+  if (admissionNo) where.admissionNo = admissionNo;
+  if (classId) where.classId = classId;
+  const or: Record<string, unknown>[] = [];
+  if (search) {
+    or.push({ name: { contains: search, mode: 'insensitive' } });
+    or.push({ admissionNo: { contains: search, mode: 'insensitive' } });
+    const asNum = Number.parseInt(search, 10);
+    if (!Number.isNaN(asNum)) or.push({ rollNo: asNum });
+  }
+  const whereWithSearch = or.length > 0 ? { ...where, OR: or } : where;
+  const [items, total] = await Promise.all([
+    db.student.findMany({ where: whereWithSearch, orderBy: [{ name: 'asc' }], skip, take: limit }),
+    db.student.count({ where: whereWithSearch }),
+  ]);
+  return paginatedResponse(items.map(toPublicStudent), total, { page, limit, skip });
+}
+
+/**
+ * Soft delete (6A): sets deleted_at + writes a deleted_records snapshot
+ * instead of hard-deleting. The old "cannot delete with history" block is
+ * gone on purpose — soft delete PRESERVES the attendance/fee history, so
+ * the row stays restorable from the recycle bin for 30 days.
+ */
 export async function deleteStudent(db: Db, schoolId: string, id: string, actorId?: string): Promise<void> {
   const existing = await getStudent(db, schoolId, id);
-  const [att, fees] = await Promise.all([
-    db.attendanceRecord.count({ where: { studentId: id } }),
-    db.feeRecord.count({ where: { studentId: id } }),
-  ]);
-  if (att > 0 || fees > 0) {
-    throw ApiError.conflict('Cannot delete a student with attendance or fee history. Mark the student as "left" instead.');
-  }
-  await db.student.delete({ where: { id } });
-  await writeAudit(db, { schoolId, actorId: actorId ?? null, actorType: 'user', action: 'student.delete', entity: 'student', entityId: id, details: { name: existing.name } });
+  await softDeleteEntity(db, { schoolId, entity: 'student', entityId: id, deletedBy: actorId ?? null });
+  await writeAudit(db, { schoolId, actorId: actorId ?? null, actorType: 'user', action: 'student.delete', entity: 'student', entityId: id, details: { name: existing.name, soft_deleted: true } });
 }
 
 export async function updateParent(
@@ -199,7 +396,16 @@ export async function updateParent(
     data.parentPhoneEnc = phone.enc;
     data.parentPhoneHash = phone.hash;
   }
+  const beforeView = changeView(existing);
   const updated = await db.student.update({ where: { id }, data });
+  await writeChangeLogs(db, {
+    schoolId,
+    actorId: actorId ?? null,
+    entity: 'student',
+    entityId: id,
+    before: beforeView,
+    after: changeView(updated),
+  });
   await writeAudit(db, { schoolId, actorId: actorId ?? null, actorType: 'user', action: 'student.parent_update', entity: 'student', entityId: id, details: { name: existing.name } });
   return updated;
 }
@@ -212,7 +418,7 @@ export async function listParents(
 ): Promise<{ items: any[]; total: number; page: number; pages: number }> {
   const { page, limit, skip } = parsePagination(query);
   const flag = String(query.flag ?? '').trim();
-  const all = await db.student.findMany({ where: { schoolId: schoolId, status: 'active' }, orderBy: [{ name: 'asc' }] });
+  const all = await db.student.findMany({ where: { schoolId: schoolId, status: 'active', deletedAt: null }, orderBy: [{ name: 'asc' }] });
   let filtered = all;
   if (flag === 'missing') {
     filtered = all.filter((s: any) => !s.parentPhoneEnc);
@@ -245,6 +451,30 @@ export interface ImportRow {
   roll_no?: number | null;
   parent_name?: string | null;
   parent_phone?: string | null;
+  // 6B: extended profile columns accepted in the import file.
+  father_name?: string | null;
+  admission_no?: string | null;
+  date_of_birth?: string | null;
+  gender?: string | null;
+  address?: string | null;
+  admission_date?: string | null;
+  parent2_name?: string | null;
+  parent2_phone?: string | null;
+}
+
+export interface ImportPreviewRow {
+  row: number;
+  status: 'ok' | 'duplicate' | 'invalid';
+  reason: string | null;
+  data: ImportRow;
+}
+
+export interface ImportPreview {
+  total: number;
+  valid: number;
+  duplicates_flagged: number;
+  invalid_rows: Array<{ row: number; reason: string }>;
+  preview: ImportPreviewRow[];
 }
 
 export interface ImportResult {
@@ -309,12 +539,24 @@ export function rowsToImportRows(grid: string[][]): ImportRow[] {
     if (!name) continue;
     const rollRaw = (r[idx('roll_no')] ?? '').trim();
     const rollNo = rollRaw === '' ? null : Number.parseInt(rollRaw, 10);
+    const cell = (h: string): string | null => {
+      const v = (r[idx(h)] ?? '').trim();
+      return v || null;
+    };
     out.push({
       name,
-      name_ur: (r[idx('name_ur')] ?? '').trim() || null,
+      name_ur: cell('name_ur'),
       roll_no: rollNo !== null && !Number.isNaN(rollNo) ? rollNo : null,
-      parent_name: (r[idx('parent_name')] ?? '').trim() || null,
-      parent_phone: (r[idx('parent_phone')] ?? '').trim() || null,
+      parent_name: cell('parent_name'),
+      parent_phone: cell('parent_phone'),
+      father_name: cell('father_name'),
+      admission_no: cell('admission_no'),
+      date_of_birth: cell('date_of_birth'),
+      gender: cell('gender'),
+      address: cell('address'),
+      admission_date: cell('admission_date'),
+      parent2_name: cell('parent2_name'),
+      parent2_phone: cell('parent2_phone'),
     });
   }
   return out;
@@ -336,6 +578,87 @@ export async function parseXlsxBuffer(buf: Buffer): Promise<ImportRow[]> {
   return rowsToImportRows(grid);
 }
 
+/**
+ * 6B: per-row validation for CSV/Excel import WITHOUT writing anything.
+ * The preview screen shows this first; only rows with status 'ok' are
+ * imported when the admin confirms. Checks, in order: missing name,
+ * invalid parent/parent2 phone, invalid gender/date, duplicate name in
+ * the class, duplicate roll in the class, duplicate admission_no in the
+ * school — each against existing rows AND against earlier rows in the file.
+ */
+export async function previewImport(
+  db: Db,
+  schoolId: string,
+  classId: string,
+  rows: ImportRow[],
+): Promise<ImportPreview> {
+  await assertClassInSchool(db, schoolId, classId);
+  const existing = await db.student.findMany({ where: { schoolId: schoolId, deletedAt: null } });
+  const inClass = existing.filter((s: any) => s.classId === classId);
+  const existingNames = new Set(inClass.map((s: any) => normalizeName(s.name)));
+  const existingRolls = new Set(inClass.map((s: any) => s.rollNo).filter((r: any) => r !== null && r !== undefined));
+  const existingPhones = new Set(existing.map((s: any) => (s.parentPhoneHash ? `${s.parentPhoneHash}|${normalizeName(s.name)}` : '')).filter((h: string) => !!h));
+  const existingAdmissions = new Set(existing.map((s: any) => (s.admissionNo ?? '').trim()).filter((a: string) => !!a));
+  const seenNames = new Set<string>();
+  const seenRolls = new Set<number>();
+  const seenAdmissions = new Set<string>();
+  const preview: ImportPreviewRow[] = [];
+  const invalid_rows: Array<{ row: number; reason: string }> = [];
+  let duplicates = 0;
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const rowNo = i + 2; // 1-based incl. header
+    const fail = (reason: string): ImportPreviewRow => {
+      invalid_rows.push({ row: rowNo, reason });
+      return { row: rowNo, status: 'invalid', reason, data: row };
+    };
+    const dupe = (reason: string): ImportPreviewRow => {
+      duplicates += 1;
+      return { row: rowNo, status: 'duplicate', reason, data: row };
+    };
+    if (!row.name || !row.name.trim()) { preview.push(fail('Missing student name')); continue; }
+    const norm = normalizeName(row.name);
+    if (row.parent_phone) {
+      if (!normalizePhone(row.parent_phone)) { preview.push(fail(`Invalid parent phone: ${row.parent_phone}`)); continue; }
+    }
+    if (row.parent2_phone) {
+      if (!normalizePhone(row.parent2_phone)) { preview.push(fail(`Invalid second-parent phone: ${row.parent2_phone}`)); continue; }
+    }
+    if (row.gender && !['male', 'female', 'other'].includes(row.gender.trim().toLowerCase())) {
+      preview.push(fail(`Invalid gender: ${row.gender} (male/female/other)`)); continue;
+    }
+    let badDate: string | null = null;
+    for (const d of [row.date_of_birth, row.admission_date]) {
+      if (d && !/^\d{4}-\d{2}-\d{2}$/.test(d.trim())) { badDate = d; break; }
+    }
+    if (badDate) { preview.push(fail(`Invalid date (use YYYY-MM-DD): ${badDate}`)); continue; }
+    if (existingNames.has(norm) || seenNames.has(norm)) { preview.push(dupe(`A student named "${row.name.trim()}" already exists in this class`)); continue; }
+    seenNames.add(norm);
+    if (row.roll_no !== null && row.roll_no !== undefined) {
+      if (existingRolls.has(row.roll_no) || seenRolls.has(row.roll_no)) {
+        preview.push(fail(`Roll number ${row.roll_no} already exists in this class`)); continue;
+      }
+      seenRolls.add(row.roll_no);
+    }
+    const adm = (row.admission_no ?? '').trim();
+    if (adm) {
+      if (existingAdmissions.has(adm) || seenAdmissions.has(adm)) {
+        preview.push(fail(`Admission number ${adm} is already used in this school`)); continue;
+      }
+      seenAdmissions.add(adm);
+    }
+    if (row.parent_phone) {
+      // Duplicate rule (SCHEMA.md): same phone + same normalized name.
+      // Siblings legitimately share a parent number — phone alone is NOT a duplicate.
+      const hash = sha256Hex(normalizePhone(row.parent_phone)!);
+      if (existingPhones.has(`${hash}|${norm}`)) { preview.push(dupe(`A student named "${row.name.trim()}" with the same parent number already exists`)); continue; }
+    }
+    preview.push({ row: rowNo, status: 'ok', reason: null, data: row });
+  }
+  const valid = preview.filter((p) => p.status === 'ok').length;
+  return { total: rows.length, valid, duplicates_flagged: duplicates, invalid_rows, preview };
+}
+
 export async function importStudents(
   db: Db,
   schoolId: string,
@@ -343,44 +666,26 @@ export async function importStudents(
   rows: ImportRow[],
   actorId?: string,
 ): Promise<ImportResult> {
-  await assertClassInSchool(db, schoolId, classId);
-  const result: ImportResult = { imported: 0, duplicates_flagged: 0, invalid_rows: [], saved_ids: [] };
-  const seenNames = new Set<string>();
-  for (let i = 0; i < rows.length; i++) {
-    const row = rows[i];
-    const rowNo = i + 2; // 1-based incl. header
-    if (!row.name || !row.name.trim()) {
-      result.invalid_rows.push({ row: rowNo, reason: 'Missing student name' });
-      continue;
-    }
-    const norm = normalizeName(row.name);
-    if (seenNames.has(norm)) {
-      result.duplicates_flagged += 1;
-      continue;
-    }
-    seenNames.add(norm);
-    let phoneHash: string | null = null;
+  // Single validation path: preview first, then create only 'ok' rows.
+  // All imports are DRAFT until this confirmed import runs.
+  const preview = await previewImport(db, schoolId, classId, rows);
+  const result: ImportResult = { imported: 0, duplicates_flagged: preview.duplicates_flagged, invalid_rows: preview.invalid_rows, saved_ids: [] };
+  for (const item of preview.preview) {
+    if (item.status !== 'ok') continue;
+    const row = item.data;
     let phoneEnc: string | null = null;
+    let phoneHash: string | null = null;
     if (row.parent_phone) {
-      const normalized = normalizePhone(row.parent_phone);
-      if (!normalized) {
-        result.invalid_rows.push({ row: rowNo, reason: `Invalid parent phone: ${row.parent_phone}` });
-        continue;
-      }
+      const normalized = normalizePhone(row.parent_phone)!;
       phoneEnc = encryptPhone(normalized);
       phoneHash = sha256Hex(normalized);
     }
-    const dup = await findDuplicate(db, schoolId, classId, row.name.trim(), phoneHash);
-    if (dup) {
-      result.duplicates_flagged += 1;
-      continue;
-    }
-    if (row.roll_no !== null && row.roll_no !== undefined) {
-      const rollUsed = await db.student.findFirst({ where: { classId: classId, rollNo: row.roll_no } });
-      if (rollUsed) {
-        result.invalid_rows.push({ row: rowNo, reason: `Roll number ${row.roll_no} already exists in this class` });
-        continue;
-      }
+    let phone2Enc: string | null = null;
+    let phone2Hash: string | null = null;
+    if (row.parent2_phone) {
+      const normalized2 = normalizePhone(row.parent2_phone)!;
+      phone2Enc = encryptPhone(normalized2);
+      phone2Hash = sha256Hex(normalized2);
     }
     const created = await db.student.create({
       data: {
@@ -393,6 +698,16 @@ export async function importStudents(
         parentPhoneEnc: phoneEnc,
         parentPhoneHash: phoneHash,
         status: 'active',
+        fatherName: row.father_name?.trim() || null,
+        admissionNo: row.admission_no?.trim() || null,
+        dateOfBirth: row.date_of_birth ? new Date(row.date_of_birth) : null,
+        gender: row.gender?.trim().toLowerCase() || null,
+        address: row.address?.trim() || null,
+        admissionDate: row.admission_date ? new Date(row.admission_date) : null,
+        parent2Name: row.parent2_name?.trim() || null,
+        parent2PhoneEnc: phone2Enc,
+        parent2PhoneHash: phone2Hash,
+        parent2OptOut: false,
       },
     });
     result.imported += 1;

@@ -1,7 +1,7 @@
 // Manual job runner (ops / testing).
 // Usage:
 //   npx tsx src/jobs/run-manual.ts <job-name> --school=<slug|id> [--at=2026-11-01T08:00:00Z]
-// Job names: monthly_fee_reminder | fee_followup | daily_pending_attendance | teacher_reminders
+// Job names: monthly_fee_reminder | fee_followup | daily_pending_attendance | teacher_reminders | school_backup
 // Requires DATABASE_URL and the generated Prisma client. The --at flag fakes
 // "now" so a job can be tested for a specific school-local date/time.
 

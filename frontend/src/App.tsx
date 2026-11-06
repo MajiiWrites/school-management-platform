@@ -14,6 +14,23 @@ import MessagesPage from './pages/Messages';
 import ParentsPage from './pages/Parents';
 import SettingsPage from './pages/Settings';
 import ReportsPage from './pages/Reports';
+// 6C-2 pages: expenses, announcements, events, certificates, leave/late, notifications.
+import ExpensesPage from './pages/Expenses';
+import AnnouncementsPage from './pages/Announcements';
+import EventsPage from './pages/Events';
+import CertificatesPage from './pages/Certificates';
+import LeavesPage from './pages/Leaves';
+import NotificationsPage from './pages/Notifications';
+import { LanguageProvider } from './lib/i18n';
+import SecurityPage from './pages/Security'; // 6D: 2FA, roles & permissions, data export, login alerts, backups
+import ResultsPage from './pages/Results'; // 6B: results (OCR sheets, toppers, report cards)
+// 6C-1 pages: sessions / exams / timetable / staff & payroll.
+import SessionsPage from './pages/Sessions';
+import ExamsPage from './pages/Exams';
+import TimetablePage from './pages/Timetable';
+import StaffPage from './pages/Staff';
+// P8-TOUR: guided tour + help page (Phase 10 criterion E).
+import HelpPage from './pages/Help';
 
 /** Redirects to /login when there is no signed-in user. */
 function RequireAuth({ children }: { children: ReactNode }) {
@@ -64,7 +81,9 @@ export default function App() {
         <Route
           element={
             <RequireAuth>
-              <Layout />
+              <LanguageProvider>
+                <Layout />
+              </LanguageProvider>
             </RequireAuth>
           }
         >
@@ -77,11 +96,36 @@ export default function App() {
           <Route path="fees" element={<FeesPage />} />
           <Route path="messages" element={<MessagesPage />} />
           <Route path="reports" element={<ReportsPage />} />
+          {/* 6C-2 routes */}
+          <Route path="expenses" element={<ExpensesPage />} />
+          <Route path="announcements" element={<AnnouncementsPage />} />
+          <Route path="events" element={<EventsPage />} />
+          <Route path="certificates" element={<CertificatesPage />} />
+          <Route path="leaves" element={<LeavesPage />} />
+          <Route path="notifications" element={<NotificationsPage />} />
+          {/* 6B: results */}
+          <Route path="results" element={<ResultsPage />} />
+          {/* 6C-1 routes */}
+          <Route path="sessions" element={<SessionsPage />} />
+          <Route path="exams" element={<ExamsPage />} />
+          <Route path="timetable" element={<TimetablePage />} />
+          <Route path="staff" element={<StaffPage />} />
+          {/* P8-TOUR: Help page (guided tour + how-tos + glossary). */}
+          <Route path="help" element={<HelpPage />} />
           <Route
             path="settings"
             element={
               <RequireAdmin>
                 <SettingsPage />
+              </RequireAdmin>
+            }
+          />
+          {/* 6D: Security page (admin only) */}
+          <Route
+            path="security"
+            element={
+              <RequireAdmin>
+                <SecurityPage />
               </RequireAdmin>
             }
           />

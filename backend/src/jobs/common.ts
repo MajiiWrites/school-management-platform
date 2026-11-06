@@ -16,6 +16,7 @@ export interface SchoolSettings {
   sms_provider?: 'sim' | 'gateway';
   teacher_attendance_mode?: 'admin' | 'link';
   pending_check_time?: string; // "HH:MM", default 16:00
+  session_timeout_minutes?: number; // 6D: idle timeout, default 120, min 15, max 1440
 }
 
 export interface SchoolRow {
@@ -37,6 +38,7 @@ export function settingsOf(school: SchoolRow): Required<Pick<SchoolSettings, 'te
     fee_followup_day: s.fee_followup_day ?? null,
     sms_provider: s.sms_provider ?? 'sim',
     teacher_attendance_mode: s.teacher_attendance_mode ?? 'admin',
+    session_timeout_minutes: s.session_timeout_minutes ?? 120,
   };
 }
 

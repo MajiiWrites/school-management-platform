@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { api } from '../lib/api';
 import type { DashboardData, SmsStatus } from '../lib/types';
 import { fmtDateTime, fmtPKR } from '../lib/utils';
-import { Badge, Card, ErrorBanner, Spinner, StatCard } from '../components/ui';
+import { Badge, Card, EmptyState, ErrorBanner, Spinner, StatCard } from '../components/ui';
 
 export default function DashboardPage() {
   const [data, setData] = useState<DashboardData | null>(null);
@@ -43,6 +43,15 @@ export default function DashboardPage() {
       </div>
 
       {error && <ErrorBanner message={error} onRetry={load} />}
+
+      {totalClasses === 0 && (
+        <EmptyState
+          title="No classes yet"
+          body="Your school is empty — add your first class, then its students, and attendance, fees and messages will show up here."
+          actionLabel="Add your first class"
+          actionHref="/classes"
+        />
+      )}
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <StatCard label="Classes submitted" value={`${data.classes_submitted} / ${totalClasses}`} sub={`${data.classes_pending} still pending`} tone={data.classes_pending > 0 ? 'amber' : 'green'} />

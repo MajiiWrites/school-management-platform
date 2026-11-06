@@ -47,6 +47,10 @@ function matches(row: Row, where: any): boolean {
       }
       if ('startsWith' in c && !String(val ?? '').startsWith(String(c.startsWith))) return false;
       if ('endsWith' in c && !String(val ?? '').endsWith(String(c.endsWith))) return false;
+    } else if (cond === null) {
+      // Prisma `field: null` means IS NULL; fake rows created without the
+      // field carry `undefined`, which is NULL here (6A: deletedAt filters).
+      if (val !== null && val !== undefined) return false;
     } else if (cond !== null && typeof cond === 'object' && !(cond instanceof Date)) {
       // Nested object: compound unique key (e.g. { studentId_month: {...} }) — flatten.
       if (!matches(row, cond)) return false;
@@ -97,6 +101,11 @@ function nextId(): string {
 
 export class FakeCollection {
   rows: Row[] = [];
+  /** Clock used to stamp createdAt/updatedAt. Tests may inject a fixed
+   * clock so rows created by the fake share the same school-local day as
+   * the `now` the code under test is given (production stamps both from
+   * the same wall clock, so this only removes test-harness drift). */
+  nowFn: () => Date = () => new Date();
   /** Unique key extractor for createMany skipDuplicates (per collection). */
   uniqueKey?: (row: Row) => string;
   /**
@@ -130,7 +139,7 @@ export class FakeCollection {
   }
 
   create(args: { data: Row }): Row {
-    const now = new Date();
+    const now = this.nowFn();
     const row: Row = { id: nextId(), createdAt: now, updatedAt: now, ...args.data };
     this.derive?.(row);
     this.rows.push(row);
@@ -144,7 +153,7 @@ export class FakeCollection {
         const key = this.uniqueKey({ ...data });
         if (this.rows.some((r) => this.uniqueKey!(r) === key)) continue;
       }
-      const now = new Date();
+      const now = this.nowFn();
       const row: Row = { id: nextId(), createdAt: now, updatedAt: now, ...data };
       this.derive?.(row);
       this.rows.push(row);
@@ -156,7 +165,7 @@ export class FakeCollection {
   update(args: { where: any; data: Row }): Row {
     const row = this.rows.find((r) => matches(r, args.where));
     if (!row) throw new Error('FakeCollection.update: record not found');
-    Object.assign(row, args.data, { updatedAt: new Date() });
+    Object.assign(row, args.data, { updatedAt: this.nowFn() });
     this.derive?.(row);
     return row;
   }
@@ -164,7 +173,7 @@ export class FakeCollection {
   updateMany(args: { where: any; data: Row }): { count: number } {
     let count = 0;
     for (const row of this.rows.filter((r) => matches(r, args.where))) {
-      Object.assign(row, args.data, { updatedAt: new Date() });
+      Object.assign(row, args.data, { updatedAt: this.nowFn() });
       this.derive?.(row);
       count += 1;
     }
@@ -191,8 +200,18 @@ export class FakeDb {
   holiday = new FakeCollection();
   notification = new FakeCollection();
   auditLog = new FakeCollection();
+  // v2 collections (6A: payFee writes changeLog rows).
+  changeLog = new FakeCollection();
+  deletedRecord = new FakeCollection();
+  approvalRequest = new FakeCollection();
+  rolePermission = new FakeCollection();
 
-  constructor() {
+  constructor(nowFn?: () => Date) {
+    if (nowFn) {
+      for (const v of Object.values(this)) {
+        if (v instanceof FakeCollection) v.nowFn = nowFn;
+      }
+    }
     this.feeRecord.uniqueKey = (r) => `${r.studentId}|${r.month}`;
     this.messageQueue.uniqueKey = (r) => r.dedupeKey;
     // Mirror the DB GENERATED column: status from amounts.

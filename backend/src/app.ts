@@ -18,6 +18,19 @@ import { createOcrRouter, prismaOcrDb } from './modules/ocr/index';
 import { createMessagingRouter, createPrismaMessagingStore } from './modules/messaging';
 import { feesRouter } from './modules/fees/routes';
 import { jobsStatusRouter } from './jobs/status-router';
+import { hardeningRouter } from './modules/hardening/routes';
+import { expensesRouter } from './modules/expenses/routes';
+import { announcementsRouter } from './modules/announcements/routes';
+import { eventsRouter } from './modules/events/routes';
+import { certificatesRouter } from './modules/certificates/routes';
+import { notificationsRouter } from './modules/notifications/routes';
+import { resultsRouter } from './modules/results/routes';
+import { securityRouter } from './modules/security/routes';
+// --- 6C-1: sessions / exams / timetable / staff+payroll ----------------------
+import { sessionsRouter } from './modules/sessions/routes';
+import { examsRouter } from './modules/exams/routes';
+import { timetableRouter } from './modules/timetable/routes';
+import { staffRouter } from './modules/staff/routes';
 
 export const app = express();
 
@@ -72,6 +85,11 @@ app.use(
   }),
 );
 app.use('/api/v1/classes', classesRouter);
+// --- 6C-1: sessions router mounts BEFORE adminRouter: it supersedes the v1
+// admin session routes (same paths, snake_case views + is_archived +
+// PATCH/DELETE/archive/promote) while keeping the v1 contract the Settings
+// page relies on (GET /sessions, POST /sessions/:id/make-current).
+app.use('/api/v1', sessionsRouter);
 app.use('/api/v1', studentsRouter); // /classes/:id/students, /students/:id
 app.use('/api/v1/parents', parentsRouter);
 app.use('/api/v1/reports', reportsRouter);
@@ -96,6 +114,35 @@ app.use(
 app.use('/api/v1/fees', feesRouter);
 // Jobs: GET /jobs/status (see jobs/MOUNT.md)
 app.use('/api/v1/jobs', jobsStatusRouter);
+// Hardening (6A): /approvals, /recycle-bin, /change-history, /roles/*,
+// /export/all, /account/*, /backups
+app.use('/api/v1', hardeningRouter);
+
+// --- 6B (students/classes/results) ----------------------------------------
+// Results: /results/*, /result-sheets/*, /exams (list/update/delete only;
+// the full exams module belongs to 6C-1). Mounted after studentsRouter so
+// /students/:id/report-card does not collide with /students/:id.
+app.use('/api/v1', resultsRouter);
+// --- 6C-1: exams (/exams, /grading-scales), timetable (/timetable),
+// staff + payroll (/staff, /payroll) --------------------------------------
+app.use('/api/v1', examsRouter);
+app.use('/api/v1', timetableRouter);
+app.use('/api/v1', staffRouter);
+// --- Phase 6D (roles & security) ------------------------------------------
+// Security router: POST /backups/run (manual per-school backup now).
+// GET /backups (log) stays in the hardening router; 2FA / roles / export /
+// deletion-request endpoints are reused from hardening + auth as-is.
+app.use('/api/v1', securityRouter);
+
+// --- 6C-2 (School Features part 2): expenses, announcements, events,
+// certificates + ID cards, notification center ---------------------------
+// Clerk mutations in these routers go through the approval queue (202);
+// see modules/hardening/approvals.ts (6C-2 block) for the appliers.
+app.use('/api/v1/expenses', expensesRouter);
+app.use('/api/v1/announcements', announcementsRouter);
+app.use('/api/v1/events', eventsRouter);
+app.use('/api/v1', certificatesRouter); // /students/:id/certificates, /certificates/:id, /students/:id/issue-id-card
+app.use('/api/v1', notificationsRouter); // GET /notifications/center
 
 app.use(notFoundHandler);
 app.use(errorHandler);

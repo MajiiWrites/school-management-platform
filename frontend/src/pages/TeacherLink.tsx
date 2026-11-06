@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom';
 import { api, ApiClientError } from '../lib/api';
 import type { AttendanceStatus, TeacherLinkData } from '../lib/types';
 import { Badge, Button, Card, EmptyState, Spinner } from '../components/ui';
+import ConfirmDialog from '../components/ConfirmDialog';
 import DeveloperFooter from '../components/DeveloperFooter';
 import { cx } from '../lib/utils';
 
@@ -32,6 +33,7 @@ export default function TeacherLinkPage() {
   const [saved, setSaved] = useState(false);
   const [pendingOffline, setPendingOffline] = useState(false);
   const [online, setOnline] = useState(navigator.onLine);
+  const [confirmingSubmit, setConfirmingSubmit] = useState(false);
 
   const load = useCallback(async () => {
     if (!token) return;
@@ -254,11 +256,28 @@ export default function TeacherLinkPage() {
 
           <Button
             disabled={saving || data.students.length === 0}
-            onClick={submit}
+            onClick={() => setConfirmingSubmit(true)}
             className="mt-5 w-full py-3 text-base"
           >
             {saving ? 'Saving…' : 'Save attendance'}
           </Button>
+          <ConfirmDialog
+            open={confirmingSubmit}
+            title="Submit attendance?"
+            message={
+              counts
+                ? `Are you sure? This will submit attendance for Class ${data.class.name}-${data.class.section} (${data.date}): ${counts.present} present, ${counts.absent} absent, ${counts.late} late, ${counts.leave} on leave. One submission per class per day — it locks afterwards and only the admin can unlock it.`
+                : ''
+            }
+            confirmLabel="Submit attendance"
+            tone="primary"
+            busy={saving}
+            onConfirm={() => {
+              setConfirmingSubmit(false);
+              submit();
+            }}
+            onCancel={() => setConfirmingSubmit(false)}
+          />
           {pendingOffline && (
             <p className="mt-3 rounded-lg bg-amber-100 px-3 py-2 text-center text-sm text-amber-800">
               Saved on this device — will be sent when you are back online.

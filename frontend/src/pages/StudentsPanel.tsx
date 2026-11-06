@@ -1,13 +1,35 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { api, ApiClientError } from '../lib/api';
-import type { Student } from '../lib/types';
-import { normalizePkPhone } from '../lib/utils';
+import type { ClassItem, Student } from '../lib/types';
+import { displayClass, normalizePkPhone } from '../lib/utils';
 import { Badge, Button, EmptyState, Field, inputCls, Modal, useToast } from '../components/ui';
+import ConfirmDialog from '../components/ConfirmDialog';
 
 function errText(e: unknown): string {
   return e instanceof ApiClientError ? e.message : 'Something went wrong.';
+}
+
+/** The API masks phone numbers (+92 3XX XXXX123). A masked value is not a
+ * real number — never send it back as an edit; treat it as "unchanged". */
+function isMaskedPhone(v: string): boolean {
+  return v.includes('X');
+}
+
+interface ImportPreviewItem {
+  row: number;
+  status: 'ok' | 'duplicate' | 'invalid';
+  reason: string | null;
+  data: { name: string; roll_no?: number | null; parent_phone?: string | null; admission_no?: string | null };
+}
+
+interface ImportPreview {
+  total: number;
+  valid: number;
+  duplicates_flagged: number;
+  invalid_rows: Array<{ row: number; reason: string }>;
+  preview: ImportPreviewItem[];
 }
 
 function phoneBadge(s: Student) {
@@ -35,8 +57,24 @@ export default function StudentsPanel({
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<Student | null>(null);
   const [importing, setImporting] = useState(false);
+  const [pendingRemove, setPendingRemove] = useState<Student | null>(null);
+  const [pendingImport, setPendingImport] = useState<File | null>(null);
+  const [preview, setPreview] = useState<{ file: File; data: ImportPreview } | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  // 6B: move-student UI — target class list + pending move.
+  const [classes, setClasses] = useState<ClassItem[]>([]);
+  const [moving, setMoving] = useState<Student | null>(null);
+  const [moveTarget, setMoveTarget] = useState('');
+  const [pendingMove, setPendingMove] = useState<{ student: Student; classId: string } | null>(null);
+  const [moveBusy, setMoveBusy] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const { push, view } = useToast();
+
+  useEffect(() => {
+    api<{ items: ClassItem[] }>('/classes')
+      .then((d) => setClasses(d.items))
+      .catch(() => undefined);
+  }, []);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -52,13 +90,28 @@ export default function StudentsPanel({
   }, [students, search, flagFilter]);
 
   const remove = async (s: Student) => {
-    if (!window.confirm(`Remove ${s.name} from this class?`)) return;
     try {
       await api(`/students/${s.id}`, { method: 'DELETE' });
       setStudents(students.filter((x) => x.id !== s.id));
       push('success', 'Student removed.');
     } catch (e) {
       push('error', errText(e));
+    }
+  };
+
+  // 6B: preview-before-import — validate the file first, show the table,
+  // and only import after the admin confirms the preview.
+  const previewImport = async (file: File) => {
+    setPreviewLoading(true);
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      const data = await api<ImportPreview>(`/classes/${classId}/students/import-preview`, { method: 'POST', body: form });
+      setPreview({ file, data });
+    } catch (e) {
+      push('error', errText(e));
+    } finally {
+      setPreviewLoading(false);
     }
   };
 
@@ -82,6 +135,23 @@ export default function StudentsPanel({
     }
   };
 
+  // 6B: move a student to another section/class (ConfirmDialog below).
+  const moveStudent = async (student: Student, toClassId: string) => {
+    setMoveBusy(true);
+    try {
+      const saved = await api<Student>(`/students/${student.id}/move`, { method: 'POST', body: { class_id: toClassId } });
+      setStudents(students.filter((x) => x.id !== student.id));
+      const target = classes.find((c) => c.id === toClassId);
+      push('success', `${student.name} moved to Class ${target ? displayClass(target) : 'the selected class'}.`);
+      return saved;
+    } catch (e) {
+      push('error', errText(e));
+      return null;
+    } finally {
+      setMoveBusy(false);
+    }
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
@@ -89,8 +159,7 @@ export default function StudentsPanel({
           className={`${inputCls} max-w-xs`}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search name, roll no, parent…"
-        />
+          placeholder="Search name, roll no, parent…" autoComplete="off" />
         <select className={inputCls + ' w-auto'} value={flagFilter} onChange={(e) => setFlagFilter(e.target.value as typeof flagFilter)}>
           <option value="all">All phone statuses</option>
           <option value="missing">Missing number</option>
@@ -105,10 +174,10 @@ export default function StudentsPanel({
           )}
           <Button
             variant="secondary"
-            disabled={importing}
+            disabled={importing || previewLoading}
             onClick={() => fileRef.current?.click()}
           >
-            {importing ? 'Importing…' : 'Import CSV / Excel'}
+            {previewLoading ? 'Checking file…' : importing ? 'Importing…' : 'Import CSV / Excel'}
           </Button>
           <input
             ref={fileRef}
@@ -117,7 +186,7 @@ export default function StudentsPanel({
             className="hidden"
             onChange={(e) => {
               const f = e.target.files?.[0];
-              if (f) importCsv(f);
+              if (f) setPendingImport(f);
               e.target.value = '';
             }}
           />
@@ -136,6 +205,15 @@ export default function StudentsPanel({
         <EmptyState
           title="No students found"
           body={students.length === 0 ? `No students in ${classNameLabel ?? 'this class'} yet — upload a list photo or add them manually.` : 'Try a different search or filter.'}
+          actionLabel={students.length === 0 ? 'Add your first student' : undefined}
+          onAction={
+            students.length === 0
+              ? () => {
+                  setEditing(null);
+                  setShowForm(true);
+                }
+              : undefined
+          }
         />
       ) : (
         <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
@@ -171,7 +249,16 @@ export default function StudentsPanel({
                     >
                       Edit
                     </button>
-                    <button className="font-medium text-red-600 hover:underline" onClick={() => remove(s)}>
+                    <button
+                      className="mr-3 font-medium text-brand-700 hover:underline"
+                      onClick={() => {
+                        setMoving(s);
+                        setMoveTarget('');
+                      }}
+                    >
+                      Move
+                    </button>
+                    <button className="font-medium text-red-600 hover:underline" onClick={() => setPendingRemove(s)}>
                       Remove
                     </button>
                   </td>
@@ -195,6 +282,140 @@ export default function StudentsPanel({
           }}
         />
       )}
+      <ConfirmDialog
+        open={pendingRemove !== null}
+        title="Remove this student?"
+        message={pendingRemove ? `Are you sure? This will remove ${pendingRemove.name} from this class. This cannot be undone.` : ''}
+        confirmLabel="Remove student"
+        tone="danger"
+        onConfirm={() => {
+          const s = pendingRemove;
+          setPendingRemove(null);
+          if (s) remove(s);
+        }}
+        onCancel={() => setPendingRemove(null)}
+      />
+      <ConfirmDialog
+        open={pendingImport !== null}
+        title="Check this file first?"
+        message={
+          pendingImport
+            ? `This will validate "${pendingImport.name}" and show a preview — nothing is imported yet. Only rows marked valid will be imported when you confirm the preview.`
+            : ''
+        }
+        confirmLabel="Check file"
+        tone="primary"
+        busy={previewLoading}
+        onConfirm={() => {
+          const f = pendingImport;
+          setPendingImport(null);
+          if (f) void previewImport(f);
+        }}
+        onCancel={() => setPendingImport(null)}
+      />
+      {preview && (
+        <Modal title={`Import preview — ${preview.file.name}`} onClose={() => setPreview(null)}>
+          <p className="mb-3 text-sm text-slate-600">
+            {preview.data.valid} of {preview.data.total} rows are valid · {preview.data.duplicates_flagged} duplicates ·{' '}
+            {preview.data.invalid_rows.length} invalid. Only valid rows will be imported.
+          </p>
+          <div className="max-h-80 overflow-auto rounded-xl border border-slate-200">
+            <table className="w-full min-w-[520px] text-sm">
+              <thead>
+                <tr className="border-b border-slate-200 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+                  <th className="px-3 py-2">Row</th>
+                  <th className="px-3 py-2">Student</th>
+                  <th className="px-3 py-2">Roll</th>
+                  <th className="px-3 py-2">Status</th>
+                  <th className="px-3 py-2">Note</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {preview.data.preview.map((r) => (
+                  <tr key={r.row} className={r.status === 'ok' ? '' : r.status === 'duplicate' ? 'bg-amber-50' : 'bg-red-50'}>
+                    <td className="px-3 py-2">{r.row}</td>
+                    <td className="px-3 py-2 font-medium">{r.data.name}</td>
+                    <td className="px-3 py-2">{r.data.roll_no ?? '—'}</td>
+                    <td className="px-3 py-2">
+                      {r.status === 'ok' ? <Badge tone="green">Valid</Badge> : r.status === 'duplicate' ? <Badge tone="amber">Duplicate</Badge> : <Badge tone="red">Invalid</Badge>}
+                    </td>
+                    <td className="px-3 py-2 text-xs text-slate-600">{r.reason ?? '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="mt-4 flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => setPreview(null)}>Cancel</Button>
+            <Button
+              disabled={preview.data.valid === 0 || importing}
+              onClick={() => {
+                const f = preview.file;
+                setPreview(null);
+                void importCsv(f);
+              }}
+            >
+              {importing ? 'Importing…' : `Import ${preview.data.valid} valid students`}
+            </Button>
+          </div>
+        </Modal>
+      )}
+      {moving && (
+        <Modal title={`Move ${moving.name}`} onClose={() => setMoving(null)}>
+          <form
+            autoComplete="off"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!moveTarget) return;
+              const s = moving;
+              setMoving(null);
+              setPendingMove({ student: s, classId: moveTarget });
+            }}
+            className="space-y-4"
+          >
+            <Field label="Move to class/section">
+              <select className={inputCls} value={moveTarget} onChange={(e) => setMoveTarget(e.target.value)} required>
+                <option value="">Select a class…</option>
+                {classes
+                  .filter((c) => c.id !== classId)
+                  .map((c) => (
+                    <option key={c.id} value={c.id}>
+                      Class {displayClass(c)} — {c.teacher_name}
+                    </option>
+                  ))}
+              </select>
+            </Field>
+            <p className="text-sm text-slate-500">
+              The student keeps their roll number if it is free in the new class, otherwise the move is blocked and you will see the reason.
+            </p>
+            <div className="flex justify-end gap-2">
+              <Button variant="secondary" onClick={() => setMoving(null)}>Cancel</Button>
+              <Button type="submit" disabled={!moveTarget}>Continue</Button>
+            </div>
+          </form>
+        </Modal>
+      )}
+      <ConfirmDialog
+        open={pendingMove !== null}
+        title="Move this student?"
+        message={
+          pendingMove
+            ? `Are you sure? This will move ${pendingMove.student.name} to Class ${(() => {
+                const t = classes.find((c) => c.id === pendingMove.classId);
+                return t ? displayClass(t) : 'the selected class';
+              })()}. Attendance and fee history move with them.`
+            : ''
+        }
+        confirmLabel="Move student"
+        tone="primary"
+        busy={moveBusy}
+        onConfirm={() => {
+          const m = pendingMove;
+          setPendingMove(null);
+          if (m) void moveStudent(m.student, m.classId);
+        }}
+        onCancel={() => setPendingMove(null)}
+      />
       {view}
     </div>
   );
@@ -215,29 +436,66 @@ function StudentForm({
   const [nameUr, setNameUr] = useState(initial?.name_ur ?? '');
   const [rollNo, setRollNo] = useState(initial?.roll_no ? String(initial.roll_no) : '');
   const [parentName, setParentName] = useState(initial?.parent_name ?? '');
-  const [parentPhone, setParentPhone] = useState(initial?.parent_phone ?? '');
+  const [parentPhone, setParentPhone] = useState(initial?.parent_phone_masked ?? initial?.parent_phone ?? '');
   const [optOut, setOptOut] = useState(initial?.parent_opt_out ?? false);
+  // 6B extended profile fields.
+  const [fatherName, setFatherName] = useState(initial?.father_name ?? '');
+  const [admissionNo, setAdmissionNo] = useState(initial?.admission_no ?? '');
+  const [dateOfBirth, setDateOfBirth] = useState(initial?.date_of_birth ?? '');
+  const [gender, setGender] = useState(initial?.gender ?? '');
+  const [address, setAddress] = useState(initial?.address ?? '');
+  const [admissionDate, setAdmissionDate] = useState(initial?.admission_date ?? '');
+  const [parent2Name, setParent2Name] = useState(initial?.parent2_name ?? '');
+  const [parent2Phone, setParent2Phone] = useState(initial?.parent2_phone_masked ?? '');
+  const [parent2OptOut, setParent2OptOut] = useState(initial?.parent2_opt_out ?? false);
+  const [status, setStatus] = useState(initial?.status ?? 'active');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [confirming, setConfirming] = useState(false);
 
-  const submit = async (e: FormEvent) => {
+  const submit = (e: FormEvent) => {
     e.preventDefault();
     setError('');
     const phone = parentPhone.trim();
-    if (phone && !normalizePkPhone(phone)) {
+    if (phone && !isMaskedPhone(phone) && !normalizePkPhone(phone)) {
       setError('Parent phone looks invalid — use a Pakistani mobile like 03001234567.');
       return;
     }
+    const phone2 = parent2Phone.trim();
+    if (phone2 && !isMaskedPhone(phone2) && !normalizePkPhone(phone2)) {
+      setError('Second parent phone looks invalid — use a Pakistani mobile like 03001234567.');
+      return;
+    }
+    if (gender && !['male', 'female', 'other'].includes(gender)) {
+      setError("Gender must be male, female or other.");
+      return;
+    }
+    setConfirming(true);
+  };
+
+  const doSave = async () => {
+    setConfirming(false);
     setBusy(true);
     try {
-      const body = {
+      const body: Record<string, unknown> = {
         name: name.trim(),
         name_ur: nameUr.trim() || undefined,
         roll_no: rollNo ? Number(rollNo) : undefined,
         parent_name: parentName.trim() || undefined,
-        parent_phone: phone || undefined,
+        // Masked numbers are "unchanged" — never send them back.
+        parent_phone: parentPhone.trim() && !isMaskedPhone(parentPhone.trim()) ? parentPhone.trim() : undefined,
         parent_opt_out: optOut,
+        father_name: fatherName.trim() || undefined,
+        admission_no: admissionNo.trim() || undefined,
+        date_of_birth: dateOfBirth || undefined,
+        gender: gender || undefined,
+        address: address.trim() || undefined,
+        admission_date: admissionDate || undefined,
+        parent2_name: parent2Name.trim() || undefined,
+        parent2_phone: parent2Phone.trim() && !isMaskedPhone(parent2Phone.trim()) ? parent2Phone.trim() : undefined,
+        parent2_opt_out: parent2OptOut,
       };
+      if (initial) body.status = status;
       let saved: Student;
       if (initial) {
         saved = await api<Student>(`/students/${initial.id}`, { method: 'PATCH', body });
@@ -255,35 +513,96 @@ function StudentForm({
   return (
     <Modal title={initial ? `Edit ${initial.name}` : 'Add student'} onClose={onClose}>
       {error && <p className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
-      <form onSubmit={submit} className="space-y-4">
+      <form onSubmit={submit} className="space-y-4" autoComplete="off">
         <div className="grid grid-cols-3 gap-3">
           <div className="col-span-2">
             <Field label="Student name (English)">
-              <input className={inputCls} required value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Ahmed Raza" />
+              <input className={inputCls} required value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Ahmed Raza" autoComplete="off" />
             </Field>
           </div>
           <Field label="Roll no.">
-            <input className={inputCls} type="number" min={1} value={rollNo} onChange={(e) => setRollNo(e.target.value)} placeholder="1" />
+            <input className={inputCls} type="number" min={1} value={rollNo} onChange={(e) => setRollNo(e.target.value)} placeholder="1" autoComplete="off" />
           </Field>
         </div>
         <Field label="Name in Urdu (optional)">
-          <input className={`${inputCls} urdu`} dir="rtl" value={nameUr} onChange={(e) => setNameUr(e.target.value)} placeholder="احمد رضا" />
+          <input className={`${inputCls} urdu`} dir="rtl" value={nameUr} onChange={(e) => setNameUr(e.target.value)} placeholder="احمد رضا" autoComplete="off" />
+        </Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Father's name">
+            <input className={inputCls} value={fatherName} onChange={(e) => setFatherName(e.target.value)} placeholder="e.g. Muhammad Raza" autoComplete="off" />
+          </Field>
+          <Field label="Admission no. (unique per school)" hint="Leave blank if none">
+            <input className={inputCls} value={admissionNo} onChange={(e) => setAdmissionNo(e.target.value)} placeholder="e.g. ADM-001" autoComplete="off" />
+          </Field>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Date of birth">
+            <input className={inputCls} type="date" value={dateOfBirth} onChange={(e) => setDateOfBirth(e.target.value)} autoComplete="off" />
+          </Field>
+          <Field label="Gender">
+            <select className={inputCls} value={gender} onChange={(e) => setGender(e.target.value)}>
+              <option value="">—</option>
+              <option value="male">Male</option>
+              <option value="female">Female</option>
+              <option value="other">Other</option>
+            </select>
+          </Field>
+        </div>
+        <Field label="Home address (optional)">
+          <input className={inputCls} value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Street, town" autoComplete="off" />
+        </Field>
+        <Field label="Admission date">
+          <input className={inputCls} type="date" value={admissionDate} onChange={(e) => setAdmissionDate(e.target.value)} autoComplete="off" />
         </Field>
         <Field label="Parent / guardian name">
-          <input className={inputCls} value={parentName} onChange={(e) => setParentName(e.target.value)} placeholder="e.g. Muhammad Raza" />
+          <input className={inputCls} value={parentName} onChange={(e) => setParentName(e.target.value)} placeholder="e.g. Muhammad Raza" autoComplete="off" />
         </Field>
-        <Field label="Parent phone" hint="Pakistan mobile — 0300…, +92…, or 92…">
-          <input className={inputCls} type="tel" value={parentPhone} onChange={(e) => setParentPhone(e.target.value)} placeholder="03001234567" />
+        <Field label="Parent phone" hint="Pakistan mobile — 0300…, +92…, or 92…. Masked numbers are left unchanged.">
+          <input className={inputCls} type="tel" value={parentPhone} onChange={(e) => setParentPhone(e.target.value)} placeholder="03001234567" autoComplete="off" />
         </Field>
         <label className="flex items-center gap-2 text-sm text-slate-700">
           <input type="checkbox" checked={optOut} onChange={(e) => setOptOut(e.target.checked)} />
           Parent opted out of SMS (never message this number)
         </label>
+        <Field label="Second parent / guardian name (optional)">
+          <input className={inputCls} value={parent2Name} onChange={(e) => setParent2Name(e.target.value)} placeholder="e.g. Fatima Raza" autoComplete="off" />
+        </Field>
+        <Field label="Second parent phone (optional)">
+          <input className={inputCls} type="tel" value={parent2Phone} onChange={(e) => setParent2Phone(e.target.value)} placeholder="03001234567" autoComplete="off" />
+        </Field>
+        <label className="flex items-center gap-2 text-sm text-slate-700">
+          <input type="checkbox" checked={parent2OptOut} onChange={(e) => setParent2OptOut(e.target.checked)} />
+          Second parent opted out of SMS
+        </label>
+        {initial && (
+          <Field label="Status">
+            <select className={inputCls} value={status} onChange={(e) => setStatus(e.target.value as 'active' | 'left' | 'struck_off' | 'graduated')}>
+              <option value="active">Active</option>
+              <option value="left">Left</option>
+              <option value="struck_off">Struck off</option>
+              <option value="graduated">Graduated</option>
+            </select>
+          </Field>
+        )}
         <div className="flex justify-end gap-2">
           <Button variant="secondary" onClick={onClose}>Cancel</Button>
           <Button type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save student'}</Button>
         </div>
       </form>
+      <ConfirmDialog
+        open={confirming}
+        title={initial ? `Update ${initial.name}?` : 'Add this student?'}
+        message={
+          initial
+            ? `Are you sure? This will update ${initial.name}'s record (name: ${name.trim() || '—'}${rollNo ? `, roll no. ${rollNo}` : ''}${status !== initial.status ? `, status: ${status}` : ''}).`
+            : `Are you sure? This will add a new student: ${name.trim() || '—'}${rollNo ? ` (roll no. ${rollNo})` : ''}${parentName.trim() ? `, parent ${parentName.trim()}` : ''}.`
+        }
+        confirmLabel={initial ? 'Update student' : 'Add student'}
+        tone="primary"
+        busy={busy}
+        onConfirm={doSave}
+        onCancel={() => setConfirming(false)}
+      />
     </Modal>
   );
 }

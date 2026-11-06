@@ -89,10 +89,11 @@ export async function mockRequest<T>(path: string, method: string, body?: unknow
   const [rawPath] = path.split('?');
   const seg = rawPath.split('/').filter(Boolean);
 
-  // Auth
+  // Auth — LOCAL MOCK ONLY (VITE_MOCK_API=true, no backend). These are
+  // fake mock credentials, not a live account. Never use real/demo creds here.
   if (rawPath === '/auth/login' && method === 'POST') {
     const b = body as { email: string; password: string };
-    if (b.email === 'demo@school.pk' && b.password === 'Demo1234!') {
+    if (b.email === 'admin@mock.local' && b.password === 'Mock1234!') {
       return { access: 'mock-access', refresh: 'mock-refresh', user: { id: 'u-1', email: b.email, role: 'admin', school_id: 'sch-1', school_name: 'Demo Public School' } } as T;
     }
     throw Object.assign(new Error('Invalid email or password'), { status: 401, code: 'UNAUTHORIZED' });
@@ -101,7 +102,7 @@ export async function mockRequest<T>(path: string, method: string, body?: unknow
     return { access: 'mock-access', refresh: 'mock-refresh', user: { id: 'u-1', email: (body as { email: string }).email, role: 'admin', school_id: 'sch-1', school_name: (body as { school_name: string }).school_name } } as T;
   }
   if (rawPath === '/auth/me') {
-    return { id: 'u-1', email: 'demo@school.pk', role: 'admin', school_id: 'sch-1', school_name: 'Demo Public School' } as T;
+    return { id: 'u-1', email: 'admin@mock.local', role: 'admin', school_id: 'sch-1', school_name: 'Demo Public School' } as T;
   }
   if (rawPath === '/auth/refresh' && method === 'POST') {
     return { access: 'mock-access', refresh: 'mock-refresh' } as T;
@@ -209,13 +210,37 @@ export async function mockRequest<T>(path: string, method: string, body?: unknow
   }
 
   // Messages
-  if (rawPath === '/messages/pending-approval') return PENDING as T;
+  if (rawPath === '/messages/pending-approval') return { groups: PENDING } as T;
   if (rawPath === '/messages/log' && method === 'GET') return page(LOG) as T;
-  if (rawPath === '/messages/templates' && method === 'GET') return TEMPLATES as T;
+  if (rawPath === '/messages/templates' && method === 'GET') return { templates: TEMPLATES } as T;
   if (rawPath === '/messages/approve' && method === 'POST') return { approved: 2, queued: 2 } as T;
   if (seg[0] === 'messages' && seg[1] === 'queue' && seg[3] === 'retry') return { ok: true } as T;
   if (seg[0] === 'messages' && seg[1] === 'queue' && method === 'PATCH') return { ok: true } as T;
   if (seg[0] === 'messages' && seg[1] === 'templates' && method === 'PATCH') return { ok: true } as T;
+  // Section 11 (Custom Messages) — minimal mock so the page renders in mock mode.
+  if (rawPath === '/messages/templates' && method === 'POST') return { template: { id: 'tm-new', type: 'custom', language: 'en', body: '', isActive: true, name: 'New', isCustom: true } } as T;
+  if (seg[0] === 'messages' && seg[1] === 'templates' && seg[3] === 'duplicate') return { template: { id: 'tm-copy', type: 'custom', language: 'en', body: '', isActive: true, name: 'Copy', isCustom: true } } as T;
+  if (seg[0] === 'messages' && seg[1] === 'templates' && method === 'DELETE') return { deleted: seg[2] } as T;
+  if (rawPath === '/messages/drafts' && method === 'GET') return page([]) as T;
+  if (rawPath === '/messages/drafts' && method === 'POST') return { draft: { id: 'd-1', recipientType: 'all_parents', targetClassId: null, targetStudentIds: [], body: '', status: 'draft', scheduledFor: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } } as T;
+  if (seg[0] === 'messages' && seg[1] === 'drafts' && method === 'PATCH') return { draft: { id: seg[2], status: 'draft' } } as T;
+  if (seg[0] === 'messages' && seg[1] === 'drafts' && method === 'DELETE') return { deleted: seg[2] } as T;
+  if (seg[0] === 'messages' && seg[1] === 'drafts' && seg[3] === 'cancel') return { draft: { id: seg[2], status: 'cancelled' } } as T;
+  if (seg[0] === 'messages' && seg[1] === 'drafts' && seg[3] === 'submit-for-approval') return { approval_request_id: 'ap-1', status: 'pending' } as T;
+  if (seg[0] === 'messages' && seg[1] === 'drafts' && seg[3] === 'approve-send') return { queued: 2, skipped: [], skippedOptedOut: 0 } as T;
+  if (seg[0] === 'messages' && seg[1] === 'drafts' && seg[3] === 'reject') return { draft: { id: seg[2], status: 'cancelled' } } as T;
+  if (rawPath === '/messages/preview' && method === 'POST') {
+    return {
+      samples: [{ studentId: 'st-1', studentName: 'Ahmed Raza', parentPhoneMasked: '+92 3XX XXXX101', body: 'Mock preview message.', charCount: 22, smsParts: 1, isUnicode: false }],
+      recipientCount: 1, skippedCount: 0, skipped: [], charCount: 22, smsParts: 1, isUnicode: false, variablesUsed: [],
+    } as T;
+  }
+  if (rawPath === '/messages/recipients' && method === 'GET') {
+    return {
+      recipients: STUDENTS.map((s) => ({ studentId: s.id, studentName: s.name, fatherName: s.parent_name, className: s.class_name?.split('-')[0] ?? '', section: s.class_name?.split('-')[1] ?? '', parentPhoneMasked: s.parent_phone, parentOptOut: false, amountDue: null })),
+      total: STUDENTS.length, optedOutCount: 0,
+    } as T;
+  }
 
   // SMS status / devices / jobs
   if (rawPath === '/sms/status') {
@@ -263,7 +288,7 @@ export async function mockRequest<T>(path: string, method: string, body?: unknow
     ]) as T;
   }
   if (rawPath === '/users' && method === 'GET') {
-    return page([{ id: 'u-1', email: 'demo@school.pk', role: 'admin' }, { id: 'u-2', email: 'clerk@school.pk', role: 'clerk' }]) as T;
+    return page([{ id: 'u-1', email: 'admin@mock.local', role: 'admin' }, { id: 'u-2', email: 'clerk@school.pk', role: 'clerk' }]) as T;
   }
   if (rawPath === '/users/clerks' && method === 'POST') return { ok: true } as T;
   if (rawPath === '/promotions' && method === 'POST') return { ok: true } as T;

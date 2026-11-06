@@ -11,8 +11,11 @@ import { getDb } from '../../lib/db';
 import { ApiError, asyncHandler } from '../../lib/errors';
 import { authenticate } from '../../middleware/auth';
 import { requireAdmin, requireAdminOrClerk } from '../../middleware/rbac';
+import { requirePermission, requireQueueable } from '../../middleware/permissions';
 import { requireSchool, schoolIdOf } from '../../middleware/tenant';
+import { queueIfClerk } from '../hardening/queueGate';
 import { renderReceiptHtml, renderReceiptPdf } from './receipts';
+import { generateVoucher, generateVoucherForStudent, getVoucherByNo, listVouchers, renderVoucherHtml, renderVoucherPdf } from './vouchers';
 import {
   createFeeStructure,
   deleteFeeStructure,
@@ -50,10 +53,9 @@ async function schoolTimezone(schoolId: string): Promise<string> {
   return (school?.timezone as string | undefined) ?? 'Asia/Karachi';
 }
 
-// ---- Fee structures (read: admin+clerk; write: admin only) ----
+// ---- Fee structures (read: any authed role — principal is view-only; write: admin, clerk via queue) ----
 feesRouter.get(
   '/structures',
-  requireAdminOrClerk,
   asyncHandler(async (req, res) => {
     const data = await listFeeStructures(getDb(), schoolIdOf(req));
     res.json({ ok: true, data });
@@ -62,8 +64,11 @@ feesRouter.get(
 
 feesRouter.post(
   '/structures',
-  requireAdmin,
+  requireAdminOrClerk,
+  requireQueueable('fees', 'create'),
   asyncHandler(async (req, res) => {
+    // 6A: clerk structure creates go to the approval queue (202).
+    if (await queueIfClerk(req, res, { actionType: 'create', entity: 'fee_structure', payload: req.body })) return;
     const data = await createFeeStructure(getDb(), schoolIdOf(req), req.body);
     res.status(201).json({ ok: true, data });
   }),
@@ -71,8 +76,10 @@ feesRouter.post(
 
 feesRouter.patch(
   '/structures/:id',
-  requireAdmin,
+  requireAdminOrClerk,
+  requireQueueable('fees', 'update'),
   asyncHandler(async (req, res) => {
+    if (await queueIfClerk(req, res, { actionType: 'update', entity: 'fee_structure', entityId: req.params.id, payload: { id: req.params.id, patch: req.body } })) return;
     const data = await updateFeeStructure(getDb(), schoolIdOf(req), req.params.id, req.body);
     res.json({ ok: true, data });
   }),
@@ -81,6 +88,7 @@ feesRouter.patch(
 feesRouter.delete(
   '/structures/:id',
   requireAdmin,
+  requirePermission('fees', 'delete'),
   asyncHandler(async (req, res) => {
     await deleteFeeStructure(getDb(), schoolIdOf(req), req.params.id);
     res.json({ ok: true, data: { deleted: true } });
@@ -90,7 +98,6 @@ feesRouter.delete(
 // ---- Monthly fee list ----
 feesRouter.get(
   '/',
-  requireAdminOrClerk,
   asyncHandler(async (req, res) => {
     const { page, limit } = parsePageLimit(req);
     const status = queryStr(req, 'status') as FeeStatus | undefined;
@@ -120,13 +127,15 @@ feesRouter.get(
   }),
 );
 
-// ---- Pay a fee (admin + clerk) ----
+// ---- Pay a fee (admin applies directly; clerk goes to the approval queue) ----
 feesRouter.post(
   '/:student_id/pay',
   requireAdminOrClerk,
+  requireQueueable('fees', 'update'),
   asyncHandler(async (req, res) => {
     // req.user is AccessPayload: the actor id is `sub`.
     const actorId = req.user?.sub ?? 'unknown';
+    if (await queueIfClerk(req, res, { actionType: 'update', entity: 'fee_record', payload: { student_id: req.params.student_id, ...(req.body as object) } })) return;
     const receipt = await payFee(getDb(), schoolIdOf(req), req.params.student_id, req.body, actorId);
     res.status(201).json({
       ok: true,
@@ -141,7 +150,6 @@ feesRouter.post(
 // ---- Printable receipt (HTML by default; ?format=pdf for a real PDF) ----
 feesRouter.get(
   '/receipts/:receipt_no',
-  requireAdminOrClerk,
   asyncHandler(async (req, res) => {
     const receipt = await getReceiptByNo(getDb(), schoolIdOf(req), req.params.receipt_no);
     if (queryStr(req, 'format') === 'pdf') {
@@ -162,10 +170,71 @@ feesRouter.get(
   }),
 );
 
+// ---- Fee vouchers / challans (6C-2) ----
+// NOTE: these routes must sit above '/receipts/:receipt_no' only in the
+// sense that they are distinct paths; '/vouchers' never collides with
+// '/:student_id/pay' (POST) or '/receipts/:receipt_no'.
+feesRouter.get(
+  '/vouchers',
+  asyncHandler(async (req, res) => {
+    const { page, limit } = parsePageLimit(req);
+    const data = await listVouchers(getDb(), schoolIdOf(req), {
+      month: queryStr(req, 'month'),
+      status: queryStr(req, 'status'),
+      page,
+      limit,
+    });
+    res.json({ ok: true, data });
+  }),
+);
+
+feesRouter.post(
+  '/vouchers',
+  requireAdminOrClerk,
+  requireQueueable('fees', 'create'),
+  asyncHandler(async (req, res) => {
+    if (await queueIfClerk(req, res, { actionType: 'create', entity: 'fee_voucher', payload: req.body })) return;
+    const data = await generateVoucher(getDb(), schoolIdOf(req), req.body, req.user?.sub ?? 'unknown');
+    res.status(201).json({ ok: true, data });
+  }),
+);
+
+feesRouter.post(
+  '/vouchers/by-student',
+  requireAdminOrClerk,
+  requireQueueable('fees', 'create'),
+  asyncHandler(async (req, res) => {
+    if (await queueIfClerk(req, res, { actionType: 'create', entity: 'fee_voucher', payload: req.body })) return;
+    const body = req.body as { student_id: string; month: string; due_date?: string };
+    const data = await generateVoucherForStudent(getDb(), schoolIdOf(req), body.student_id, body.month, body.due_date, req.user?.sub ?? 'unknown');
+    res.status(201).json({ ok: true, data });
+  }),
+);
+
+feesRouter.get(
+  '/vouchers/:voucher_no',
+  asyncHandler(async (req, res) => {
+    const voucher = await getVoucherByNo(getDb(), schoolIdOf(req), req.params.voucher_no);
+    if (queryStr(req, 'format') === 'pdf') {
+      try {
+        const pdf = await renderVoucherPdf(voucher);
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `inline; filename="${voucher.voucher_no}.pdf"`);
+        res.send(pdf);
+        return;
+      } catch (err) {
+        const code = (err as Error & { code?: string }).code;
+        if (code !== 'PDF_UNAVAILABLE') throw err;
+      }
+    }
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(renderVoucherHtml(voucher));
+  }),
+);
+
 // ---- Monthly fee report (collected vs pending, by class) ----
 feesRouter.get(
   '/report/monthly',
-  requireAdminOrClerk,
   asyncHandler(async (req, res) => {
     const month = queryStr(req, 'month');
     if (!month) throw ApiError.validation('month query param (YYYY-MM) is required');
@@ -178,6 +247,7 @@ feesRouter.get(
 feesRouter.post(
   '/rollover',
   requireAdmin,
+  requirePermission('fees', 'create'),
   asyncHandler(async (req, res) => {
     const month = (req.body?.month as string | undefined) ?? queryStr(req, 'month');
     if (!month) throw ApiError.validation('month (YYYY-MM) is required');

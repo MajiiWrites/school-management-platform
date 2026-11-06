@@ -1,7 +1,7 @@
 import type { NextFunction, Request, Response } from 'express';
 import { ApiError } from '../lib/errors';
 
-export type Role = 'admin' | 'clerk';
+export type Role = 'admin' | 'clerk' | 'principal';
 
 /** Role-based access control. Use after authenticate(). */
 export function requireRole(...roles: Role[]) {

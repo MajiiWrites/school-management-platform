@@ -90,9 +90,10 @@ describe('auth service', () => {
     const verified = await verifyEmail(db as any, signed.dev_token!);
     expect(verified.user.email_verified).toBe(true);
     const logged = await login(db as any, { email: 'a@b.pk', password: 'Secret123' });
-    expect(logged.access).toBeTruthy();
-    expect(logged.refresh).toBeTruthy();
-    expect(logged.user.email).toBe('a@b.pk');
+    // No 2FA on this account, so login completes with JWTs (union narrows here).
+    expect('access' in logged && logged.access).toBeTruthy();
+    expect('refresh' in logged && logged.refresh).toBeTruthy();
+    expect('user' in logged && logged.user.email).toBe('a@b.pk');
   });
 
   it('login rejects a wrong password', async () => {
@@ -111,7 +112,7 @@ describe('auth service', () => {
     const reset = await resetPassword(db as any, known.dev_token!, 'NewSecret1');
     expect(reset.user.email).toBe('a@b.pk');
     const logged = await login(db as any, { email: 'a@b.pk', password: 'NewSecret1' });
-    expect(logged.access).toBeTruthy();
+    expect('access' in logged && logged.access).toBeTruthy();
   });
 
   it('verify-email rejects a bad token', async () => {

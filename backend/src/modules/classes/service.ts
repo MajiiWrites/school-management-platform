@@ -2,6 +2,7 @@ import { config } from '../../config';
 import { ApiError } from '../../lib/errors';
 import { normalizePhone, encryptPhone, decryptPhone, sha256Hex, maskPhone, randomToken, hashToken } from '../../lib/crypto';
 import { writeAudit } from '../../lib/audit';
+import { writeChangeLogs, softDeleteEntity } from '../hardening/helpers';
 import type { Db } from '../../lib/db';
 
 export interface ClassInput {
@@ -29,10 +30,20 @@ export function toPublicClass(c: any, studentCount?: number): Record<string, unk
 }
 
 async function assertUniqueName(db: Db, schoolId: string, name: string, section: string, excludeId?: string): Promise<void> {
-  const existing = await db.class.findFirst({ where: { schoolId: schoolId, name, section } });
+  const existing = await db.class.findFirst({ where: { schoolId: schoolId, name, section, deletedAt: null } });
   if (existing && existing.id !== excludeId) {
     throw ApiError.conflict(`Class ${name}-${section} already exists`);
   }
+}
+
+/** Display-safe view of a class row for change_logs (teacher phone masked). */
+function changeView(c: any): Record<string, unknown> {
+  return {
+    name: c.name,
+    section: c.section,
+    teacher_name: c.teacherName,
+    teacher_phone: c.teacherPhoneEnc ? maskPhone(decryptPhone(c.teacherPhoneEnc)) : null,
+  };
 }
 
 function teacherPhoneFields(phone: string | null | undefined): { enc: string | null; hash: string | null } {
@@ -42,7 +53,7 @@ function teacherPhoneFields(phone: string | null | undefined): { enc: string | n
   return { enc: encryptPhone(normalized), hash: sha256Hex(normalized) };
 }
 
-export async function createClass(db: Db, schoolId: string, input: ClassInput): Promise<any> {
+export async function createClass(db: Db, schoolId: string, input: ClassInput, actorId?: string): Promise<any> {
   await assertUniqueName(db, schoolId, input.name.trim(), input.section.trim());
   const phone = teacherPhoneFields(input.teacher_phone);
   const created = await db.class.create({
@@ -55,26 +66,26 @@ export async function createClass(db: Db, schoolId: string, input: ClassInput): 
       teacherPhoneHash: phone.hash,
     },
   });
-  await writeAudit(db, { schoolId, actorId: null, actorType: 'system', action: 'class.create', entity: 'class', entityId: created.id, details: { name: created.name, section: created.section } });
+  await writeAudit(db, { schoolId, actorId: actorId ?? null, actorType: 'user', action: 'class.create', entity: 'class', entityId: created.id, details: { name: created.name, section: created.section } });
   return created;
 }
 
 export async function listClasses(db: Db, schoolId: string): Promise<Record<string, unknown>[]> {
-  const classes = await db.class.findMany({ where: { schoolId: schoolId }, orderBy: [{ name: 'asc' }, { section: 'asc' }] });
-  const counts = await db.student.groupBy({ by: ['classId'], where: { schoolId: schoolId }, _count: { _all: true } });
+  const classes = await db.class.findMany({ where: { schoolId: schoolId, deletedAt: null }, orderBy: [{ name: 'asc' }, { section: 'asc' }] });
+  const counts = await db.student.groupBy({ by: ['classId'], where: { schoolId: schoolId, deletedAt: null }, _count: { _all: true } });
   const countByClass = new Map<string, number>(counts.map((c: any) => [c.classId, c._count._all]));
   return classes.map((c: any) => toPublicClass(c, countByClass.get(c.id) ?? 0));
 }
 
 export async function getClass(db: Db, schoolId: string, id: string): Promise<any> {
-  const c = await db.class.findFirst({ where: { id, schoolId: schoolId } });
+  const c = await db.class.findFirst({ where: { id, schoolId: schoolId, deletedAt: null } });
   if (!c) throw ApiError.notFound('Class not found');
-  const count = await db.student.count({ where: { classId: id } });
+  const count = await db.student.count({ where: { classId: id, schoolId: schoolId, deletedAt: null } });
   return toPublicClass(c, count);
 }
 
-export async function updateClass(db: Db, schoolId: string, id: string, patch: Partial<ClassInput>): Promise<any> {
-  const existing = await db.class.findFirst({ where: { id, schoolId: schoolId } });
+export async function updateClass(db: Db, schoolId: string, id: string, patch: Partial<ClassInput>, actorId?: string): Promise<any> {
+  const existing = await db.class.findFirst({ where: { id, schoolId: schoolId, deletedAt: null } });
   if (!existing) throw ApiError.notFound('Class not found');
   const name = patch.name !== undefined ? patch.name.trim() : existing.name;
   const section = patch.section !== undefined ? patch.section.trim() : existing.section;
@@ -86,18 +97,29 @@ export async function updateClass(db: Db, schoolId: string, id: string, patch: P
     data.teacherPhoneEnc = phone.enc;
     data.teacherPhoneHash = phone.hash;
   }
+  // Snapshot the before-view BEFORE the update (see students/service.ts).
+  const beforeView = changeView(existing);
   const updated = await db.class.update({ where: { id }, data });
-  await writeAudit(db, { schoolId, actorId: null, actorType: 'system', action: 'class.update', entity: 'class', entityId: id, details: { name, section } });
+  await writeChangeLogs(db, {
+    schoolId,
+    actorId: actorId ?? null,
+    entity: 'class',
+    entityId: id,
+    before: beforeView,
+    after: changeView(updated),
+  });
+  await writeAudit(db, { schoolId, actorId: actorId ?? null, actorType: 'user', action: 'class.update', entity: 'class', entityId: id, details: { name, section } });
   return updated;
 }
 
-export async function deleteClass(db: Db, schoolId: string, id: string): Promise<void> {
-  const existing = await db.class.findFirst({ where: { id, schoolId: schoolId } });
+/** Soft delete (6A): sets deleted_at + recycle-bin snapshot. Blocked while students exist. */
+export async function deleteClass(db: Db, schoolId: string, id: string, actorId?: string): Promise<void> {
+  const existing = await db.class.findFirst({ where: { id, schoolId: schoolId, deletedAt: null } });
   if (!existing) throw ApiError.notFound('Class not found');
-  const students = await db.student.count({ where: { classId: id } });
+  const students = await db.student.count({ where: { classId: id, schoolId: schoolId, deletedAt: null } });
   if (students > 0) throw ApiError.conflict('Cannot delete a class that has students. Move or remove the students first.');
-  await db.class.delete({ where: { id } });
-  await writeAudit(db, { schoolId, actorId: null, actorType: 'system', action: 'class.delete', entity: 'class', entityId: id, details: { name: existing.name, section: existing.section } });
+  await softDeleteEntity(db, { schoolId, entity: 'class', entityId: id, deletedBy: actorId ?? null });
+  await writeAudit(db, { schoolId, actorId: actorId ?? null, actorType: 'user', action: 'class.delete', entity: 'class', entityId: id, details: { name: existing.name, section: existing.section, soft_deleted: true } });
 }
 
 /** Generate a fresh tokenized attendance link. Only the hash is stored; the raw token is returned once. */
@@ -107,7 +129,7 @@ export async function regenerateLink(
   id: string,
   actorId: string,
 ): Promise<{ link: string; token: string; expires_at: Date }> {
-  const existing = await db.class.findFirst({ where: { id, schoolId: schoolId } });
+  const existing = await db.class.findFirst({ where: { id, schoolId: schoolId, deletedAt: null } });
   if (!existing) throw ApiError.notFound('Class not found');
   const token = randomToken(32);
   const expiresAt = new Date(Date.now() + config.attendanceLinkTtlDays * 24 * 60 * 60 * 1000);
@@ -120,17 +142,25 @@ export async function regenerateLink(
 }
 
 export async function revokeLink(db: Db, schoolId: string, id: string, actorId: string): Promise<void> {
-  const existing = await db.class.findFirst({ where: { id, schoolId: schoolId } });
+  const existing = await db.class.findFirst({ where: { id, schoolId: schoolId, deletedAt: null } });
   if (!existing) throw ApiError.notFound('Class not found');
   await db.class.update({ where: { id }, data: { tokenRevoked: true } });
   await writeAudit(db, { schoolId, actorId, actorType: 'user', action: 'class.link_revoke', entity: 'class', entityId: id });
 }
 
-/** Resolve a raw attendance token to its class (public link flow). Returns null when invalid/revoked/expired. */
-export async function resolveLinkToken(db: Db, token: string): Promise<any | null> {
+/**
+ * Resolve a raw attendance token to its class (public link flow). Returns null when invalid/revoked/expired.
+ * The token hash is the bearer credential for the PUBLIC /t/:token flow
+ * (no JWT exists there), so the lookup is by hash alone by design.
+ * `expectedSchoolId` is an optional defence: when a caller DOES have a
+ * school context (e.g. a staff JWT), a token belonging to another school
+ * resolves to null instead of leaking that school's class/students.
+ */
+export async function resolveLinkToken(db: Db, token: string, expectedSchoolId?: string): Promise<any | null> {
   const hash = hashToken(token);
-  const c = await db.class.findFirst({ where: { attendanceTokenHash: hash } });
+  const c = await db.class.findFirst({ where: { attendanceTokenHash: hash, deletedAt: null } });
   if (!c || c.tokenRevoked) return null;
   if (c.tokenExpiresAt && new Date(c.tokenExpiresAt) < new Date()) return null;
+  if (expectedSchoolId && c.schoolId !== expectedSchoolId) return null;
   return c;
 }

@@ -54,6 +54,29 @@ export interface Db {
   ocrUpload: Delegate;
   auditLog: Delegate;
   notification: Delegate;
+  // v2 delegates (contracts/SCHEMA.md §§2–11). Added by the 6A hardening
+  // phase; the generated Prisma client already carries these models.
+  rolePermission: Delegate;
+  approvalRequest: Delegate;
+  deletedRecord: Delegate;
+  changeLog: Delegate;
+  exam: Delegate;
+  gradingScale: Delegate;
+  resultSheet: Delegate;
+  result: Delegate;
+  timetableEntry: Delegate;
+  staff: Delegate;
+  staffClassAssignment: Delegate;
+  salaryRecord: Delegate;
+  expense: Delegate;
+  announcement: Delegate;
+  event: Delegate;
+  certificate: Delegate;
+  examDatesheet: Delegate;
+  feeVoucher: Delegate;
+  accountDeletionRequest: Delegate;
+  schoolBackup: Delegate;
+  messageDraft: Delegate;
   $transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T>;
   $disconnect: () => Promise<void>;
 }
@@ -79,6 +102,27 @@ const MODEL_KEYS: Array<keyof Omit<Db, '$transaction' | '$disconnect'>> = [
   'ocrUpload',
   'auditLog',
   'notification',
+  'rolePermission',
+  'approvalRequest',
+  'deletedRecord',
+  'changeLog',
+  'exam',
+  'gradingScale',
+  'resultSheet',
+  'result',
+  'timetableEntry',
+  'staff',
+  'staffClassAssignment',
+  'salaryRecord',
+  'expense',
+  'announcement',
+  'event',
+  'certificate',
+  'examDatesheet',
+  'feeVoucher',
+  'accountDeletionRequest',
+  'schoolBackup',
+  'messageDraft',
 ];
 
 const PLURAL_FALLBACK: Record<string, string[]> = {
@@ -102,6 +146,27 @@ const PLURAL_FALLBACK: Record<string, string[]> = {
   ocrUpload: ['ocrUploads'],
   auditLog: ['auditLogs'],
   notification: ['notifications'],
+  rolePermission: ['rolePermissions'],
+  approvalRequest: ['approvalRequests'],
+  deletedRecord: ['deletedRecords'],
+  changeLog: ['changeLogs'],
+  exam: ['exams'],
+  gradingScale: ['gradingScales'],
+  resultSheet: ['resultSheets'],
+  result: ['results'],
+  timetableEntry: ['timetableEntries'],
+  staff: ['staff'],
+  staffClassAssignment: ['staffClassAssignments'],
+  salaryRecord: ['salaryRecords'],
+  expense: ['expenses'],
+  announcement: ['announcements'],
+  event: ['events'],
+  certificate: ['certificates'],
+  examDatesheet: ['examDatesheets'],
+  feeVoucher: ['feeVouchers'],
+  accountDeletionRequest: ['accountDeletionRequests'],
+  schoolBackup: ['schoolBackups'],
+  messageDraft: ['messageDrafts'],
 };
 
 function resolveDelegate(client: any, key: string): any {

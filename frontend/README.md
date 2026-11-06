@@ -17,7 +17,7 @@ npm run preview
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `VITE_API_URL` | `http://localhost:3000/api/v1` | Backend API base |
-| `VITE_MOCK_API` | _(off)_ | `true` = run against the built-in demo data in `src/lib/mock.ts` (no backend needed; login `demo@school.pk` / `Demo1234!`) |
+| `VITE_MOCK_API` | _(off)_ | `true` = run against the built-in mock data in `src/lib/mock.ts` (no backend needed; mock login `admin@mock.local` / `Mock1234!`, local-only) |
 
 ## Auth
 

@@ -5,6 +5,7 @@ import { api, ApiClientError } from '../lib/api';
 import type { ClassItem, PageResult, Student } from '../lib/types';
 import { displayClass } from '../lib/utils';
 import { Badge, Button, Card, EmptyState, ErrorBanner, Field, inputCls, Modal, Spinner, useToast } from '../components/ui';
+import ConfirmDialog from '../components/ConfirmDialog';
 import StudentsPanel from './StudentsPanel';
 
 function errText(e: unknown): string {
@@ -17,6 +18,7 @@ export default function ClassesPage() {
   const [error, setError] = useState('');
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<ClassItem | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<ClassItem | null>(null);
   const { push, view } = useToast();
 
   const load = useCallback(() => {
@@ -33,7 +35,6 @@ export default function ClassesPage() {
   useEffect(load, []);
 
   const remove = async (c: ClassItem) => {
-    if (!window.confirm(`Delete class ${displayClass(c)}? This is blocked if students exist.`)) return;
     try {
       await api(`/classes/${c.id}`, { method: 'DELETE' });
       push('success', 'Class deleted.');
@@ -64,14 +65,40 @@ export default function ClassesPage() {
 
       {error && <ErrorBanner message={error} onRetry={load} />}
       {classes.length === 0 && !error && (
-        <EmptyState title="No classes yet" body="Add your first class, then upload its student list." />
+        <EmptyState
+          title="No classes yet"
+          body="Add your first class, then upload its student list."
+          actionLabel="Add your first class"
+          onAction={() => {
+            setEditing(null);
+            setShowForm(true);
+          }}
+        />
       )}
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {classes.map((c) => (
-          <ClassCard key={c.id} c={c} onEdit={() => { setEditing(c); setShowForm(true); }} onDelete={() => remove(c)} onChanged={load} push={push} />
+          <ClassCard key={c.id} c={c} onEdit={() => { setEditing(c); setShowForm(true); }} onDelete={() => setPendingDelete(c)} onChanged={load} push={push} />
         ))}
       </div>
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        title="Delete this class?"
+        message={
+          pendingDelete
+            ? `Are you sure? This will remove Class ${displayClass(pendingDelete)}${pendingDelete.student_count ? ` and its ${pendingDelete.student_count} student record(s)` : ''}. This is blocked if students exist, and cannot be undone.`
+            : ''
+        }
+        confirmLabel="Delete class"
+        tone="danger"
+        onConfirm={() => {
+          const c = pendingDelete;
+          setPendingDelete(null);
+          if (c) remove(c);
+        }}
+        onCancel={() => setPendingDelete(null)}
+      />
 
       {showForm && (
         <ClassForm
@@ -104,9 +131,9 @@ function ClassCard({
 }) {
   const [link, setLink] = useState<string | null>(c.attendance_link ?? null);
   const [busy, setBusy] = useState(false);
+  const [confirmKind, setConfirmKind] = useState<'regen' | 'revoke' | null>(null);
 
   const regen = async () => {
-    if (!window.confirm('Generate a new attendance link? The old link will stop working.')) return;
     setBusy(true);
     try {
       const d = await api<{ link: string }>(`/classes/${c.id}/attendance-link/regenerate`, { method: 'POST' });
@@ -120,7 +147,6 @@ function ClassCard({
   };
 
   const revoke = async () => {
-    if (!window.confirm('Revoke this attendance link? Teachers will no longer be able to open it.')) return;
     setBusy(true);
     try {
       await api(`/classes/${c.id}/attendance-link/revoke`, { method: 'POST' });
@@ -177,16 +203,35 @@ function ClassCard({
               >
                 Share on WhatsApp
               </a>
-              <Button variant="ghost" disabled={busy} onClick={regen}>Regenerate</Button>
-              <Button variant="ghost" disabled={busy} onClick={revoke}>Revoke</Button>
+              <Button variant="ghost" disabled={busy} onClick={() => setConfirmKind('regen')}>Regenerate</Button>
+              <Button variant="ghost" disabled={busy} onClick={() => setConfirmKind('revoke')}>Revoke</Button>
             </div>
           </>
         ) : (
-          <Button variant="secondary" disabled={busy} onClick={regen}>
+          <Button variant="secondary" disabled={busy} onClick={() => setConfirmKind('regen')}>
             Generate attendance link
           </Button>
         )}
       </div>
+      <ConfirmDialog
+        open={confirmKind !== null}
+        title={confirmKind === 'revoke' ? 'Revoke this attendance link?' : 'Generate a new attendance link?'}
+        message={
+          confirmKind === 'revoke'
+            ? `Are you sure? This will revoke the attendance link for Class ${displayClass(c)} — teachers will no longer be able to open it.`
+            : `Are you sure? This will generate a new attendance link for Class ${displayClass(c)} — the old link will stop working.`
+        }
+        confirmLabel={confirmKind === 'revoke' ? 'Revoke link' : 'Generate new link'}
+        tone="danger"
+        busy={busy}
+        onConfirm={() => {
+          const kind = confirmKind;
+          setConfirmKind(null);
+          if (kind === 'revoke') revoke();
+          else if (kind === 'regen') regen();
+        }}
+        onCancel={() => setConfirmKind(null)}
+      />
 
       <div className="mt-4 flex gap-2 border-t border-slate-100 pt-3">
         <Link to={`/classes/${c.id}`} className="flex-1 rounded-lg bg-brand-700 px-3 py-2 text-center text-sm font-medium text-white hover:bg-brand-900">
@@ -214,10 +259,16 @@ function ClassForm({
   const [teacherPhone, setTeacherPhone] = useState(initial?.teacher_phone ?? '');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [confirming, setConfirming] = useState(false);
 
-  const submit = async (e: FormEvent) => {
+  const submit = (e: FormEvent) => {
     e.preventDefault();
     setError('');
+    setConfirming(true);
+  };
+
+  const doSave = async () => {
+    setConfirming(false);
     setBusy(true);
     try {
       const body = { name: name.trim(), section: section.trim(), teacher_name: teacherName.trim(), teacher_phone: teacherPhone.trim() || undefined };
@@ -234,26 +285,40 @@ function ClassForm({
   return (
     <Modal title={initial ? `Edit Class ${displayClass(initial)}` : 'Add class'} onClose={onClose}>
       {error && <ErrorBanner message={error} />}
-      <form onSubmit={submit} className="space-y-4">
+      <form onSubmit={submit} className="space-y-4" autoComplete="off">
         <div className="grid grid-cols-2 gap-3">
           <Field label="Class name">
-            <input className={inputCls} required value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. 5" />
+            <input className={inputCls} required value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. 5" autoComplete="off" />
           </Field>
           <Field label="Section">
-            <input className={inputCls} required value={section} onChange={(e) => setSection(e.target.value)} placeholder="e.g. A" />
+            <input className={inputCls} required value={section} onChange={(e) => setSection(e.target.value)} placeholder="e.g. A" autoComplete="off" />
           </Field>
         </div>
         <Field label="Teacher name">
-          <input className={inputCls} required value={teacherName} onChange={(e) => setTeacherName(e.target.value)} placeholder="e.g. Ms. Shazia Parveen" />
+          <input className={inputCls} required value={teacherName} onChange={(e) => setTeacherName(e.target.value)} placeholder="e.g. Ms. Shazia Parveen" autoComplete="off" />
         </Field>
         <Field label="Teacher phone" hint="Pakistan format, e.g. 03001234567">
-          <input className={inputCls} type="tel" value={teacherPhone} onChange={(e) => setTeacherPhone(e.target.value)} placeholder="03XX XXXXXXX" />
+          <input className={inputCls} type="tel" value={teacherPhone} onChange={(e) => setTeacherPhone(e.target.value)} placeholder="03XX XXXXXXX" autoComplete="off" />
         </Field>
         <div className="flex justify-end gap-2">
           <Button variant="secondary" onClick={onClose}>Cancel</Button>
           <Button type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save class'}</Button>
         </div>
       </form>
+      <ConfirmDialog
+        open={confirming}
+        title={initial ? `Update Class ${displayClass(initial)}?` : 'Add this class?'}
+        message={
+          initial
+            ? `Are you sure? This will update Class ${displayClass(initial)} to Class ${name.trim() || '?'}-${section.trim() || '?'} (teacher: ${teacherName.trim() || '—'}).`
+            : `Are you sure? This will add a new class: Class ${name.trim() || '?'}-${section.trim() || '?'} (teacher: ${teacherName.trim() || '—'}).`
+        }
+        confirmLabel={initial ? 'Update class' : 'Add class'}
+        tone="primary"
+        busy={busy}
+        onConfirm={doSave}
+        onCancel={() => setConfirming(false)}
+      />
     </Modal>
   );
 }

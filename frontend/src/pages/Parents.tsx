@@ -3,6 +3,7 @@ import { api, ApiClientError } from '../lib/api';
 import type { PageResult, Student } from '../lib/types';
 import { normalizePkPhone } from '../lib/utils';
 import { Badge, Button, EmptyState, ErrorBanner, Field, inputCls, Modal, Spinner, Tabs, useToast } from '../components/ui';
+import ConfirmDialog from '../components/ConfirmDialog';
 import type { FormEvent } from 'react';
 
 function errText(e: unknown): string {
@@ -60,7 +61,12 @@ export default function ParentsPage() {
       />
 
       {students.length === 0 ? (
-        <EmptyState title={`No students with a ${flag} phone issue`} body="All parent numbers in this category look fine." />
+        <EmptyState
+          title={`No students with a ${flag} phone issue`}
+          body="All parent numbers in this category look fine."
+          actionLabel="Go to Students"
+          actionHref="/students"
+        />
       ) : (
         <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
           <table className="w-full min-w-[640px] text-sm">
@@ -124,14 +130,20 @@ function ParentFixModal({
   const [optOut, setOptOut] = useState(student.parent_opt_out ?? false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [confirming, setConfirming] = useState(false);
 
-  const submit = async (e: FormEvent) => {
+  const submit = (e: FormEvent) => {
     e.preventDefault();
     setError('');
     if (phone.trim() && !normalizePkPhone(phone.trim())) {
       setError('That number is not a valid Pakistani mobile (e.g. 03001234567).');
       return;
     }
+    setConfirming(true);
+  };
+
+  const doSave = async () => {
+    setConfirming(false);
     setBusy(true);
     try {
       await api(`/students/${student.id}/parent`, {
@@ -149,12 +161,12 @@ function ParentFixModal({
   return (
     <Modal title={`Fix parent number — ${student.name}`} onClose={onClose}>
       {error && <ErrorBanner message={error} />}
-      <form onSubmit={submit} className="space-y-4">
+      <form onSubmit={submit} className="space-y-4" autoComplete="off">
         <Field label="Parent / guardian name">
-          <input className={inputCls} value={parentName} onChange={(e) => setParentName(e.target.value)} />
+          <input className={inputCls} value={parentName} onChange={(e) => setParentName(e.target.value)} autoComplete="off" />
         </Field>
         <Field label="Parent phone" hint="Pakistan mobile — 0300…, +92…, or 92…">
-          <input className={inputCls} type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="03001234567" />
+          <input className={inputCls} type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="03001234567" autoComplete="off" />
         </Field>
         <label className="flex items-center gap-2 text-sm text-slate-700">
           <input type="checkbox" checked={optOut} onChange={(e) => setOptOut(e.target.checked)} />
@@ -165,6 +177,16 @@ function ParentFixModal({
           <Button type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save'}</Button>
         </div>
       </form>
+      <ConfirmDialog
+        open={confirming}
+        title={`Update parent number for ${student.name}?`}
+        message={`Are you sure? This will save the parent number ${phone.trim() || '(none)'} for ${student.name}${optOut ? ' and mark this parent as opted out of SMS (they will never be messaged)' : ''}.`}
+        confirmLabel="Save number"
+        tone="primary"
+        busy={busy}
+        onConfirm={doSave}
+        onCancel={() => setConfirming(false)}
+      />
     </Modal>
   );
 }

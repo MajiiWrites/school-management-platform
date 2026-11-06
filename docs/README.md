@@ -45,12 +45,12 @@ parent SMS alerts, and fee management** — with almost no manual work.
 ```bash
 cp .env.example .env          # fill in real secrets (see the comments inside)
 docker compose up -d --build
-# open http://localhost
-# demo login: demo@school.pk / Demo1234!
+# open http://localhost — sign up a school account in the UI.
+# There is no demo account; demo seeding is off by default.
 ```
 
-The first boot runs migrations and seeds the demo school
-("Demo Public School": 3 classes, 25 students, fees, templates).
+The first boot runs migrations only — the site starts empty. (For local
+dev only, `SEED_ON_BOOT=true` seeds a demo school; never on live.)
 
 ## Quick start (local dev, no Docker)
 
@@ -92,20 +92,22 @@ school-management-platform/
   .env.example
 ```
 
-## Demo data
+## Demo data (local dev only)
 
-Seeded school **Demo Public School** (timezone Asia/Karachi), admin
-`demo@school.pk` / `Demo1234!`, classes 1-A, 5-A, 6-B, 25 students with
-Pakistani parent numbers, fee structures, one submitted attendance day
-and EN + UR message templates. The seed is idempotent — re-running it
-is safe.
+The seed script (`backend/prisma/seed.ts`) creates a demo school
+**Demo Public School** (timezone Asia/Karachi) with classes 1-A, 5-A, 6-B,
+25 students with Pakistani parent numbers, fee structures, one submitted
+attendance day and EN + UR message templates. The seed is idempotent —
+re-running it is safe. **Local dev only — never seed on the live site.**
+The live site must stay empty; there is no demo login on it. The seeded
+admin credentials are documented in `backend/prisma/README.md` (local-only).
 
 ## Security notes (read before going live)
 
 - **Back up `PHONE_ENC_KEY`.** If it is lost, every stored parent phone
   number becomes unreadable forever. Keep a copy off the server.
-- Change the demo admin password (or delete the demo school) before
-  real use; set `SEED_ON_BOOT=false` after the first boot.
+- Demo seeding is off (`SEED_ON_BOOT=false`) and the demo school must
+  never be created on the live site — the live site stays empty.
 - Login does **not** currently require email verification (open product
   decision — see `backend/QA-REPORT.md` §7). Decide before launch.
 - The Android app sends SMS from a real SIM — keep the phone charged,

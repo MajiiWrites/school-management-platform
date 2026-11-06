@@ -12,7 +12,14 @@ import { runTeacherReminders } from '../teacher-reminders';
 import { payFee, rolloverMonth } from '../../modules/fees/service';
 
 function freshDb(): { db: Db; school: ReturnType<typeof demoSchoolRow> } {
-  const fake = new FakeDb();
+  // Fixed fake clock on the same school-local day as the job `now`
+  // instants below (2026-11-06, 17:00 PKT). Production stamps createdAt
+  // and the job `now` from the same wall clock, so same-day dedupe
+  // (notifyOnce / queueRowExistsToday) works there; the fake used to
+  // stamp wall-clock now, which crossed midnight PKT and broke dedupe
+  // whenever the real date moved past the fixed test date. Any instant
+  // on 2026-11-06 PKT works — the tests only compare local dates.
+  const fake = new FakeDb(() => new Date('2026-11-06T12:00:00Z'));
   seedDemo(fake);
   return { db: fake as unknown as Db, school: demoSchoolRow(fake) };
 }

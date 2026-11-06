@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { api } from '../lib/api';
 import type { ClassItem, PageResult, Student } from '../lib/types';
 import { displayClass } from '../lib/utils';
-import { ErrorBanner, Spinner } from '../components/ui';
+import { ErrorBanner, EmptyState, Spinner } from '../components/ui';
 import StudentsPanel from './StudentsPanel';
 
 export default function StudentsPage() {
@@ -44,9 +44,12 @@ export default function StudentsPage() {
       </div>
       {error && <ErrorBanner message={error} />}
       {classes.length === 0 ? (
-        <p className="rounded-xl border border-dashed border-slate-300 bg-white px-4 py-10 text-center text-sm text-slate-500">
-          Add a class first, then add its students.
-        </p>
+        <EmptyState
+          title="No classes yet"
+          body="Add a class first, then add its students."
+          actionLabel="Add your first class"
+          actionHref="/classes"
+        />
       ) : (
         <>
           <div className="flex flex-wrap items-center gap-2">

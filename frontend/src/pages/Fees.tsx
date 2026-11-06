@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
-import { api, ApiClientError } from '../lib/api';
+import { api, apiPrint, ApiClientError } from '../lib/api';
 import type { FeeRow, FeeStructure, PageResult } from '../lib/types';
 import { currentMonth, fmtPKR, monthName } from '../lib/utils';
 import { Badge, Button, Card, EmptyState, ErrorBanner, Field, inputCls, Modal, Spinner, Tabs, useToast } from '../components/ui';
+import Tooltip from '../components/Tooltip'; // P8-TOUR: plain-word tooltips on confusing labels.
+import ConfirmDialog from '../components/ConfirmDialog';
 
 function errText(e: unknown): string {
   return e instanceof ApiClientError ? e.message : 'Something went wrong.';
@@ -25,6 +27,9 @@ export default function FeesPage() {
   const [error, setError] = useState('');
   const [paying, setPaying] = useState<FeeRow | null>(null);
   const [receipt, setReceipt] = useState<ReceiptData | null>(null);
+  // 6C-2: fee vouchers / challans for the month.
+  const [vouchers, setVouchers] = useState<{ voucher_no: string; student_name: string; class_name: string; month: string; amount_due: number; due_date: string; status: string }[]>([]);
+  const [voucherBusy, setVoucherBusy] = useState(false);
   const { push, view } = useToast();
 
   const load = useCallback(() => {
@@ -32,10 +37,12 @@ export default function FeesPage() {
     Promise.all([
       api<PageResult<FeeRow>>(`/fees?month=${month}&limit=200`),
       api<PageResult<FeeStructure>>('/fees/structures'),
+      api<PageResult<{ voucher_no: string; student_name: string; class_name: string; month: string; amount_due: number; due_date: string; status: string }>>(`/fees/vouchers?month=${month}&limit=200`),
     ])
-      .then(([f, s]) => {
+      .then(([f, s, v]) => {
         setFees(f.items);
         setStructures(s.items);
+        setVouchers(v.items);
         setError('');
       })
       .catch(() => setError('Could not load fees.'))
@@ -61,8 +68,7 @@ export default function FeesPage() {
           type="month"
           className={inputCls + ' w-auto'}
           value={month}
-          onChange={(e) => setMonth(e.target.value || currentMonth())}
-        />
+          onChange={(e) => setMonth(e.target.value || currentMonth())} autoComplete="off" />
       </div>
 
       {error && <ErrorBanner message={error} onRetry={load} />}
@@ -91,6 +97,7 @@ export default function FeesPage() {
           { key: 'fees', label: 'Monthly fees' },
           { key: 'structures', label: 'Fee structures' },
           { key: 'report', label: 'Monthly report' },
+          { key: 'vouchers', label: 'Vouchers' },
         ]}
         active={tab}
         onChange={setTab}
@@ -107,7 +114,12 @@ export default function FeesPage() {
             </select>
           </div>
           {filtered.length === 0 ? (
-            <EmptyState title="No fee records for this month" body="Fee records are created automatically at the start of each month from the fee structures." />
+            <EmptyState
+              title="No fee records for this month"
+              body="Fee records are created automatically at the start of each month from the fee structures."
+              actionLabel="View fee structures"
+              onAction={() => setTab('structures')}
+            />
           ) : (
             <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
               <table className="w-full min-w-[680px] text-sm">
@@ -132,6 +144,26 @@ export default function FeesPage() {
                       <td className="px-4 py-2.5">{statusBadge(f.status)}</td>
                       <td className="px-4 py-2.5 font-mono text-xs">{f.receipt_no ?? '—'}</td>
                       <td className="px-4 py-2.5 text-right">
+                        <button
+                          className="mr-3 font-medium text-brand-700 hover:underline disabled:opacity-40"
+                          disabled={voucherBusy || !f.record_id}
+                          title={f.record_id ? 'Generate / print the fee voucher (challan)' : 'No fee record yet — record a payment or run the rollover first'}
+                          onClick={async () => {
+                            setVoucherBusy(true);
+                            try {
+                              const v = await api<{ voucher_no: string }>(`/fees/vouchers/by-student`, { method: 'POST', body: { student_id: f.student_id, month } });
+                              push('success', `Voucher ${v.voucher_no} ready.`);
+                              load();
+                              await apiPrint(`/fees/vouchers/${v.voucher_no}`);
+                            } catch (e) {
+                              push('error', errText(e));
+                            } finally {
+                              setVoucherBusy(false);
+                            }
+                          }}
+                        >
+                          Voucher
+                        </button>
                         {f.status !== 'paid' ? (
                           <Button variant="secondary" onClick={() => setPaying(f)}>Mark paid</Button>
                         ) : (
@@ -165,17 +197,25 @@ export default function FeesPage() {
           <p className="mt-1 text-sm text-slate-500">
             New fee records are created from these structures at the start of each month. Paid records are never re-created.
           </p>
-          <ul className="mt-4 divide-y divide-slate-100">
-            {structures.map((s) => (
-              <li key={s.id} className="flex items-center justify-between py-2 text-sm">
-                <span className="font-medium">Class {s.class_name}</span>
-                <span>
-                  {fmtPKR(s.monthly_amount)} / month · from {s.effective_from}
-                </span>
-              </li>
-            ))}
-            {structures.length === 0 && <li className="py-2 text-sm text-slate-500">No fee structures yet.</li>}
-          </ul>
+          {structures.length === 0 ? (
+            <EmptyState
+              title="No fee structures yet"
+              body="Add a class first, then set its monthly fee here."
+              actionLabel="Add your first class"
+              actionHref="/classes"
+            />
+          ) : (
+            <ul className="mt-4 divide-y divide-slate-100">
+              {structures.map((s) => (
+                <li key={s.id} className="flex items-center justify-between py-2 text-sm">
+                  <span className="font-medium">Class {s.class_name}</span>
+                  <span>
+                    {fmtPKR(s.monthly_amount)} / month · from {s.effective_from}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
         </Card>
       )}
 
@@ -188,7 +228,61 @@ export default function FeesPage() {
             Paid students are excluded from the 1st-of-month fee reminders automatically. A full per-class breakdown is available
             from Reports.
           </p>
+          {/* P8-TOUR: arrears, explained in plain words. */}
+          <p className="mt-2 text-sm text-slate-500">
+            Arrears
+            <Tooltip text="Fee left unpaid from earlier months. It is added to the next month's amount due, so a student who paid only part of last month still owes the rest." />
+            {' '}from earlier months are included in the pending amount above.
+          </p>
         </Card>
+      )}
+
+      {tab === 'vouchers' && (
+        <>
+          {/* P8-TOUR: voucher, explained in plain words. */}
+          <p className="text-sm text-slate-500">
+            A voucher
+            <Tooltip text="A voucher (challan) is a printed bill for one student for one month. It shows how much is due and the last date to pay. Generate one from a student's row in the Monthly fees tab, then print it and hand it to the parent." />
+            {' '}is a printed bill (challan) for one student — generate it from a student&apos;s row in the Monthly fees tab.
+          </p>
+          {vouchers.length === 0 ? (
+            <EmptyState
+              title="No vouchers for this month"
+              body="Generate a voucher (challan) from a student's row in the Monthly fees tab — it shows the amount payable and the due date."
+            />
+          ) : (
+            <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
+              <table className="w-full min-w-[640px] text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+                    <th className="px-4 py-3">Voucher no.</th>
+                    <th className="px-4 py-3">Student</th>
+                    <th className="px-4 py-3">Class</th>
+                    <th className="px-4 py-3">Payable</th>
+                    <th className="px-4 py-3">Due date</th>
+                    <th className="px-4 py-3">Status</th>
+                    <th className="px-4 py-3 text-right">Print</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {vouchers.map((v) => (
+                    <tr key={v.voucher_no} className="hover:bg-slate-50">
+                      <td className="px-4 py-2.5 font-mono text-xs">{v.voucher_no}</td>
+                      <td className="px-4 py-2.5 font-medium">{v.student_name}</td>
+                      <td className="px-4 py-2.5">{v.class_name}</td>
+                      <td className="px-4 py-2.5">{fmtPKR(v.amount_due)}</td>
+                      <td className="px-4 py-2.5">{v.due_date}</td>
+                      <td className="px-4 py-2.5">{statusBadge(v.status as FeeRow['status'])}</td>
+                      <td className="px-4 py-2.5 text-right">
+                        <button className="font-medium text-brand-700 hover:underline" onClick={() => apiPrint(`/fees/vouchers/${v.voucher_no}`).catch((e) => push('error', errText(e)))}>Print</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
       )}
 
       {paying && (
@@ -263,13 +357,16 @@ function PayModal({
   onDone: (receiptNo: string) => void;
 }) {
   const remaining = fee.amount_due - fee.amount_paid - fee.discount;
-  const [amount, setAmount] = useState(String(Math.max(0, remaining)));
-  const [discount, setDiscount] = useState('0');
+  // Blank by design (frontend hardening): no pre-filled amount — the
+  // remaining balance is shown as a hint, never entered for the user.
+  const [amount, setAmount] = useState('');
+  const [discount, setDiscount] = useState('');
   const [method, setMethod] = useState('Cash');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [confirming, setConfirming] = useState(false);
 
-  const submit = async (e: FormEvent) => {
+  const submit = (e: FormEvent) => {
     e.preventDefault();
     setError('');
     const paid = Number(amount);
@@ -277,7 +374,13 @@ function PayModal({
       setError('Enter an amount greater than 0.');
       return;
     }
+    setConfirming(true);
+  };
+
+  const doPay = async () => {
+    const paid = Number(amount);
     setBusy(true);
+    setConfirming(false);
     try {
       const res = await api<{ receipt_no: string }>(`/fees/${fee.student_id}/pay`, {
         method: 'POST',
@@ -298,12 +401,17 @@ function PayModal({
         Class {fee.class_name} · {monthName(month)} · Due {fmtPKR(fee.amount_due)} · Already paid {fmtPKR(fee.amount_paid)} ·{' '}
         <strong>Remaining {fmtPKR(Math.max(0, remaining))}</strong>
       </p>
-      <form onSubmit={submit} className="space-y-4">
-        <Field label="Amount paid (PKR)" hint="Partial payments are allowed — the status updates automatically.">
-          <input className={inputCls} type="number" min={1} required value={amount} onChange={(e) => setAmount(e.target.value)} />
+      <form onSubmit={submit} className="space-y-4" autoComplete="off">
+        <Field label="Amount paid (PKR)" hint={`Partial payments are allowed — the status updates automatically. Remaining: ${fmtPKR(Math.max(0, remaining))}.`}>
+          <input className={inputCls} type="number" min={1} required value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="Enter amount received" autoComplete="off" />
         </Field>
         <Field label="Discount (PKR)">
-          <input className={inputCls} type="number" min={0} value={discount} onChange={(e) => setDiscount(e.target.value)} />
+          <input className={inputCls} type="number" min={0} value={discount} onChange={(e) => setDiscount(e.target.value)} placeholder="0 if no discount" autoComplete="off" />
+          {/* P8-TOUR: sibling discount, explained in plain words. */}
+          <span className="mt-1 flex items-center text-xs text-slate-500">
+            Giving a sibling discount?
+            <Tooltip text="A sibling discount is a reduction for families with two or more children in the school. Enter that reduction here — it is taken off the amount due." />
+          </span>
         </Field>
         <Field label="Payment method">
           <select className={inputCls} value={method} onChange={(e) => setMethod(e.target.value)}>
@@ -318,6 +426,16 @@ function PayModal({
           <Button type="submit" disabled={busy}>{busy ? 'Recording…' : 'Record payment'}</Button>
         </div>
       </form>
+      <ConfirmDialog
+        open={confirming}
+        title="Record this payment?"
+        message={`Are you sure? This will record a payment of PKR ${Number(amount) || 0} for ${fee.student_name} (Class ${fee.class_name}, ${monthName(month)})${Number(discount) ? ` with a discount of PKR ${Number(discount)}` : ''}, via ${method}. This cannot be undone from here.`}
+        confirmLabel="Confirm payment"
+        tone="primary"
+        busy={busy}
+        onConfirm={doPay}
+        onCancel={() => setConfirming(false)}
+      />
     </Modal>
   );
 }

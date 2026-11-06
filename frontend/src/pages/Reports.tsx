@@ -17,7 +17,10 @@ interface AttendanceRow {
 }
 
 export default function ReportsPage() {
-  const [tab, setTab] = useState<'daily' | 'weekly' | 'monthly' | 'fees'>('daily');
+  type ReportTab = 'daily' | 'weekly' | 'monthly' | 'fees' | 'defaulters' | 'strength' | 'income-expense' | 'messages';
+  const [tab, setTab] = useState<ReportTab>('daily');
+  // 6C-2: generic JSON for the new report tabs (rendered as a simple table).
+  const [generic, setGeneric] = useState<{ title: string; columns: { key: string; label: string }[]; rows: Record<string, unknown>[] } | null>(null);
   const [classes, setClasses] = useState<ClassItem[]>([]);
   const [classId, setClassId] = useState('');
   const [date, setDate] = useState(todayISO());
@@ -37,6 +40,78 @@ export default function ReportsPage() {
   const load = useCallback(() => {
     setLoading(true);
     setError('');
+    setGeneric(null);
+    // 6C-2 tabs: defaulters, class strength, income-vs-expense, message history.
+    if (tab === 'defaulters' || tab === 'strength' || tab === 'income-expense' || tab === 'messages') {
+      const paths: Record<string, string> = {
+        defaulters: `/reports/fees/defaulters?month=${month}`,
+        strength: '/reports/classes/strength',
+        'income-expense': `/reports/income-expense?month=${month}`,
+        messages: '/reports/messages/history?limit=200',
+      };
+      api<Record<string, unknown>>(paths[tab])
+        .then((d) => {
+          if (tab === 'defaulters') {
+            setGeneric({
+              title: `Fee defaulters — ${month}`,
+              columns: [
+                { key: 'student_name', label: 'Student' },
+                { key: 'display_name', label: 'Class' },
+                { key: 'amount_due', label: 'Due' },
+                { key: 'amount_paid', label: 'Paid' },
+                { key: 'balance', label: 'Balance' },
+                { key: 'status', label: 'Status' },
+              ],
+              rows: (d.by_student as Record<string, unknown>[]) ?? [],
+            });
+          } else if (tab === 'strength') {
+            setGeneric({
+              title: 'Class strength',
+              columns: [
+                { key: 'display_name', label: 'Class' },
+                { key: 'active', label: 'Active' },
+                { key: 'left', label: 'Left' },
+                { key: 'struck_off', label: 'Struck off' },
+                { key: 'graduated', label: 'Graduated' },
+                { key: 'total', label: 'Total' },
+              ],
+              rows: (d.by_class as Record<string, unknown>[]) ?? [],
+            });
+          } else if (tab === 'income-expense') {
+            setGeneric({
+              title: `Income vs expense — ${month}`,
+              columns: [
+                { key: 'category', label: 'Category' },
+                { key: 'total', label: 'Total (PKR)' },
+                { key: 'count', label: 'Entries' },
+              ],
+              rows: [
+                { category: 'Fees collected (income)', total: d.income, count: '' },
+                { category: 'Expenses', total: d.expense, count: '' },
+                { category: 'Balance', total: d.balance, count: '' },
+                ...((d.by_category as Record<string, unknown>[]) ?? []),
+              ],
+            });
+          } else {
+            setGeneric({
+              title: 'Message history',
+              columns: [
+                { key: 'type', label: 'Type' },
+                { key: 'student_name', label: 'Student' },
+                { key: 'status', label: 'Status' },
+                { key: 'created_at', label: 'Created' },
+                { key: 'body', label: 'Message' },
+              ],
+              rows: (d.items as Record<string, unknown>[]) ?? [],
+            });
+          }
+          setRows([]);
+          setFeeReport(null);
+        })
+        .catch(() => setError('Could not load the report.'))
+        .finally(() => setLoading(false));
+      return;
+    }
     if (tab === 'fees') {
       api<{ collected: number; pending: number; by_class: { class: string; collected: number; pending: number }[] }>(`/reports/fees/monthly?month=${month}`)
         .then((d) => {
@@ -71,7 +146,7 @@ export default function ReportsPage() {
 
   useEffect(load, [load]);
 
-  const exportReport = async (format: 'pdf' | 'xlsx') => {
+  const exportReport = async (format: 'pdf' | 'xlsx' | 'csv') => {
     try {
       const qs = new URLSearchParams({ format });
       if (classId) qs.set('class_id', classId);
@@ -79,8 +154,12 @@ export default function ReportsPage() {
       if (tab === 'daily') path = `/reports/attendance/daily?date=${date}&${qs}`;
       else if (tab === 'weekly') path = `/reports/attendance/weekly?week_start=${date}&${qs}`;
       else if (tab === 'monthly') path = `/reports/attendance/monthly?month=${month}&${qs}`;
-      else path = `/reports/fees/monthly?month=${month}&${qs}`;
-      await apiDownload(path, `report-${tab}-${date}.${format === 'pdf' ? 'pdf' : 'xlsx'}`);
+      else if (tab === 'fees') path = `/reports/fees/monthly?month=${month}&${qs}`;
+      else if (tab === 'defaulters') path = `/reports/fees/defaulters?month=${month}&${qs}`;
+      else if (tab === 'strength') path = `/reports/classes/strength?${qs}`;
+      else if (tab === 'income-expense') path = `/reports/income-expense?month=${month}&${qs}`;
+      else path = `/reports/messages/history?${qs}`;
+      await apiDownload(path, `report-${tab}-${date}.${format}`);
     } catch (e) {
       push('error', errText(e));
     }
@@ -100,25 +179,30 @@ export default function ReportsPage() {
           { key: 'weekly', label: 'Weekly' },
           { key: 'monthly', label: 'Monthly' },
           { key: 'fees', label: 'Fees' },
+          // 6C-2 tabs
+          { key: 'defaulters', label: 'Defaulters' },
+          { key: 'strength', label: 'Class strength' },
+          { key: 'income-expense', label: 'Income vs expense' },
+          { key: 'messages', label: 'Message history' },
         ]}
         active={tab}
         onChange={(k) => setTab(k as typeof tab)}
       />
 
       <Card className="flex flex-wrap items-end gap-3 p-4">
-        {tab !== 'fees' && tab !== 'monthly' && (
+        {tab !== 'fees' && tab !== 'monthly' && tab !== 'defaulters' && tab !== 'strength' && tab !== 'income-expense' && tab !== 'messages' && (
           <label className="text-sm font-medium text-slate-700">
             {tab === 'weekly' ? 'Week starting' : 'Date'}{' '}
-            <input className={inputCls + ' w-auto'} type="date" value={date} onChange={(e) => setDate(e.target.value || todayISO())} />
+            <input className={inputCls + ' w-auto'} type="date" value={date} onChange={(e) => setDate(e.target.value || todayISO())} autoComplete="off" />
           </label>
         )}
-        {(tab === 'monthly' || tab === 'fees') && (
+        {(tab === 'monthly' || tab === 'fees' || tab === 'defaulters' || tab === 'income-expense') && (
           <label className="text-sm font-medium text-slate-700">
             Month{' '}
-            <input className={inputCls + ' w-auto'} type="month" value={month} onChange={(e) => setMonth(e.target.value || todayISO().slice(0, 7))} />
+            <input className={inputCls + ' w-auto'} type="month" value={month} onChange={(e) => setMonth(e.target.value || todayISO().slice(0, 7))} autoComplete="off" />
           </label>
         )}
-        {tab !== 'fees' && (
+        {tab !== 'fees' && tab !== 'defaulters' && tab !== 'strength' && tab !== 'income-expense' && tab !== 'messages' && (
           <label className="text-sm font-medium text-slate-700">
             Class{' '}
             <select className={inputCls + ' w-auto'} value={classId} onChange={(e) => setClassId(e.target.value)}>
@@ -134,11 +218,41 @@ export default function ReportsPage() {
         <div className="ml-auto flex gap-2">
           <Button variant="secondary" onClick={() => exportReport('pdf')}>Export PDF</Button>
           <Button variant="secondary" onClick={() => exportReport('xlsx')}>Export Excel</Button>
+          <Button variant="secondary" onClick={() => exportReport('csv')}>Export CSV</Button>
         </div>
       </Card>
 
       {loading ? (
         <Spinner label="Loading report…" />
+      ) : generic ? (
+        generic.rows.length === 0 ? (
+          <EmptyState title="No data for this report" body="There is nothing to show for the selected period yet." />
+        ) : (
+          <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
+            <table className="w-full min-w-[560px] text-sm">
+              <thead>
+                <tr className="border-b border-slate-200 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+                  {generic.columns.map((c) => (
+                    <th key={c.key} className="px-4 py-3">{c.label}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {generic.rows.map((r, i) => (
+                  <tr key={i} className="hover:bg-slate-50">
+                    {generic.columns.map((c) => (
+                      <td key={c.key} className="px-4 py-2.5">
+                        {typeof r[c.key] === 'number' && (c.label.includes('PKR') || ['Due', 'Paid', 'Balance', 'Total'].includes(c.label))
+                          ? fmtPKR(r[c.key] as number)
+                          : String(r[c.key] ?? '—')}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )
       ) : tab === 'fees' ? (
         feeReport ? (
           <Card className="p-5">
@@ -164,10 +278,20 @@ export default function ReportsPage() {
             </table>
           </Card>
         ) : (
-          <EmptyState title="No fee data for this month" />
+          <EmptyState
+            title="No fee data for this month"
+            body="Fee records are created from fee structures at the start of each month."
+            actionLabel="Set up fees"
+            actionHref="/fees"
+          />
         )
       ) : rows.length === 0 ? (
-        <EmptyState title="No attendance data" body="Pick a different date, class, or period." />
+        <EmptyState
+          title="No attendance data"
+          body={classes.length === 0 ? 'No classes exist yet — add your first class to start recording attendance.' : 'Pick a different date, class, or period.'}
+          actionLabel={classes.length === 0 ? 'Add your first class' : undefined}
+          actionHref={classes.length === 0 ? '/classes' : undefined}
+        />
       ) : (
         <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
           <table className="w-full min-w-[560px] text-sm">

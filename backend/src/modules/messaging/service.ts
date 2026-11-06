@@ -63,6 +63,10 @@ export interface StudentDraftInput {
   /** Encrypted parent phone (as stored). Null = missing. */
   parentPhoneEnc: string | null;
   parentOptOut: boolean;
+  /** Section 11: extra render context (optional — v1 callers may omit). */
+  fatherName?: string | null;
+  /** Class section, e.g. 'A' (renders {section}; {class} stays the name). */
+  section?: string | null;
 }
 
 export interface AttendanceRecordInput {
@@ -185,7 +189,7 @@ export async function buildAbsentDrafts(
     }
 
     const dedupeKey = dedupeKeyAbsent(student.id, input.date);
-    const existing = await store.findQueueByDedupeKey(dedupeKey);
+    const existing = await store.findQueueByDedupeKey(dedupeKey, input.school.id);
     if (existing) {
       skipped.push({ studentId: student.id, studentName: student.name, reason: 'already_queued' });
       continue;
@@ -193,7 +197,9 @@ export async function buildAbsentDrafts(
 
     const body = renderTemplate(template, {
       student_name: student.name,
+      father_name: student.fatherName ?? undefined,
       class: input.className,
+      section: student.section ?? undefined,
       date: input.date,
       school_name: input.school.name,
     });
@@ -265,13 +271,15 @@ export async function buildFeeReminderDrafts(
       continue;
     }
     const dedupeKey = dedupeKeyFee(student.id, input.month);
-    if (await store.findQueueByDedupeKey(dedupeKey)) {
+    if (await store.findQueueByDedupeKey(dedupeKey, input.school.id)) {
       skipped.push({ studentId: student.id, studentName: student.name, reason: 'already_queued' });
       continue;
     }
     const body = renderTemplate(template, {
       student_name: student.name,
+      father_name: student.fatherName ?? undefined,
       class: item.className,
+      section: student.section ?? undefined,
       month: input.month,
       amount: String(item.amountDue),
       school_name: input.school.name,
@@ -324,7 +332,7 @@ export async function buildTeacherReminderDraft(
   if (!e164 || !isValidPK(e164)) return { created: false, reason: 'invalid_phone' };
 
   const dedupeKey = dedupeKeyTeacher(input.classId, input.date);
-  if (await store.findQueueByDedupeKey(dedupeKey)) {
+  if (await store.findQueueByDedupeKey(dedupeKey, input.school.id)) {
     return { created: false, reason: 'already_queued' };
   }
   const template = resolveTemplate(
@@ -484,7 +492,7 @@ export async function approveMessages(
     const date = rowDate(row);
     const schoolDay = await isSchoolDay(store, input.schoolId, date);
     if (!schoolDay) {
-      await store.updateQueue(row.id, { status: 'cancelled', error: 'not_a_school_day' });
+      await store.updateQueue(row.id, { status: 'cancelled', error: 'not_a_school_day' }, input.schoolId);
       await store.createAuditLog({
         schoolId: input.schoolId,
         actorId: input.approvedBy,
@@ -503,7 +511,7 @@ export async function approveMessages(
       approvedBy: input.approvedBy,
       approvedAt,
       scheduledFor,
-    });
+    }, input.schoolId);
     approved += 1;
   }
 
@@ -528,7 +536,7 @@ export async function editQueueBody(
   input: { schoolId: string; queueId: string; body: string; editedBy: string },
 ): Promise<QueueRow> {
   const { store } = deps;
-  const row = await store.getQueueById(input.queueId);
+  const row = await store.getQueueById(input.queueId, input.schoolId);
   if (!row || row.schoolId !== input.schoolId) {
     throw Object.assign(new Error('Message not found'), { code: 'NOT_FOUND' });
   }
@@ -540,7 +548,7 @@ export async function editQueueBody(
   if (!input.body || !input.body.trim()) {
     throw Object.assign(new Error('Body must not be empty'), { code: 'VALIDATION' });
   }
-  const updated = await store.updateQueue(row.id, { body: input.body.trim() });
+  const updated = await store.updateQueue(row.id, { body: input.body.trim() }, input.schoolId);
   await store.createAuditLog({
     schoolId: input.schoolId,
     actorId: input.editedBy,
@@ -560,7 +568,7 @@ export async function retryFailed(
 ): Promise<QueueRow> {
   const { store } = deps;
   const now = deps.now ?? (() => new Date());
-  const row = await store.getQueueById(input.queueId);
+  const row = await store.getQueueById(input.queueId, input.schoolId);
   if (!row || row.schoolId !== input.schoolId) {
     throw Object.assign(new Error('Message not found'), { code: 'NOT_FOUND' });
   }
@@ -573,7 +581,7 @@ export async function retryFailed(
     status: 'queued',
     error: null,
     scheduledFor: now(),
-  });
+  }, input.schoolId);
   await store.createAuditLog({
     schoolId: input.schoolId,
     actorId: input.retriedBy,
@@ -619,7 +627,7 @@ export async function getDeviceQueue(
     if (!to) {
       // Number became undecryptable/invalid after approval — fail it loudly
       // instead of handing a bad number to the device.
-      await store.updateQueue(row.id, { status: 'failed', error: 'invalid_phone_at_send' });
+      await store.updateQueue(row.id, { status: 'failed', error: 'invalid_phone_at_send' }, input.schoolId);
       continue;
     }
     out.push({ queueId: row.id, to, body: row.body, type: row.type });
@@ -644,7 +652,7 @@ export async function reportDelivery(
   if (!device || device.schoolId !== input.schoolId) {
     throw Object.assign(new Error('Unknown device'), { code: 'NOT_FOUND' });
   }
-  const row = await store.getQueueById(input.queueId);
+  const row = await store.getQueueById(input.queueId, input.schoolId);
   if (!row || row.schoolId !== input.schoolId) {
     throw Object.assign(new Error('Message not found'), { code: 'NOT_FOUND' });
   }
@@ -655,7 +663,7 @@ export async function reportDelivery(
     attempts: row.attempts + 1,
     sentAt: input.status === 'sent' ? now() : row.sentAt,
     error: input.status === 'failed' ? input.error ?? 'send_failed' : null,
-  });
+  }, input.schoolId);
   await store.createDelivery({
     queueId: row.id,
     provider: 'sim',

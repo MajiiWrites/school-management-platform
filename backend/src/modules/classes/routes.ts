@@ -5,7 +5,9 @@ import { parseBody, uuidSchema } from '../../lib/validate';
 import { asyncHandler } from '../../lib/errors';
 import { authenticate } from '../../middleware/auth';
 import { requireSchool, schoolIdOf } from '../../middleware/tenant';
-import { requireAdmin } from '../../middleware/rbac';
+import { requireAdmin, requireAdminOrClerk } from '../../middleware/rbac';
+import { requirePermission, requireQueueable } from '../../middleware/permissions';
+import { queueIfClerk } from '../hardening/queueGate';
 import * as service from './service';
 
 export const classesRouter = Router();
@@ -21,10 +23,13 @@ const classPatchSchema = classSchema.partial();
 
 classesRouter.post(
   '/',
-  requireAdmin,
+  requireAdminOrClerk,
+  requireQueueable('classes', 'create'),
   asyncHandler(async (req, res) => {
     const body = parseBody(classSchema, req.body);
-    const created = await service.createClass(getDb(), schoolIdOf(req), body);
+    // 6A: clerk creates go to the approval queue (202); admin applies directly.
+    if (await queueIfClerk(req, res, { actionType: 'create', entity: 'class', payload: body })) return;
+    const created = await service.createClass(getDb(), schoolIdOf(req), body, req.user!.sub);
     res.status(201).json({ ok: true, data: service.toPublicClass(created, 0) });
   }),
 );
@@ -48,28 +53,33 @@ classesRouter.get(
 
 classesRouter.patch(
   '/:id',
-  requireAdmin,
+  requireAdminOrClerk,
+  requireQueueable('classes', 'update'),
   asyncHandler(async (req, res) => {
     const id = parseBody(z.object({ id: uuidSchema }), req.params).id;
     const patch = parseBody(classPatchSchema, req.body);
-    const updated = await service.updateClass(getDb(), schoolIdOf(req), id, patch);
+    if (await queueIfClerk(req, res, { actionType: 'update', entity: 'class', entityId: id, payload: { id, patch } })) return;
+    const updated = await service.updateClass(getDb(), schoolIdOf(req), id, patch, req.user!.sub);
     res.json({ ok: true, data: service.toPublicClass(updated) });
   }),
 );
 
 classesRouter.delete(
   '/:id',
-  requireAdmin,
+  requireAdminOrClerk,
+  requireQueueable('classes', 'delete'),
   asyncHandler(async (req, res) => {
     const id = parseBody(z.object({ id: uuidSchema }), req.params).id;
-    await service.deleteClass(getDb(), schoolIdOf(req), id);
-    res.json({ ok: true, data: { message: 'Class deleted' } });
+    if (await queueIfClerk(req, res, { actionType: 'delete', entity: 'class', entityId: id, payload: { id } })) return;
+    await service.deleteClass(getDb(), schoolIdOf(req), id, req.user!.sub);
+    res.json({ ok: true, data: { message: 'Class deleted (moved to recycle bin — restorable for 30 days)' } });
   }),
 );
 
 classesRouter.post(
   '/:id/attendance-link/regenerate',
   requireAdmin,
+  requirePermission('classes', 'update'),
   asyncHandler(async (req, res) => {
     const id = parseBody(z.object({ id: uuidSchema }), req.params).id;
     const result = await service.regenerateLink(getDb(), schoolIdOf(req), id, req.user!.sub);
@@ -80,6 +90,7 @@ classesRouter.post(
 classesRouter.post(
   '/:id/attendance-link/revoke',
   requireAdmin,
+  requirePermission('classes', 'update'),
   asyncHandler(async (req, res) => {
     const id = parseBody(z.object({ id: uuidSchema }), req.params).id;
     await service.revokeLink(getDb(), schoolIdOf(req), id, req.user!.sub);

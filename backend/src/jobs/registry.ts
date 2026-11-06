@@ -16,9 +16,13 @@ import * as cron from 'node-cron';
 import { runFeeFollowup, runMonthlyFeeReminders } from './fee-reminders';
 import { runDailyPendingAttendance } from './pending-attendance';
 import { runTeacherReminders } from './teacher-reminders';
+// --- Section 11 (Custom Messages): scheduled-draft pickup job -----------
+import { runScheduledMessages } from './scheduled-messages';
+// --- 6D: nightly per-school backup ---------------------------------------
+import { runSchoolBackup } from './backup';
 import type { SchoolRow, SchoolSettings } from './common';
 
-export type JobName = 'monthly_fee_reminder' | 'fee_followup' | 'daily_pending_attendance' | 'teacher_reminders';
+export type JobName = 'monthly_fee_reminder' | 'fee_followup' | 'daily_pending_attendance' | 'teacher_reminders' | 'scheduled_messages' | 'school_backup';
 
 export interface JobDefinition {
   name: JobName;
@@ -50,6 +54,20 @@ export const JOB_DEFINITIONS: JobDefinition[] = [
     description:
       'At settings.teacher_reminder_time (default 15:00 local): queue a teacher-reminder SMS for each class that has not submitted attendance.',
     schedule: '*/5 * * * *',
+  },
+  // --- Section 11 (Custom Messages) --------------------------------------
+  {
+    name: 'scheduled_messages',
+    description:
+      'Every 5 minutes: send due scheduled custom-message drafts that were approved first; unapproved scheduled drafts stay scheduled and never send.',
+    schedule: '*/5 * * * *',
+  },
+  // --- 6D: nightly per-school backup --------------------------------------
+  {
+    name: 'school_backup',
+    description:
+      'Nightly (02:00 UTC): per-school full data backup to backend/backups/<slug>/<YYYY-MM-DD>.json (same shape as POST /export/all, phones decrypted) + a school_backups row. Local disk is ephemeral on the Render free tier — the durable copy is the admin manual export.',
+    schedule: '0 2 * * *',
   },
 ];
 
@@ -109,6 +127,10 @@ const JOB_FNS: Record<JobName, JobFn> = {
   fee_followup: runFeeFollowup,
   daily_pending_attendance: runDailyPendingAttendance,
   teacher_reminders: runTeacherReminders,
+  // --- Section 11 (Custom Messages) --------------------------------------
+  scheduled_messages: runScheduledMessages,
+  // --- 6D: nightly per-school backup --------------------------------------
+  school_backup: (db, school, now) => runSchoolBackup(db, school, { now }),
 };
 
 /** Run one job once for one school (used by the cron ticks and run-manual.ts). */
@@ -176,8 +198,13 @@ export function registerJobs(db: Db): RegisteredJobs {
   };
 }
 
-/** Status snapshot for GET /jobs/status (Backend Agent mounts the endpoint). */
-export function getJobsStatus(db: Db): Promise<{
+/** Status snapshot for GET /jobs/status (Backend Agent mounts the endpoint).
+ * ISOLATION FIX: the old version returned EVERY school's job history to any
+ * authenticated caller (cross-tenant disclosure of school ids/slugs and run
+ * state). Callers MUST pass the requesting schoolId; only that school's
+ * entry is returned. Server-side callers with no user context may omit it
+ * (cron/status tooling), but the HTTP route always passes it. */
+export function getJobsStatus(db: Db, schoolId?: string): Promise<{
   jobs: Array<{
     name: JobName;
     description: string;
@@ -185,7 +212,9 @@ export function getJobsStatus(db: Db): Promise<{
     schools: Array<{ school_id: string; school_slug: string; last_run_at: string | null; last_status: JobRunRecord['lastStatus']; last_summary: string; last_error: string | null; runs: number }>;
   }>;
 }> {
-  return loadSchools(db).then((schools) => ({
+  return loadSchools(db).then((allSchools) => {
+    const schools = schoolId ? allSchools.filter((s) => s.id === schoolId) : allSchools;
+    return {
     jobs: JOB_DEFINITIONS.map((def) => ({
       name: def.name,
       description: def.description,
@@ -203,7 +232,8 @@ export function getJobsStatus(db: Db): Promise<{
         };
       }),
     })),
-  }));
+    };
+  });
 }
 
 /** Run a single job by name (used by run-manual.ts and tests). */

@@ -14,6 +14,13 @@ export const MOCK_MODE = import.meta.env.VITE_MOCK_API === 'true';
 const ACCESS_KEY = 'smp_access';
 const REFRESH_KEY = 'smp_refresh';
 
+/** 6D: set in sessionStorage when the server rejects a refresh with
+ * SESSION_EXPIRED (idle timeout) so the login page can explain the logout.
+ * Also dispatched as a window event (SESSION_EXPIRED_EVENT) so AuthProvider
+ * can sign the user out wherever they are. */
+export const SESSION_EXPIRED_KEY = 'smp_session_expired';
+export const SESSION_EXPIRED_EVENT = 'smp:session-expired';
+
 export function getAccessToken(): string | null {
   return localStorage.getItem(ACCESS_KEY);
 }
@@ -58,7 +65,21 @@ async function refreshAccess(): Promise<boolean> {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ refresh }),
     });
-    if (!res.ok) return false;
+    if (!res.ok) {
+      // 6D: the server rejected the refresh because the session sat idle
+      // past settings.session_timeout_minutes — sign out with a friendly
+      // message instead of a bare 401.
+      try {
+        const json = (await res.json()) as { ok: boolean; error?: { code?: string } };
+        if (json.error?.code === 'SESSION_EXPIRED') {
+          sessionStorage.setItem(SESSION_EXPIRED_KEY, '1');
+          window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
+        }
+      } catch {
+        /* ignore parse errors */
+      }
+      return false;
+    }
     const json = (await res.json()) as { ok: boolean; data?: { access: string; refresh?: string } };
     if (!json.ok || !json.data) return false;
     setTokens(json.data.access, json.data.refresh ?? refresh);
@@ -125,4 +146,27 @@ export async function apiDownload(path: string, filename: string): Promise<void>
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
+}
+
+/**
+ * Open an authenticated printable HTML page (receipt / voucher /
+ * certificate / ID card) in a new tab. A plain <a href> would 401 because
+ * the backend needs the JWT — this fetches the HTML with the token and
+ * writes it into the new window, where the page's own Print button works.
+ */
+export async function apiPrint(path: string): Promise<void> {
+  if (MOCK_MODE) {
+    alert('Printing is disabled in mock mode — start the backend to print.');
+    return;
+  }
+  const token = getAccessToken();
+  const res = await fetch(`${API_BASE}${path}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) throw new ApiClientError(res.status, 'PRINT', 'Could not load the printable page');
+  const html = await res.text();
+  const win = window.open('', '_blank');
+  if (!win) throw new ApiClientError(0, 'PRINT', 'The browser blocked the pop-up — allow pop-ups and try again');
+  win.document.write(html);
+  win.document.close();
 }

@@ -3,10 +3,12 @@
 #   cp .env.example .env        # then fill in real secrets (see below)
 #   docker compose up -d --build
 #   # open http://localhost  (or your domain, see docs/DEPLOYMENT.md)
-#   # demo login: demo@school.pk / Demo1234!   (seeded when SEED_ON_BOOT=true)
+#   # Sign up a school account in the UI — there is no demo account.
+#   # Demo seeding is OFF by default (SEED_ON_BOOT=false); the local seed
+#   # script (backend/prisma/seed.ts) is for local dev only, never on live.
 #
-# First boot: the api container runs `prisma migrate deploy`, seeds the demo
-# school if SEED_ON_BOOT=true, then starts. Postgres data persists in the
+# First boot: the api container runs `prisma migrate deploy`, then starts.
+# Seeding runs ONLY if SEED_ON_BOOT=true is set explicitly.
 # `pgdata` volume; uploaded OCR images persist in the `uploads` volume.
 
 services:
@@ -41,7 +43,7 @@ services:
       SMS_DEVICE_SECRET: ${SMS_DEVICE_SECRET:?set SMS_DEVICE_SECRET in .env}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost}
       UPLOAD_DIR: /app/uploads
-      SEED_ON_BOOT: ${SEED_ON_BOOT:-true}
+      SEED_ON_BOOT: ${SEED_ON_BOOT:-false}
       OCR_PROVIDER: ${OCR_PROVIDER:-tesseract}
       OCR_LANGS: ${OCR_LANGS:-eng+urd}
       SMTP_HOST: ${SMTP_HOST:-}

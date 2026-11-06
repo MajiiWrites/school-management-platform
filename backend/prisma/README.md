@@ -24,7 +24,9 @@ npx prisma migrate dev          # applies migrations, needs a live Postgres 16
 DATABASE_URL="postgresql://..." npx tsx prisma/seed.ts
 ```
 
-Seed is idempotent (upserts) — safe to re-run. Demo login after seeding:
+Seed is idempotent (upserts) — safe to re-run. **LOCAL DEV ONLY — never seed
+on the live site; the live site must stay empty.** Demo login after seeding
+(a local database only):
 `demo@school.pk` / `Demo1234!` — school "Demo Public School" (Asia/Karachi),
 classes 1-A, 5-A, 6-B, 25 students, fee structures 1500/2000/2500 PKR,
 one submitted attendance day (5-A, 2026-11-05: 7 present, 2 absent),

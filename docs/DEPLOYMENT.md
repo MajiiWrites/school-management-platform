@@ -35,7 +35,7 @@ Set in `.env` (all required — compose refuses to start without the
 | `JWT_SECRET`, `JWT_REFRESH_SECRET`, `SMS_DEVICE_SECRET` | Long random hex strings, each different |
 | `PHONE_ENC_KEY` | `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"` — **back it up off-server now** (see §6) |
 | `FRONTEND_URL` | `https://yourschool.pk` (your real domain) |
-| `SEED_ON_BOOT` | `true` for the first boot (demo school), then set `false` |
+| `SEED_ON_BOOT` | `false` — demo seeding is off; never enable on the live site (local dev only) |
 | `SMTP_*` | Your mail provider (optional; verification/reset links are logged if unset) |
 | `SMS_GATEWAY_*` | Only if you use the gateway fallback instead of the SIM app |
 
@@ -45,8 +45,8 @@ Then:
 docker compose up -d --build
 docker compose logs -f api     # wait for "listening on :4000", then Ctrl-C
 curl http://localhost:4000/health
-# First boot: log in as demo@school.pk / Demo1234!, change the password,
-# then set SEED_ON_BOOT=false in .env (demo data stays until you delete it).
+# First boot: sign up a school account in the UI. There is no demo
+# account — demo seeding is off (SEED_ON_BOOT=false) and must stay off.
 ```
 
 ## 3. Domain + HTTPS (Caddy — automatic certificates)

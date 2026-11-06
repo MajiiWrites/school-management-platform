@@ -11,10 +11,11 @@
     "multer": "^1.4.5-lts.1",
     "node-cron": "^3.0.3",
     "nodemailer": "^6.9.16",
+    "otplib": "^13.6.0",
     "pdfkit": "^0.16.0",
     "zod": "^3.23.8"
   },
-  "description": "School Management Platform API \u2014 attendance, parent SMS alerts, fee management",
+  "description": "School Management Platform API — attendance, parent SMS alerts, fee management",
   "devDependencies": {
     "@types/bcrypt": "^5.0.2",
     "@types/cors": "^2.8.17",

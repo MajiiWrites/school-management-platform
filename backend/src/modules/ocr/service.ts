@@ -31,7 +31,8 @@ export interface OcrDb {
   listStudents(schoolId: string, classId: string): Promise<ExistingStudent[]>;
   createUpload(data: { school_id: string; class_id: string; file_path: string }): Promise<{ id: string }>;
   getUpload(schoolId: string, uploadId: string): Promise<UploadRecord | null>;
-  updateUpload(uploadId: string, data: { status?: UploadRecord['status']; raw_text?: string }): Promise<void>;
+  /** Scoped update: only touches the upload when it belongs to `schoolId` (else throws 404). */
+  updateUpload(schoolId: string, uploadId: string, data: { status?: UploadRecord['status']; raw_text?: string }): Promise<void>;
   createStudents(
     schoolId: string,
     classId: string,
@@ -94,7 +95,7 @@ export class OcrService {
       const ocr = await this.ocr(filePath);
       const existing = await this.db.listStudents(schoolId, classId);
       const rows = parseStudentList(ocr.raw_text, existing);
-      await this.db.updateUpload(upload.id, { status: 'review', raw_text: ocr.raw_text });
+      await this.db.updateUpload(schoolId, upload.id, { status: 'review', raw_text: ocr.raw_text });
       await this.db.createAuditLog({
         school_id: schoolId,
         actor_id: actorId,
@@ -106,7 +107,7 @@ export class OcrService {
       });
       return { upload_id: upload.id, raw_text: ocr.raw_text, rows, engine: ocr.engine, warnings: ocr.warnings };
     } catch (err) {
-      await this.db.updateUpload(upload.id, { status: 'failed' }).catch(() => undefined);
+      await this.db.updateUpload(schoolId, upload.id, { status: 'failed' }).catch(() => undefined);
       throw err;
     }
   }
@@ -212,7 +213,7 @@ export class OcrService {
       const res = await this.db.createStudents(schoolId, classId, toCreate);
       saved = res.created;
     }
-    await this.db.updateUpload(uploadId, { status: 'saved' });
+    await this.db.updateUpload(schoolId, uploadId, { status: 'saved' });
     await this.db.createAuditLog({
       school_id: schoolId,
       actor_id: actorId,

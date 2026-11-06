@@ -18,7 +18,23 @@
  */
 
 import express, { type NextFunction, type Request, type Response } from 'express';
-import { deriveDeviceKey } from './phone';
+import { decryptPhone, deriveDeviceKey, maskPhone, normalizePK } from './phone';
+import { getDb } from '../../lib/db';
+import { requireAdminOrClerk } from '../../middleware/rbac';
+import { requireQueueable } from '../../middleware/permissions';
+import { queueIfClerk } from '../hardening/queueGate';
+import { snapshotOf, writeChangeLogs } from '../hardening/helpers';
+import {
+  createApprovalRequest,
+  rejectApprovalRequest,
+} from '../hardening/approvals';
+import {
+  approveDraftForSending,
+  previewMessage,
+  validateDraftInput,
+  type CustomMessagesDeps,
+} from './custom-messages';
+import type { DraftRow } from './store';
 import {
   approveMessages,
   editQueueBody,
@@ -93,6 +109,12 @@ export function createMessagingRouter(deps: MessagingRouterDeps): express.Router
     crypto: deps.crypto,
     now: deps.now,
   };
+  // Section 11: the custom-messages service shares the same store/crypto.
+  const customDeps: CustomMessagesDeps = {
+    store,
+    crypto: deps.crypto,
+    now: deps.now,
+  };
   const router = express.Router();
 
   /** Device auth: X-Device-Key must match the school-scoped derived key. */
@@ -129,11 +151,36 @@ export function createMessagingRouter(deps: MessagingRouterDeps): express.Router
       const pending = await store.listPendingApproval(schoolId);
       const studentIds = [...new Set(pending.map((r) => r.studentId).filter(Boolean))] as string[];
       const students = studentIds.length
-        ? await store.getStudentsByIds(studentIds)
+        ? await store.getStudentsByIds(studentIds, schoolId)
         : [];
       const studentNames = new Map(students.map((s) => [s.id, s.name]));
-      const groups = await getPendingApproval(serviceDeps, { schoolId, studentNames });
-      ok(res, { groups });
+      // Class display names (e.g. "5-A") for the group headers.
+      const db = getDb();
+      const classRows: any[] = await (db as any).class.findMany({
+        where: { schoolId },
+        select: { id: true, name: true, section: true },
+      });
+      const classNames = new Map(
+        classRows.map((c) => [c.id, `${c.name}-${c.section}`]),
+      );
+      const groups = await getPendingApproval(serviceDeps, { schoolId, studentNames, classNames });
+      // Serialize to the contract (snake_case) shape the frontend uses.
+      ok(res, {
+        groups: groups.map((g) => ({
+          group_id: g.groupId,
+          class: classNames.get(g.classId ?? '') ?? '—',
+          class_id: g.classId,
+          date: g.date,
+          absent_count: g.count,
+          messages: g.messages.map((m) => ({
+            id: m.queueId,
+            student: m.studentName,
+            parent_phone_masked: m.parentPhoneMasked,
+            body: m.body,
+            dedupe_key: m.dedupeKey,
+          })),
+        })),
+      });
     }),
   );
 
@@ -191,6 +238,7 @@ export function createMessagingRouter(deps: MessagingRouterDeps): express.Router
       const statusQ = req.query.status;
       const typeQ = req.query.type;
       const dateQ = req.query.date;
+      const classQ = req.query.class_id;
       const { items, total } = await store.listQueue(schoolId, {
         status:
           typeof statusQ === 'string'
@@ -198,13 +246,64 @@ export function createMessagingRouter(deps: MessagingRouterDeps): express.Router
             : undefined,
         type:
           typeof typeQ === 'string'
-            ? (typeQ as 'absent' | 'fee_reminder' | 'teacher_reminder')
+            ? (typeQ as 'absent' | 'fee_reminder' | 'teacher_reminder' | 'result' | 'announcement' | 'custom')
             : undefined,
         date: typeof dateQ === 'string' ? dateQ : undefined,
+        classId: typeof classQ === 'string' ? classQ : undefined,
         page,
         limit,
       });
-      ok(res, { items, total, page, pages: Math.ceil(total / limit) });
+      // Section 11: attach the latest delivery attempt per row (from
+      // message_deliveries) so history shows the real send outcome.
+      const deliveries = await store.listDeliveriesForQueueIds(
+        items.map((i) => i.id),
+        schoolId,
+      );
+      const deliveryByQueue = new Map(deliveries.map((d) => [d.queueId, d]));
+      // Serialize to the contract (snake_case) shape the frontend uses:
+      // student names + masked parent numbers + delivery detail.
+      const studentIds = [...new Set(items.map((i) => i.studentId).filter(Boolean))] as string[];
+      const students = studentIds.length
+        ? await store.getStudentsByIds(studentIds, schoolId)
+        : [];
+      const studentNames = new Map(students.map((s) => [s.id, s.name]));
+      const serialized = items.map((i) => {
+        let masked = '+92 3XX XXXX???';
+        try {
+          const e164 = normalizePK(decryptPhone(i.parentPhoneEnc));
+          if (e164) masked = maskPhone(e164) ?? masked;
+        } catch {
+          // undecryptable — keep the placeholder so the row still lists
+        }
+        const delivery = deliveryByQueue.get(i.id);
+        return {
+          id: i.id,
+          type: i.type,
+          student_id: i.studentId,
+          student_name: i.studentId ? studentNames.get(i.studentId) ?? null : null,
+          class_id: i.classId,
+          parent_phone_masked: masked,
+          body: i.body,
+          status: i.status,
+          created_at: i.createdAt.toISOString(),
+          sent_at: i.sentAt ? i.sentAt.toISOString() : null,
+          error: i.error,
+          dedupe_key: i.dedupeKey,
+          delivery: delivery
+            ? {
+                status: delivery.status,
+                delivered_at: delivery.deliveredAt ? delivery.deliveredAt.toISOString() : null,
+                error: delivery.error,
+              }
+            : null,
+        };
+      });
+      ok(res, {
+        items: serialized,
+        total,
+        page,
+        pages: Math.ceil(total / limit),
+      });
     }),
   );
 
@@ -237,20 +336,89 @@ export function createMessagingRouter(deps: MessagingRouterDeps): express.Router
   router.patch(
     '/messages/templates/:id',
     deps.requireAuth,
-    deps.requireAdmin,
+    requireAdminOrClerk,
+    requireQueueable('messages', 'update'),
     wrap(async (req, res) => {
       const schoolId = requireSchool(req);
-      const template = await store.getTemplateById(param(req, 'id'));
+      const template = await store.getTemplateById(param(req, 'id'), schoolId);
       if (!template || template.schoolId !== schoolId) {
         throw Object.assign(new Error('Template not found'), { code: 'NOT_FOUND' });
       }
       const body = (req.body as { body?: unknown }).body;
-      if (typeof body !== 'string' || !body.trim()) {
-        throw Object.assign(new Error('Template body must not be empty'), {
-          code: 'VALIDATION',
-        });
+      const name = (req.body as { name?: unknown }).name;
+      const type = (req.body as { type?: unknown }).type;
+      const language = (req.body as { language?: unknown }).language;
+      const patch: {
+        body?: string;
+        name?: string | null;
+        type?: 'absent' | 'fee_reminder' | 'teacher_reminder' | 'result' | 'announcement' | 'custom';
+        language?: 'en' | 'ur';
+      } = {};
+      if (typeof body === 'string') {
+        if (!body.trim()) {
+          throw Object.assign(new Error('Template body must not be empty'), {
+            code: 'VALIDATION',
+          });
+        }
+        patch.body = body.trim();
       }
-      const updated = await store.updateTemplate(param(req, 'id'), { body: body.trim() });
+      if (name !== undefined) {
+        if (typeof name !== 'string' || !name.trim()) {
+          throw Object.assign(new Error('Template name must not be empty'), {
+            code: 'VALIDATION',
+          });
+        }
+        patch.name = name.trim();
+      }
+      if (type !== undefined) {
+        if (
+          typeof type !== 'string' ||
+          !['absent', 'fee_reminder', 'teacher_reminder', 'result', 'announcement', 'custom'].includes(type)
+        ) {
+          throw Object.assign(new Error('Invalid template type'), { code: 'VALIDATION' });
+        }
+        patch.type = type as 'absent' | 'fee_reminder' | 'teacher_reminder' | 'result' | 'announcement' | 'custom';
+      }
+      if (language !== undefined) {
+        if (typeof language !== 'string' || !['en', 'ur'].includes(language)) {
+          throw Object.assign(new Error('Invalid template language'), { code: 'VALIDATION' });
+        }
+        patch.language = language as 'en' | 'ur';
+      }
+      if (Object.keys(patch).length === 0) {
+        throw Object.assign(new Error('Nothing to update'), { code: 'VALIDATION' });
+      }
+      // 6A: clerk template edits go to the approval queue (202); admin applies directly.
+      if (
+        await queueIfClerk(req, res, {
+          actionType: 'update',
+          entity: 'message_template',
+          entityId: template.id,
+          payload: { id: template.id, patch },
+        })
+      ) {
+        return;
+      }
+      const before = {
+        body: template.body,
+        name: template.name ?? null,
+        type: template.type,
+        language: template.language,
+      };
+      const updated = await store.updateTemplate(param(req, 'id'), patch, schoolId);
+      await writeChangeLogs(getDb(), {
+        schoolId,
+        actorId: req.user?.sub ?? null,
+        entity: 'message_template',
+        entityId: updated.id,
+        before,
+        after: {
+          body: updated.body,
+          name: updated.name ?? null,
+          type: updated.type,
+          language: updated.language,
+        },
+      });
       await store.createAuditLog({
         schoolId,
         actorId: req.user?.sub ?? null,
@@ -261,6 +429,664 @@ export function createMessagingRouter(deps: MessagingRouterDeps): express.Router
         details: { type: updated.type, language: updated.language },
       });
       ok(res, { template: updated });
+    }),
+  );
+
+  /* ------------------------------------------------------------------ */
+  /* Section 11 — Custom Messages (contracts/SCHEMA.md §11)             */
+  /* Templates: full CRUD (nothing locked, incl. seeded defaults).       */
+  /* Drafts: composer → draft → approval → message_queue (no second      */
+  /* sending path). Clerk drafts go through the approval queue.          */
+  /* ------------------------------------------------------------------ */
+
+  const TEMPLATE_TYPE_LIST = [
+    'absent',
+    'fee_reminder',
+    'teacher_reminder',
+    'result',
+    'announcement',
+    'custom',
+  ] as const;
+
+  /** Load a draft or 404 (school-scoped). */
+  async function loadDraft(req: AuthedRequest, id: string): Promise<DraftRow> {
+    const schoolId = requireSchool(req);
+    const draft = await store.getDraftById(id, schoolId);
+    if (!draft) throw Object.assign(new Error('Draft not found'), { code: 'NOT_FOUND' });
+    return draft;
+  }
+
+  /** Admins may touch any draft; clerks only their own. */
+  function assertDraftWritable(req: AuthedRequest, draft: DraftRow): void {
+    if (req.user?.role === 'admin') return;
+    if (req.user?.role === 'clerk' && draft.createdBy === req.user.sub) return;
+    throw Object.assign(new Error('You can only change your own drafts'), { code: 'FORBIDDEN' });
+  }
+
+  function parseScheduledFor(value: unknown): Date | null {
+    if (value === undefined || value === null || value === '') return null;
+    const d = new Date(String(value));
+    if (Number.isNaN(d.getTime())) {
+      throw Object.assign(new Error('scheduled_for must be a valid date-time'), { code: 'VALIDATION' });
+    }
+    return d;
+  }
+
+  router.post(
+    '/messages/templates',
+    deps.requireAuth,
+    deps.requireAdmin,
+    wrap(async (req, res) => {
+      const schoolId = requireSchool(req);
+      const { name, type, language, body } = req.body as {
+        name?: unknown;
+        type?: unknown;
+        language?: unknown;
+        body?: unknown;
+      };
+      if (typeof name !== 'string' || !name.trim()) {
+        throw Object.assign(new Error('Template name is required'), { code: 'VALIDATION' });
+      }
+      if (typeof type !== 'string' || !(TEMPLATE_TYPE_LIST as readonly string[]).includes(type)) {
+        throw Object.assign(new Error('Invalid template type'), { code: 'VALIDATION' });
+      }
+      if (typeof language !== 'string' || !['en', 'ur'].includes(language)) {
+        throw Object.assign(new Error('Invalid template language'), { code: 'VALIDATION' });
+      }
+      if (typeof body !== 'string' || !body.trim()) {
+        throw Object.assign(new Error('Template body must not be empty'), { code: 'VALIDATION' });
+      }
+      const created = await store.createTemplate({
+        schoolId,
+        name: name.trim(),
+        type: type as (typeof TEMPLATE_TYPE_LIST)[number],
+        language: language as 'en' | 'ur',
+        body: body.trim(),
+        isCustom: true,
+      });
+      await writeChangeLogs(getDb(), {
+        schoolId,
+        actorId: req.user?.sub ?? null,
+        entity: 'message_template',
+        entityId: created.id,
+        before: {},
+        after: { name: created.name, type: created.type, language: created.language, body: created.body },
+      });
+      await store.createAuditLog({
+        schoolId,
+        actorId: req.user?.sub ?? null,
+        actorType: 'user',
+        action: 'template.create',
+        entity: 'message_templates',
+        entityId: created.id,
+        details: { name: created.name, type: created.type, language: created.language },
+      });
+      ok(res, { template: created }, 201);
+    }),
+  );
+
+  router.post(
+    '/messages/templates/:id/duplicate',
+    deps.requireAuth,
+    deps.requireAdmin,
+    wrap(async (req, res) => {
+      const schoolId = requireSchool(req);
+      const source = await store.getTemplateById(param(req, 'id'), schoolId);
+      if (!source || source.schoolId !== schoolId) {
+        throw Object.assign(new Error('Template not found'), { code: 'NOT_FOUND' });
+      }
+      // Duplicates are always type 'custom': the (school, type, language)
+      // slot of the source is already taken. If a custom template of this
+      // language already exists the store throws CONFLICT (409).
+      const copyName = `Copy of ${source.name ?? source.type}`;
+      const created = await store.createTemplate({
+        schoolId,
+        name: copyName,
+        type: 'custom',
+        language: source.language,
+        body: source.body,
+        isCustom: true,
+      });
+      await store.createAuditLog({
+        schoolId,
+        actorId: req.user?.sub ?? null,
+        actorType: 'user',
+        action: 'template.duplicate',
+        entity: 'message_templates',
+        entityId: created.id,
+        details: { source_template_id: source.id, name: created.name },
+      });
+      ok(res, { template: created }, 201);
+    }),
+  );
+
+  router.delete(
+    '/messages/templates/:id',
+    deps.requireAuth,
+    deps.requireAdmin,
+    wrap(async (req, res) => {
+      const schoolId = requireSchool(req);
+      const template = await store.getTemplateById(param(req, 'id'), schoolId);
+      if (!template || template.schoolId !== schoolId) {
+        throw Object.assign(new Error('Template not found'), { code: 'NOT_FOUND' });
+      }
+      // Recycle-bin record: message_templates has no deleted_at column, so
+      // the delete is a hard delete + a deleted_records snapshot (the row
+      // can be re-created from the snapshot). Nothing is locked — seeded
+      // defaults delete exactly like custom templates.
+      const db = getDb();
+      await (db as any).deletedRecord.create({
+        data: {
+          schoolId,
+          entity: 'message_template',
+          entityId: template.id,
+          snapshot: snapshotOf(template as unknown as Record<string, unknown>),
+          deletedBy: req.user?.sub ?? null,
+          deletedAt: new Date(),
+          restoreBy: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+        },
+      });
+      await writeChangeLogs(db, {
+        schoolId,
+        actorId: req.user?.sub ?? null,
+        entity: 'message_template',
+        entityId: template.id,
+        before: { name: template.name, type: template.type, language: template.language, body: template.body },
+        after: {},
+      });
+      await store.deleteTemplate(template.id, schoolId);
+      await store.createAuditLog({
+        schoolId,
+        actorId: req.user?.sub ?? null,
+        actorType: 'user',
+        action: 'template.delete',
+        entity: 'message_templates',
+        entityId: template.id,
+        details: { name: template.name, type: template.type, language: template.language },
+      });
+      ok(res, { deleted: template.id });
+    }),
+  );
+
+  /* ------------------------- live preview ---------------------------- */
+
+  router.post(
+    '/messages/preview',
+    deps.requireAuth,
+    wrap(async (req, res) => {
+      const schoolId = requireSchool(req);
+      const {
+        body,
+        template_id,
+        recipient_type,
+        target_class_id,
+        target_student_ids,
+        filter,
+        date,
+        month,
+      } = req.body as {
+        body?: unknown;
+        template_id?: unknown;
+        recipient_type?: unknown;
+        target_class_id?: unknown;
+        target_student_ids?: unknown;
+        filter?: unknown;
+        date?: unknown;
+        month?: unknown;
+      };
+      if (typeof recipient_type !== 'string') {
+        throw Object.assign(new Error('recipient_type is required'), { code: 'VALIDATION' });
+      }
+      if (!['all_parents', 'class', 'selected_students', 'single_parent'].includes(recipient_type)) {
+        throw Object.assign(new Error('Invalid recipient_type'), { code: 'VALIDATION' });
+      }
+      const result = await previewMessage(customDeps, {
+        schoolId,
+        body: typeof body === 'string' ? body : undefined,
+        templateId: typeof template_id === 'string' ? template_id : undefined,
+        recipientType: recipient_type as never,
+        targetClassId: typeof target_class_id === 'string' ? target_class_id : null,
+        targetStudentIds: Array.isArray(target_student_ids)
+          ? (target_student_ids as string[])
+          : undefined,
+        filter: filter === 'absent' || filter === 'fee_unpaid' ? filter : undefined,
+        date: typeof date === 'string' ? date : undefined,
+        month: typeof month === 'string' ? month : undefined,
+      });
+      ok(res, result);
+    }),
+  );
+
+  /* ------------------------ recipient picker ------------------------- */
+
+  router.get(
+    '/messages/recipients',
+    deps.requireAuth,
+    wrap(async (req, res) => {
+      const schoolId = requireSchool(req);
+      const filterQ = req.query.filter;
+      const classQ = req.query.class_id;
+      const dateQ = req.query.date;
+      const monthQ = req.query.month;
+      const typeQ = req.query.recipient_type;
+      const idsQ = req.query.target_student_ids;
+      if (typeof typeQ === 'string' && !['all_parents', 'class', 'selected_students', 'single_parent'].includes(typeQ)) {
+        throw Object.assign(new Error('Invalid recipient_type'), { code: 'VALIDATION' });
+      }
+      if (filterQ !== undefined && filterQ !== 'absent' && filterQ !== 'fee_unpaid') {
+        throw Object.assign(new Error('Invalid filter (absent|fee_unpaid)'), { code: 'VALIDATION' });
+      }
+      const recipients = await store.listRecipients(schoolId, {
+        recipientType:
+          typeof typeQ === 'string'
+            ? (typeQ as 'all_parents' | 'class' | 'selected_students' | 'single_parent')
+            : 'all_parents',
+        targetClassId: typeof classQ === 'string' ? classQ : null,
+        targetStudentIds:
+          typeof idsQ === 'string' && idsQ
+            ? idsQ.split(',').map((s) => s.trim()).filter(Boolean)
+            : undefined,
+        filter: filterQ === 'absent' || filterQ === 'fee_unpaid' ? filterQ : undefined,
+        date: typeof dateQ === 'string' ? dateQ : undefined,
+        month: typeof monthQ === 'string' ? monthQ : undefined,
+      });
+      const items = recipients.map((r) => {
+        let masked: string | null = null;
+        try {
+          if (r.parentPhoneEnc) {
+            const e164 = normalizePK(decryptPhone(r.parentPhoneEnc));
+            masked = e164 ? maskPhone(e164) : null;
+          }
+        } catch {
+          masked = null;
+        }
+        return {
+          studentId: r.id,
+          studentName: r.name,
+          fatherName: r.fatherName,
+          className: r.className,
+          section: r.section,
+          parentPhoneMasked: masked,
+          parentOptOut: r.parentOptOut,
+          amountDue: r.amountDue ?? null,
+        };
+      });
+      ok(res, {
+        recipients: items,
+        total: items.length,
+        optedOutCount: items.filter((i) => i.parentOptOut).length,
+      });
+    }),
+  );
+
+  /* ----------------------------- drafts ------------------------------ */
+
+  router.get(
+    '/messages/drafts',
+    deps.requireAuth,
+    wrap(async (req, res) => {
+      const schoolId = requireSchool(req);
+      const { page, limit } = parsePagination(req);
+      const statusQ = req.query.status;
+      const { items, total } = await store.listDrafts(schoolId, {
+        status:
+          typeof statusQ === 'string'
+            ? (statusQ as 'draft' | 'scheduled' | 'sent' | 'cancelled')
+            : undefined,
+        page,
+        limit,
+      });
+      ok(res, { items, total, page, pages: Math.ceil(total / limit) });
+    }),
+  );
+
+  router.post(
+    '/messages/drafts',
+    deps.requireAuth,
+    requireAdminOrClerk,
+    wrap(async (req, res) => {
+      const schoolId = requireSchool(req);
+      const { recipient_type, target_class_id, target_student_ids, body, scheduled_for } =
+        req.body as {
+          recipient_type?: unknown;
+          target_class_id?: unknown;
+          target_student_ids?: unknown;
+          body?: unknown;
+          scheduled_for?: unknown;
+        };
+      validateDraftInput({
+        recipientType: typeof recipient_type === 'string' ? recipient_type : '',
+        targetClassId: typeof target_class_id === 'string' ? target_class_id : null,
+        targetStudentIds: Array.isArray(target_student_ids)
+          ? (target_student_ids as string[])
+          : undefined,
+        body: typeof body === 'string' ? body : '',
+      });
+      const scheduledFor = parseScheduledFor(scheduled_for);
+      const created = await store.createDraft({
+        schoolId,
+        createdBy: req.user?.sub ?? null,
+        recipientType: recipient_type as never,
+        targetClassId: typeof target_class_id === 'string' ? target_class_id : null,
+        targetStudentIds: Array.isArray(target_student_ids)
+          ? (target_student_ids as string[])
+          : [],
+        body: (body as string).trim(),
+        scheduledFor,
+      });
+      await writeChangeLogs(getDb(), {
+        schoolId,
+        actorId: req.user?.sub ?? null,
+        entity: 'message_draft',
+        entityId: created.id,
+        before: {},
+        after: {
+          recipient_type: created.recipientType,
+          body: created.body,
+          status: created.status,
+        },
+      });
+      await store.createAuditLog({
+        schoolId,
+        actorId: req.user?.sub ?? null,
+        actorType: 'user',
+        action: 'draft.create',
+        entity: 'message_draft',
+        entityId: created.id,
+        details: { recipient_type: created.recipientType },
+      });
+      ok(res, { draft: created }, 201);
+    }),
+  );
+
+  router.get(
+    '/messages/drafts/:id',
+    deps.requireAuth,
+    wrap(async (req, res) => {
+      const schoolId = requireSchool(req);
+      const draft = await loadDraft(req, param(req, 'id'));
+      const approval = await store.getDraftApproval(draft.id, schoolId);
+      // Rendered preview against the first recipient (variables resolved).
+      let preview: Awaited<ReturnType<typeof previewMessage>> | null = null;
+      try {
+        preview = await previewMessage(customDeps, {
+          schoolId,
+          body: draft.body,
+          recipientType: draft.recipientType,
+          targetClassId: draft.targetClassId,
+          targetStudentIds: draft.targetStudentIds,
+        });
+      } catch {
+        preview = null;
+      }
+      ok(res, { draft, approval, preview });
+    }),
+  );
+
+  router.patch(
+    '/messages/drafts/:id',
+    deps.requireAuth,
+    requireAdminOrClerk,
+    wrap(async (req, res) => {
+      const schoolId = requireSchool(req);
+      const draft = await loadDraft(req, param(req, 'id'));
+      assertDraftWritable(req, draft);
+      if (draft.status === 'sent' || draft.status === 'cancelled') {
+        throw Object.assign(new Error(`A ${draft.status} draft cannot be edited`), { code: 'CONFLICT' });
+      }
+      const { recipient_type, target_class_id, target_student_ids, body, scheduled_for } =
+        req.body as {
+          recipient_type?: unknown;
+          target_class_id?: unknown;
+          target_student_ids?: unknown;
+          body?: unknown;
+          scheduled_for?: unknown;
+        };
+      const merged = {
+        recipientType:
+          typeof recipient_type === 'string' ? recipient_type : draft.recipientType,
+        targetClassId:
+          target_class_id === undefined
+            ? draft.targetClassId
+            : typeof target_class_id === 'string'
+              ? target_class_id
+              : null,
+        targetStudentIds:
+          target_student_ids === undefined
+            ? draft.targetStudentIds
+            : Array.isArray(target_student_ids)
+              ? (target_student_ids as string[])
+              : [],
+        body: typeof body === 'string' ? body : draft.body,
+      };
+      validateDraftInput(merged);
+      const before = {
+        recipient_type: draft.recipientType,
+        target_class_id: draft.targetClassId,
+        body: draft.body,
+        scheduled_for: draft.scheduledFor?.toISOString() ?? null,
+        status: draft.status,
+      };
+      const updated = await store.updateDraft(
+        draft.id,
+        {
+          recipientType: merged.recipientType as never,
+          targetClassId: merged.targetClassId,
+          targetStudentIds: merged.targetStudentIds,
+          body: merged.body.trim(),
+          ...(scheduled_for !== undefined
+            ? { scheduledFor: parseScheduledFor(scheduled_for) }
+            : {}),
+        },
+        schoolId,
+      );
+      await writeChangeLogs(getDb(), {
+        schoolId,
+        actorId: req.user?.sub ?? null,
+        entity: 'message_draft',
+        entityId: updated.id,
+        before,
+        after: {
+          recipient_type: updated.recipientType,
+          target_class_id: updated.targetClassId,
+          body: updated.body,
+          scheduled_for: updated.scheduledFor?.toISOString() ?? null,
+          status: updated.status,
+        },
+      });
+      await store.createAuditLog({
+        schoolId,
+        actorId: req.user?.sub ?? null,
+        actorType: 'user',
+        action: 'draft.update',
+        entity: 'message_draft',
+        entityId: updated.id,
+        details: {},
+      });
+      ok(res, { draft: updated });
+    }),
+  );
+
+  router.delete(
+    '/messages/drafts/:id',
+    deps.requireAuth,
+    requireAdminOrClerk,
+    wrap(async (req, res) => {
+      const schoolId = requireSchool(req);
+      const draft = await loadDraft(req, param(req, 'id'));
+      assertDraftWritable(req, draft);
+      if (draft.status !== 'draft') {
+        throw Object.assign(
+          new Error(`Only drafts in status 'draft' can be deleted (this one is ${draft.status}); cancel it instead`),
+          { code: 'CONFLICT' },
+        );
+      }
+      const db = getDb();
+      await (db as any).deletedRecord.create({
+        data: {
+          schoolId,
+          entity: 'message_draft',
+          entityId: draft.id,
+          snapshot: snapshotOf(draft as unknown as Record<string, unknown>),
+          deletedBy: req.user?.sub ?? null,
+          deletedAt: new Date(),
+          restoreBy: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+        },
+      });
+      await store.deleteDraft(draft.id, schoolId);
+      await store.createAuditLog({
+        schoolId,
+        actorId: req.user?.sub ?? null,
+        actorType: 'user',
+        action: 'draft.delete',
+        entity: 'message_draft',
+        entityId: draft.id,
+        details: {},
+      });
+      ok(res, { deleted: draft.id });
+    }),
+  );
+
+  router.post(
+    '/messages/drafts/:id/cancel',
+    deps.requireAuth,
+    requireAdminOrClerk,
+    wrap(async (req, res) => {
+      const schoolId = requireSchool(req);
+      const draft = await loadDraft(req, param(req, 'id'));
+      assertDraftWritable(req, draft);
+      if (draft.status === 'sent' || draft.status === 'cancelled') {
+        throw Object.assign(new Error(`A ${draft.status} draft cannot be cancelled`), { code: 'CONFLICT' });
+      }
+      const updated = await store.updateDraft(draft.id, { status: 'cancelled' }, schoolId);
+      await writeChangeLogs(getDb(), {
+        schoolId,
+        actorId: req.user?.sub ?? null,
+        entity: 'message_draft',
+        entityId: updated.id,
+        before: { status: draft.status },
+        after: { status: 'cancelled' },
+      });
+      await store.createAuditLog({
+        schoolId,
+        actorId: req.user?.sub ?? null,
+        actorType: 'user',
+        action: 'draft.cancel',
+        entity: 'message_draft',
+        entityId: updated.id,
+        details: {},
+      });
+      ok(res, { draft: updated });
+    }),
+  );
+
+  /* ---------------------- approval before send ----------------------- */
+
+  router.post(
+    '/messages/drafts/:id/submit-for-approval',
+    deps.requireAuth,
+    requireAdminOrClerk,
+    wrap(async (req, res) => {
+      const schoolId = requireSchool(req);
+      const draft = await loadDraft(req, param(req, 'id'));
+      assertDraftWritable(req, draft);
+      if (draft.status !== 'draft' && draft.status !== 'scheduled') {
+        throw Object.assign(
+          new Error(`A ${draft.status} draft cannot be submitted for approval`),
+          { code: 'CONFLICT' },
+        );
+      }
+      const existing = await store.getDraftApproval(draft.id, schoolId);
+      if (existing && existing.status === 'pending') {
+        throw Object.assign(new Error('This draft is already waiting for approval'), { code: 'CONFLICT' });
+      }
+      const created = await createApprovalRequest(getDb(), {
+        schoolId,
+        requestedBy: req.user?.sub ?? 'unknown',
+        actionType: 'create',
+        entity: 'message_draft',
+        entityId: draft.id,
+        payload: {
+          draft_id: draft.id,
+          recipient_type: draft.recipientType,
+          target_class_id: draft.targetClassId,
+          target_student_ids: draft.targetStudentIds,
+          body: draft.body,
+          scheduled_for: draft.scheduledFor?.toISOString() ?? null,
+        },
+      });
+      res.status(202).json({
+        ok: true,
+        data: {
+          approval_request_id: created.id,
+          status: 'pending',
+          message: 'Submitted for admin approval — nothing will send until it is approved.',
+        },
+      });
+    }),
+  );
+
+  router.post(
+    '/messages/drafts/:id/approve-send',
+    deps.requireAuth,
+    deps.requireAdmin,
+    wrap(async (req, res) => {
+      const schoolId = requireSchool(req);
+      const draft = await loadDraft(req, param(req, 'id'));
+      if (draft.status === 'sent' || draft.status === 'cancelled') {
+        throw Object.assign(new Error(`A ${draft.status} draft cannot be approved`), { code: 'CONFLICT' });
+      }
+      const result = await approveDraftForSending(customDeps, {
+        schoolId,
+        draftId: draft.id,
+        approvedBy: req.user?.sub ?? 'unknown',
+      });
+      ok(res, result);
+    }),
+  );
+
+  router.post(
+    '/messages/drafts/:id/reject',
+    deps.requireAuth,
+    deps.requireAdmin,
+    wrap(async (req, res) => {
+      const schoolId = requireSchool(req);
+      const draft = await loadDraft(req, param(req, 'id'));
+      if (draft.status === 'sent' || draft.status === 'cancelled') {
+        throw Object.assign(new Error(`A ${draft.status} draft cannot be rejected`), { code: 'CONFLICT' });
+      }
+      const { reason } = req.body as { reason?: unknown };
+      // Reject any pending approval request for this draft too, so the
+      // Approval Queue does not keep offering a dead draft.
+      const approval = await store.getDraftApproval(draft.id, schoolId);
+      if (approval && approval.status === 'pending') {
+        await rejectApprovalRequest(
+          getDb(),
+          schoolId,
+          approval.id,
+          req.user?.sub ?? 'unknown',
+          typeof reason === 'string' ? reason : 'Draft rejected by admin',
+        );
+      }
+      const updated = await store.updateDraft(draft.id, { status: 'cancelled' }, schoolId);
+      await writeChangeLogs(getDb(), {
+        schoolId,
+        actorId: req.user?.sub ?? null,
+        entity: 'message_draft',
+        entityId: updated.id,
+        before: { status: draft.status },
+        after: { status: 'cancelled' },
+      });
+      await store.createAuditLog({
+        schoolId,
+        actorId: req.user?.sub ?? null,
+        actorType: 'user',
+        action: 'draft.reject',
+        entity: 'message_draft',
+        entityId: updated.id,
+        details: { reason: typeof reason === 'string' ? reason : null },
+      });
+      ok(res, { draft: updated });
     }),
   );
 

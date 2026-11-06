@@ -11,12 +11,25 @@ export interface PayFeeInput {
   discount?: number; // PKR, integer >= 0, default 0
   payment_method?: string; // e.g. 'cash' | 'jazzcash' | 'easypaisa' | 'bank'
   receipt?: string; // optional payer reference / note (stored on audit log, not a column)
+  arrears?: number; // PKR carried from prior months — folded into amount_due at record creation (v2)
+  scholarship_discount?: number; // PKR — folded into amount_due at record creation (v2)
 }
 
 export interface FeeStructureInput {
   class_id: string;
   monthly_amount: number; // PKR, integer > 0
   effective_from: string; // YYYY-MM-DD
+  admission_fee?: number; // PKR, one-time, integer >= 0 (v2)
+  sibling_discount_pct?: number; // 0–100 (v2)
+}
+
+export interface FeeBreakdownView {
+  monthly_amount: number;
+  arrears: number;
+  admission_fee: number;
+  sibling_discount: number;
+  scholarship_discount: number;
+  amount_due: number;
 }
 
 export interface FeeListItem {
@@ -29,12 +42,17 @@ export interface FeeListItem {
   amount_due: number;
   amount_paid: number;
   discount: number;
+  arrears: number; // carried-forward balance from earlier months (stored on the record)
+  scholarship_discount: number; // PKR folded into amount_due at creation
+  /** Prospective breakdown — only for rows with no fee_record yet. */
+  breakdown: FeeBreakdownView | null;
   balance: number;
   status: FeeStatus;
   receipt_no: string | null;
   paid_at: string | null;
   payment_method: string | null;
   record_exists: boolean;
+  record_id: string | null; // fee_record id (null until a record exists) — used for vouchers
   no_structure: boolean; // true when no fee structure covers this class/month
 }
 
@@ -63,6 +81,8 @@ export interface ReceiptData {
   payment_method: string | null;
   paid_at: string | null;
   issued_at: string; // ISO timestamp of receipt generation
+  arrears: number; // carried-forward dues included in amount_due
+  scholarship_discount: number; // scholarship folded into amount_due
 }
 
 export interface FeeStructureView {
@@ -70,6 +90,8 @@ export interface FeeStructureView {
   class_id: string;
   class_name: string;
   monthly_amount: number;
+  admission_fee: number;
+  sibling_discount_pct: number;
   effective_from: string; // YYYY-MM-DD
   created_at: string;
 }

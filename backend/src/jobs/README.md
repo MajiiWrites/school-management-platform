@@ -13,6 +13,7 @@ deployment serves schools in different timezones.
 | `fee_followup` | every 30 min | On `settings.fee_followup_day` (or the next school day within 3 days): queues a follow-up for students **still** unpaid. |
 | `daily_pending_attendance` | every 30 min | At/after `settings.pending_check_time` (default `16:00` local): creates one notification per class with no attendance submission today. |
 | `teacher_reminders` | every 5 min | Inside a 5-min window from `settings.teacher_reminder_time` (default `15:00` local): queues one `teacher_reminder` SMS per unsubmitted class whose teacher has a phone. |
+| `school_backup` (6D) | 02:00 UTC daily | Per school: full data export (same shape as `POST /export/all`, phones decrypted) to `backend/backups/<slug>/<YYYY-MM-DD>.json` + a `school_backups` row. Local disk is ephemeral on the Render free tier — the durable copy is the admin manual export. |
 
 ## Rules every job enforces
 
@@ -74,7 +75,8 @@ npx tsx src/jobs/run-manual.ts teacher_reminders --school=demo-public --at=2026-
 
 `--at` fakes "now" (ISO) so a job can be tested for a specific school-local
 date/time. Valid job names: `monthly_fee_reminder`, `fee_followup`,
-`daily_pending_attendance`, `teacher_reminders`.
+`daily_pending_attendance`, `teacher_reminders`, `scheduled_messages`,
+`school_backup`.
 
 ## How to test
 

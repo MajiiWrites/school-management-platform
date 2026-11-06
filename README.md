@@ -24,7 +24,7 @@ Tailwind · Tesseract OCR (eng+urd) · Kotlin + Jetpack Compose (Android)
 ```bash
 cp .env.example .env   # fill in secrets (never commit .env)
 docker compose up -d --build
-# open http://localhost — demo login: demo@school.pk / Demo1234!
+# open http://localhost — sign up a school account (no demo account)
 ```
 
 Full guides: [`docs/SETUP.md`](docs/SETUP.md) · [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) ·

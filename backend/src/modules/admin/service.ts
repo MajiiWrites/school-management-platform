@@ -1,8 +1,9 @@
 import bcrypt from 'bcrypt';
 import { config } from '../../config';
 import { ApiError } from '../../lib/errors';
-import { todayInTz, currentMonthInTz, isValidDateString, isNonSchoolDay, dateOnly } from '../../lib/dates';
+import { todayInTz, currentMonthInTz, isValidDateString, isNonSchoolDay, dateOnly, monthRange } from '../../lib/dates';
 import { writeAudit } from '../../lib/audit';
+import { writeChangeLogs } from '../hardening/helpers';
 import { paginatedResponse, parsePagination } from '../../lib/pagination';
 import type { Db } from '../../lib/db';
 
@@ -18,7 +19,7 @@ export async function getDashboard(db: Db, schoolId: string): Promise<Record<str
   const month = currentMonthInTz(tz);
   const nonSchoolDay = await isNonSchoolDay(db, schoolId, today);
 
-  const classes = await db.class.findMany({ where: { schoolId: schoolId } });
+  const classes = await db.class.findMany({ where: { schoolId: schoolId, deletedAt: null } });
   const days = nonSchoolDay ? [] : await db.attendanceDay.findMany({ where: { schoolId: schoolId, date: dateOnly(today) } });
   const submittedIds = new Set(days.map((d: any) => d.classId));
   let present = 0;
@@ -34,7 +35,7 @@ export async function getDashboard(db: Db, schoolId: string): Promise<Record<str
   const teachersPresent = teacherRows.filter((r: any) => r.status === 'present').length;
   const teachersAbsent = teacherRows.filter((r: any) => r.status === 'absent').length;
 
-  const feeRecords = await db.feeRecord.findMany({ where: { schoolId: schoolId, month } });
+  const feeRecords = await db.feeRecord.findMany({ where: { schoolId: schoolId, month, deletedAt: null } });
   let feeCollected = 0;
   let feePending = 0;
   for (const r of feeRecords) {
@@ -74,6 +75,18 @@ const SETTING_KEYS = [
   'sms_provider',
   'teacher_attendance_mode',
   'message_language',
+  // 6C-2: school identity + display language. `school_name` and `timezone`
+  // live on the schools ROW (columns), the rest in settings JSONB.
+  // `language` is the UI language (en/ur); `message_language` (v1) stays
+  // the SMS template language — the two are independent.
+  'school_name',
+  'timezone',
+  'school_address',
+  'school_phone',
+  'logo_url',
+  'language',
+  // 6D: idle/session timeout in minutes (default 120, min 15, max 1440).
+  'session_timeout_minutes',
 ] as const;
 
 export function validateSettings(patch: Record<string, unknown>): Record<string, unknown> {
@@ -110,6 +123,54 @@ export function validateSettings(patch: Record<string, unknown>): Record<string,
         if (value !== 'en' && value !== 'ur') throw ApiError.validation("message_language must be 'en' or 'ur'");
         out[key] = value;
         break;
+      // 6C-2 keys.
+      case 'school_name':
+        if (typeof value !== 'string' || value.trim().length < 2 || value.trim().length > 200) {
+          throw ApiError.validation('school_name must be 2–200 chars');
+        }
+        out[key] = value.trim();
+        break;
+      case 'timezone':
+        if (typeof value !== 'string' || !/^[A-Za-z_]+\/[A-Za-z_+-]+$/.test(value) && value !== 'UTC') {
+          throw ApiError.validation('timezone must be an IANA name (e.g. Asia/Karachi) or UTC');
+        }
+        try {
+          Intl.DateTimeFormat('en-CA', { timeZone: value });
+        } catch {
+          throw ApiError.validation('timezone is not a known IANA timezone');
+        }
+        out[key] = value;
+        break;
+      case 'school_address':
+        if (typeof value !== 'string' || value.trim().length > 500) throw ApiError.validation('school_address must be a string (max 500 chars)');
+        out[key] = value.trim();
+        break;
+      case 'school_phone':
+        if (typeof value !== 'string' || value.trim().length > 30) throw ApiError.validation('school_phone must be a string (max 30 chars)');
+        out[key] = value.trim();
+        break;
+      case 'logo_url': {
+        // Either an https URL or a data:image/* URL (uploaded logo, see the
+        // frontend Settings page — FileReader → data URL, capped at ~500 KB).
+        if (typeof value !== 'string' || value.length > 700_000) throw ApiError.validation('logo_url is too large (max ~500 KB image)');
+        if (value !== '' && !value.startsWith('data:image/') && !value.startsWith('https://')) {
+          throw ApiError.validation('logo_url must be an https URL or a data:image/* URL');
+        }
+        out[key] = value;
+        break;
+      }
+      case 'language':
+        if (value !== 'en' && value !== 'ur') throw ApiError.validation("language must be 'en' or 'ur'");
+        out[key] = value;
+        break;
+      case 'session_timeout_minutes':
+        // 6D: min 15 (an access token already lives 15 min — shorter would
+        // log out active users), max 1440 (24 h).
+        if (typeof value !== 'number' || !Number.isInteger(value) || value < 15 || value > 1440) {
+          throw ApiError.validation('session_timeout_minutes must be an integer between 15 and 1440');
+        }
+        out[key] = value;
+        break;
     }
   }
   return out;
@@ -118,6 +179,7 @@ export function validateSettings(patch: Record<string, unknown>): Record<string,
 export async function getSettings(db: Db, schoolId: string): Promise<Record<string, unknown>> {
   const school = await db.school.findUnique({ where: { id: schoolId } });
   if (!school) throw ApiError.notFound('School not found');
+  const settings = (school.settings as Record<string, unknown>) ?? {};
   return {
     teacher_reminder_time: '08:00',
     fee_auto_send: false,
@@ -126,7 +188,16 @@ export async function getSettings(db: Db, schoolId: string): Promise<Record<stri
     sms_provider: 'sim',
     teacher_attendance_mode: 'admin',
     message_language: 'en',
-    ...((school.settings as Record<string, unknown>) ?? {}),
+    session_timeout_minutes: 120, // 6D: idle timeout, minutes
+    // 6C-2: school identity — name/timezone from the school row, the rest
+    // from settings JSONB (defaults below when unset).
+    school_name: school.name,
+    timezone: school.timezone ?? 'Asia/Karachi',
+    school_address: '',
+    school_phone: '',
+    logo_url: '',
+    language: 'en',
+    ...settings,
   };
 }
 
@@ -134,8 +205,32 @@ export async function updateSettings(db: Db, schoolId: string, patch: Record<str
   const valid = validateSettings(patch);
   const school = await db.school.findUnique({ where: { id: schoolId } });
   if (!school) throw ApiError.notFound('School not found');
-  const merged = { ...((school.settings as Record<string, unknown>) ?? {}), ...valid };
-  await db.school.update({ where: { id: schoolId }, data: { settings: merged } });
+  const before = (school.settings as Record<string, unknown>) ?? {};
+  // 6C-2: school_name / timezone live on the schools ROW, not in settings
+  // JSONB — split them out so the JSON never shadows the row (getSettings
+  // reads name/timezone from the row first).
+  const { school_name, timezone, ...jsonPatch } = valid as Record<string, unknown>;
+  const merged = { ...before, ...jsonPatch };
+  const rowData: Record<string, unknown> = { settings: merged };
+  if (school_name !== undefined) rowData.name = school_name;
+  if (timezone !== undefined) rowData.timezone = timezone;
+  await db.school.update({ where: { id: schoolId }, data: rowData });
+  // 6A change history: one row per changed setting key (row-backed keys
+  // compare against the row's old value).
+  const beforeAll: Record<string, unknown> = Object.fromEntries(
+    Object.keys(valid).map((k) => [
+      k,
+      k === 'school_name' ? school.name : k === 'timezone' ? school.timezone : before[k] ?? null,
+    ]),
+  );
+  await writeChangeLogs(db, {
+    schoolId,
+    actorId: adminId,
+    entity: 'school_settings',
+    entityId: schoolId,
+    before: beforeAll,
+    after: Object.fromEntries(Object.keys(valid).map((k) => [k, valid[k]])),
+  });
   await writeAudit(db, { schoolId, actorId: adminId, actorType: 'user', action: 'settings.update', entity: 'school', entityId: schoolId, details: valid });
   return getSettings(db, schoolId);
 }
@@ -245,7 +340,13 @@ export async function promoteStudents(
   }
   await db.$transaction(async (tx) => {
     for (const m of input.mappings) {
-      const student = await tx.student.findUnique({ where: { id: m.student_id } });
+      // ISOLATION FIX: the old re-read inside the transaction was by id
+      // alone. Re-prove school ownership here (defence in depth: the
+      // pre-validation above already checked, the tx must not trust it).
+      const student = await tx.student.findFirst({ where: { id: m.student_id, schoolId: schoolId } });
+      if (!student) throw ApiError.validation(`Student not found: ${m.student_id}`);
+      const toClass = await tx.class.findFirst({ where: { id: m.to_class_id, schoolId: schoolId } });
+      if (!toClass) throw ApiError.validation(`Class not found: ${m.to_class_id}`);
       await tx.promotion.create({
         data: { schoolId: schoolId, studentId: m.student_id, fromClassId: (student as any).classId, toClassId: m.to_class_id, sessionId: input.session_id, promotedAt: new Date(), promotedBy: adminId },
       });
@@ -282,9 +383,80 @@ export async function listLeaves(db: Db, schoolId: string, query: Record<string,
 export async function decideLeave(db: Db, schoolId: string, id: string, status: 'approved' | 'rejected', adminId: string): Promise<any> {
   const leave = await db.leaveApplication.findFirst({ where: { id, schoolId: schoolId } });
   if (!leave) throw ApiError.notFound('Leave application not found');
+  // Snapshot before-values BEFORE the update: some DB layers mutate the
+  // fetched row in place, which would erase the old values (6A lesson).
+  const beforeStatus = leave.status;
+  const beforeDecidedBy = leave.decidedBy ?? null;
   const updated = await db.leaveApplication.update({ where: { id }, data: { status, decidedBy: adminId } });
+  // 6C-2: every edit writes change_logs (one row per changed field).
+  await writeChangeLogs(db, {
+    schoolId,
+    actorId: adminId,
+    entity: 'leave_application',
+    entityId: id,
+    before: { status: beforeStatus, decided_by: beforeDecidedBy },
+    after: { status, decided_by: adminId },
+  });
   await writeAudit(db, { schoolId, actorId: adminId, actorType: 'user', action: 'leave.decide', entity: 'leave_application', entityId: id, details: { status } });
   return updated;
+}
+
+// ---------------------------------------------------------------------------
+// Late arrivals (6C-2) — see FEATURES-6C2.md "Late-tracking decision".
+// There is NO late-arrival table/column in the v2 schema, and
+// LeaveApplication has no `type` column, so late arrivals are NOT stored
+// as leave rows. Late IS a first-class attendance status
+// (attendance_records.status = 'late', v1): a late arrival is recorded at
+// attendance-submit time and read back here. No migration was needed.
+// ---------------------------------------------------------------------------
+
+export async function listLateArrivals(
+  db: Db,
+  schoolId: string,
+  query: Record<string, any>,
+): Promise<Array<{ date: string; student_id: string; student_name: string; roll_no: number | null; class_id: string; class_name: string }>> {
+  const { start, end } = (() => {
+    if (query.date) {
+      if (!isValidDateString(String(query.date))) throw ApiError.validation('date must be YYYY-MM-DD');
+      return { start: String(query.date), end: String(query.date) };
+    }
+    if (query.month) {
+      if (!/^\d{4}-\d{2}$/.test(String(query.month))) throw ApiError.validation('month must be YYYY-MM');
+      return monthRange(String(query.month));
+    }
+    const today = todayInTz('Asia/Karachi');
+    return { start: today, end: today };
+  })();
+  const dayWhere: Record<string, unknown> = { schoolId: schoolId, date: { gte: dateOnly(start), lte: dateOnly(end) } };
+  if (query.class_id) dayWhere.classId = String(query.class_id);
+  const days = await db.attendanceDay.findMany({ where: dayWhere, orderBy: [{ date: 'asc' }] });
+  if (days.length === 0) return [];
+  const dayIds = days.map((d: any) => d.id);
+  const dayById = new Map<string, any>(days.map((d: any) => [d.id, d] as [string, any]));
+  const records = await db.attendanceRecord.findMany({ where: { attendanceDayId: { in: dayIds }, status: 'late' } });
+  if (records.length === 0) return [];
+  const studentIds = [...new Set(records.map((r: any) => r.studentId))];
+  const students = await db.student.findMany({ where: { schoolId: schoolId, id: { in: studentIds } } });
+  const studentById = new Map<string, any>(students.map((s: any) => [s.id, s] as [string, any]));
+  const classes = await db.class.findMany({ where: { schoolId: schoolId } });
+  const classById = new Map<string, any>(classes.map((c: any) => [c.id, c] as [string, any]));
+  return records
+    .map((r: any) => {
+      const day = dayById.get(r.attendanceDayId);
+      const s = studentById.get(r.studentId);
+      if (!day || !s) return null;
+      const c = classById.get(s.classId);
+      return {
+        date: new Date(day.date).toISOString().slice(0, 10),
+        student_id: s.id,
+        student_name: s.name,
+        roll_no: s.rollNo ?? null,
+        class_id: s.classId,
+        class_name: c ? `${c.name}-${c.section}` : s.classId,
+      };
+    })
+    .filter((x: any): x is NonNullable<typeof x> => x !== null)
+    .sort((a: any, b: any) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 }
 
 // ---------------------------------------------------------------------------

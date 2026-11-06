@@ -135,9 +135,9 @@ export async function attendanceMonthly(db: Db, schoolId: string, query: Record<
 export async function feesMonthly(db: Db, schoolId: string, query: Record<string, any>): Promise<Record<string, unknown>> {
   const month = String(query.month ?? '');
   if (!/^\d{4}-\d{2}$/.test(month)) throw ApiError.validation('month must be YYYY-MM');
-  const records = await db.feeRecord.findMany({ where: { schoolId: schoolId, month } });
+  const records = await db.feeRecord.findMany({ where: { schoolId: schoolId, month, deletedAt: null } });
   const studentIds = [...new Set(records.map((r: any) => r.studentId))];
-  const students = studentIds.length > 0 ? await db.student.findMany({ where: { id: { in: studentIds } } }) : [];
+  const students = studentIds.length > 0 ? await db.student.findMany({ where: { schoolId: schoolId, id: { in: studentIds } } }) : [];
   const byStudent = new Map<string, any>(students.map((s: any) => [s.id, s]));
   const classes = await db.class.findMany({ where: { schoolId: schoolId } });
   const byClass = new Map<string, any>(classes.map((c: any) => [c.id, c]));
@@ -171,6 +171,191 @@ export async function feesMonthly(db: Db, schoolId: string, query: Record<string
 }
 
 // ---------------------------------------------------------------------------
+// 6C-2 reports: fee defaulters, results summary, class strength, message
+// history. All scoped to the JWT school_id; all exportable via
+// buildExportRows + exportPdf/exportXlsx/exportCsv in routes.ts.
+// ---------------------------------------------------------------------------
+
+/** Students who still owe money for the month (balance > 0), worst first. */
+export async function feeDefaulters(db: Db, schoolId: string, query: Record<string, any>): Promise<Record<string, unknown>> {
+  const month = String(query.month ?? '');
+  if (!/^\d{4}-\d{2}$/.test(month)) throw ApiError.validation('month must be YYYY-MM');
+  const records = await db.feeRecord.findMany({ where: { schoolId, month, deletedAt: null } });
+  const studentIds = [...new Set(records.map((r: any) => r.studentId))];
+  const students = studentIds.length > 0 ? await db.student.findMany({ where: { schoolId, id: { in: studentIds } } }) : [];
+  const byStudent = new Map<string, any>(students.map((s: any) => [s.id, s]));
+  const classes = await db.class.findMany({ where: { schoolId } });
+  const byClass = new Map<string, any>(classes.map((c: any) => [c.id, c]));
+  const classId = query.class_id ? String(query.class_id) : undefined;
+  const rows = records
+    .map((r: any) => {
+      const s = byStudent.get(r.studentId);
+      if (!s) return null;
+      const balance = Math.max(0, (r.amountDue ?? 0) - (r.discount ?? 0) - (r.amountPaid ?? 0));
+      if (balance <= 0) return null;
+      const cls = byClass.get(s.classId);
+      return {
+        student_id: s.id,
+        student_name: s.name,
+        roll_no: s.rollNo ?? null,
+        class_id: s.classId,
+        display_name: cls ? `${cls.name}-${cls.section}` : s.classId,
+        month,
+        amount_due: r.amountDue ?? 0,
+        amount_paid: r.amountPaid ?? 0,
+        discount: r.discount ?? 0,
+        arrears: r.arrears ?? 0,
+        balance,
+        status: r.status ?? 'unpaid',
+      };
+    })
+    .filter((x: any): x is NonNullable<typeof x> => x !== null)
+    .filter((x: any) => !classId || x.class_id === classId)
+    .sort((a: any, b: any) => b.balance - a.balance);
+  return {
+    month,
+    defaulters: rows.length,
+    total_pending: rows.reduce((a: number, r: any) => a + r.balance, 0),
+    by_student: rows,
+  };
+}
+
+/**
+ * Results summary per exam (and per class when class_id is given).
+ * Pass = a grade other than 'F'/'Fail' (no grading-scale pass rule is
+ * stored on results; the grade itself is the source of truth).
+ */
+export async function resultsSummary(db: Db, schoolId: string, query: Record<string, any>): Promise<Record<string, unknown>> {
+  const examId = query.exam_id ? String(query.exam_id) : undefined;
+  const classId = query.class_id ? String(query.class_id) : undefined;
+  const where: Record<string, unknown> = { schoolId, deletedAt: null };
+  if (examId) where.examId = examId;
+  if (classId) where.classId = classId;
+  const results = await db.result.findMany({ where });
+  const exams = await db.exam.findMany({ where: { schoolId } });
+  const examById = new Map<string, any>(exams.map((e: any) => [e.id, e] as [string, any]));
+  const classes = await db.class.findMany({ where: { schoolId } });
+  const classById = new Map<string, any>(classes.map((c: any) => [c.id, c] as [string, any]));
+  const perExam = new Map<string, { students: number; total_percentage: number; counted: number; passed: number; top_percentage: number | null }>();
+  for (const r of results) {
+    const agg = perExam.get(r.examId) ?? { students: 0, total_percentage: 0, counted: 0, passed: 0, top_percentage: null };
+    agg.students += 1;
+    if (typeof r.percentage === 'number') {
+      agg.total_percentage += r.percentage;
+      agg.counted += 1;
+      if (agg.top_percentage === null || r.percentage > agg.top_percentage) agg.top_percentage = r.percentage;
+    }
+    if (r.grade && r.grade !== 'F' && r.grade !== 'Fail') agg.passed += 1;
+    perExam.set(r.examId, agg);
+  }
+  return {
+    exam_id: examId ?? null,
+    class_id: classId ?? null,
+    students: results.length,
+    by_exam: [...perExam.entries()].map(([id, a]) => {
+      const e = examById.get(id);
+      return {
+        exam_id: id,
+        exam_name: e?.name ?? id,
+        students: a.students,
+        average_percentage: a.counted > 0 ? Math.round((a.total_percentage / a.counted) * 10) / 10 : null,
+        passed: a.passed,
+        top_percentage: a.top_percentage,
+      };
+    }),
+    by_student: results
+      .map((r: any) => {
+        const cls = classById.get(r.classId);
+        return {
+          student_name: r.studentName,
+          roll_no: r.rollNo,
+          class_id: r.classId,
+          display_name: cls ? `${cls.name}-${cls.section}` : r.classId,
+          exam_id: r.examId,
+          exam_name: examById.get(r.examId)?.name ?? r.examId,
+          obtained_marks: r.obtainedMarks ?? null,
+          total_marks: r.totalMarks ?? null,
+          percentage: r.percentage ?? null,
+          grade: r.grade ?? null,
+          position: r.position ?? null,
+        };
+      })
+      .sort((a: any, b: any) => (b.percentage ?? -1) - (a.percentage ?? -1)),
+  };
+}
+
+/** Headcount per class (active / left / struck_off / graduated). */
+export async function classStrength(db: Db, schoolId: string): Promise<Record<string, unknown>> {
+  const classes = await db.class.findMany({ where: { schoolId, deletedAt: null }, orderBy: [{ name: 'asc' }, { section: 'asc' }] });
+  const students = await db.student.findMany({ where: { schoolId, deletedAt: null } });
+  const perClass = new Map<string, { active: number; left: number; struck_off: number; graduated: number; total: number }>();
+  for (const c of classes) perClass.set(c.id, { active: 0, left: 0, struck_off: 0, graduated: 0, total: 0 });
+  for (const s of students) {
+    const agg = perClass.get(s.classId);
+    if (!agg) continue;
+    agg.total += 1;
+    if (s.status === 'active') agg.active += 1;
+    else if (s.status === 'left') agg.left += 1;
+    else if (s.status === 'struck_off') agg.struck_off += 1;
+    else if (s.status === 'graduated') agg.graduated += 1;
+  }
+  const byClass = classes.map((c: any) => ({
+    class_id: c.id,
+    display_name: `${c.name}-${c.section}`,
+    ...perClass.get(c.id)!,
+  }));
+  return {
+    classes: byClass.length,
+    total_students: byClass.reduce((a: number, c: any) => a + c.total, 0),
+    total_active: byClass.reduce((a: number, c: any) => a + c.active, 0),
+    by_class: byClass,
+  };
+}
+
+/** Message history — every queued/sent/failed/cancelled message, scoped. */
+export async function messageHistory(
+  db: Db,
+  schoolId: string,
+  query: Record<string, any>,
+): Promise<Record<string, unknown>> {
+  const where: Record<string, unknown> = { schoolId };
+  if (query.status) where.status = String(query.status);
+  if (query.type) where.type = String(query.type);
+  if (query.date) {
+    const d = String(query.date);
+    const start = new Date(`${d}T00:00:00Z`);
+    const end = new Date(`${d}T23:59:59Z`);
+    where.createdAt = { gte: start, lte: end };
+  }
+  const page = Math.max(1, Number(query.page ?? 1) || 1);
+  const limit = Math.min(200, Math.max(1, Number(query.limit ?? 50) || 50));
+  const [rows, total] = await Promise.all([
+    db.messageQueue.findMany({ where, orderBy: { createdAt: 'desc' }, skip: (page - 1) * limit, take: limit }),
+    db.messageQueue.count({ where }),
+  ]);
+  const studentIds = [...new Set(rows.map((r: any) => r.studentId).filter(Boolean))];
+  const students = studentIds.length > 0 ? await db.student.findMany({ where: { schoolId, id: { in: studentIds } } }) : [];
+  const byStudent = new Map(students.map((s: any) => [s.id, s]));
+  return {
+    items: rows.map((r: any) => ({
+      id: r.id,
+      type: r.type,
+      student_id: r.studentId ?? null,
+      student_name: r.studentId ? (byStudent.get(r.studentId) as any)?.name ?? null : null,
+      status: r.status,
+      body: r.body,
+      scheduled_for: r.scheduledFor ? new Date(r.scheduledFor).toISOString() : null,
+      sent_at: r.sentAt ? new Date(r.sentAt).toISOString() : null,
+      error: r.error ?? null,
+      created_at: new Date(r.createdAt).toISOString(),
+    })),
+    total,
+    page,
+    pages: Math.max(1, Math.ceil(total / limit)),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
 
@@ -182,11 +367,61 @@ export function buildExportRows(report: Record<string, unknown>, kind: string): 
       rows: ((report.by_class as any[]) ?? []).map((c) => [c.display_name, c.students, c.collected, c.pending]),
     };
   }
+  if (kind === 'defaulters') {
+    return {
+      title: `Fee defaulters — ${report.month}`,
+      headers: ['Student', 'Roll', 'Class', 'Amount due (PKR)', 'Paid (PKR)', 'Discount (PKR)', 'Arrears (PKR)', 'Balance (PKR)', 'Status'],
+      rows: ((report.by_student as any[]) ?? []).map((r) => [r.student_name, r.roll_no, r.display_name, r.amount_due, r.amount_paid, r.discount, r.arrears, r.balance, r.status]),
+    };
+  }
+  if (kind === 'results-summary') {
+    return {
+      title: `Results summary`,
+      headers: ['Student', 'Roll', 'Class', 'Exam', 'Obtained', 'Total', 'Percentage', 'Grade', 'Position'],
+      rows: ((report.by_student as any[]) ?? []).map((r) => [r.student_name, r.roll_no, r.display_name, r.exam_name, r.obtained_marks, r.total_marks, r.percentage, r.grade, r.position]),
+    };
+  }
+  if (kind === 'class-strength') {
+    return {
+      title: `Class strength`,
+      headers: ['Class', 'Active', 'Left', 'Struck off', 'Graduated', 'Total'],
+      rows: ((report.by_class as any[]) ?? []).map((c) => [c.display_name, c.active, c.left, c.struck_off, c.graduated, c.total]),
+    };
+  }
+  if (kind === 'message-history') {
+    return {
+      title: `Message history`,
+      headers: ['Type', 'Student', 'Status', 'Scheduled for', 'Sent at', 'Body', 'Error'],
+      rows: ((report.items as any[]) ?? []).map((m) => [m.type, m.student_name ?? '—', m.status, m.scheduled_for ?? '', m.sent_at ?? '', m.body, m.error ?? '']),
+    };
+  }
+  if (kind === 'income-expense') {
+    return {
+      title: `Income vs expense — ${report.month}`,
+      headers: ['Category', 'Total (PKR)', 'Count'],
+      rows: [
+        ['Fees collected (income)', report.income, ''],
+        ['Expenses', report.expense, ''],
+        ['Balance', report.balance, ''],
+        ...((report.by_category as any[]) ?? []).map((c) => [c.category, c.total, c.count]),
+      ],
+    };
+  }
   return {
     title: `Attendance report — ${report.date ?? report.week_start ?? report.month}`,
     headers: ['Class', 'Days submitted', 'Present', 'Absent', 'Late', 'Leave', 'Rate %'],
     rows: ((report.by_class as any[]) ?? []).map((c) => [c.display_name, c.days_submitted, c.present, c.absent, c.late, c.leave, c.attendance_rate ?? '—']),
   };
+}
+
+/** CSV export (UTF-8, RFC 4180 quoting) — the third export format alongside PDF/XLSX. */
+export function exportCsv(title: string, headers: string[], rows: (string | number | null)[][]): Buffer {
+  const q = (v: string | number | null): string => {
+    const s = String(v ?? '');
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const lines = [q(title), headers.map(q).join(','), ...rows.map((r) => r.map(q).join(','))];
+  return Buffer.from(`\uFEFF${lines.join('\r\n')}\r\n`, 'utf-8');
 }
 
 export async function exportPdf(title: string, headers: string[], rows: (string | number | null)[][]): Promise<Buffer> {

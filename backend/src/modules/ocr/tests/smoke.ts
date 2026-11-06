@@ -32,12 +32,13 @@ const db: OcrDb = {
     uploads.set(id, { id, school_id: data.school_id, class_id: data.class_id, file_path: data.file_path, status: 'processing', raw_text: null });
     return { id };
   },
-  async getUpload(_s, id) {
-    return uploads.get(id) ?? null;
+  async getUpload(schoolId, id) {
+    const u = uploads.get(id) ?? null;
+    return u && u.school_id === schoolId ? u : null;
   },
-  async updateUpload(id, data) {
+  async updateUpload(schoolId, id, data) {
     const u = uploads.get(id);
-    if (u) uploads.set(id, { ...u, ...data });
+    if (u && u.school_id === schoolId) uploads.set(id, { ...u, ...data });
   },
   async createStudents(_s, _c, rows) {
     students.push(...rows.map((r) => ({ name: r.name, roll_no: r.roll_no, parent_phone_hash: r.parent_phone_hash })));

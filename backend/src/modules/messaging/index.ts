@@ -17,8 +17,25 @@ export {
   getSmsStatus,
 } from './service';
 export type { ServiceDeps, DraftResult } from './service';
+// --- Section 11 (Custom Messages) --------------------------------------
+export {
+  approveDraftForSending,
+  applyApprovedDraft,
+  previewMessage,
+  processDueScheduledDrafts,
+  sendDraft,
+  validateDraftInput,
+  schoolLocalDate,
+} from './custom-messages';
+export type {
+  CustomMessagesDeps,
+  PreviewResult,
+  PreviewSample,
+  RecipientSkip,
+  SendResult,
+} from './custom-messages';
 export { createPrismaMessagingStore } from './store';
-export type { MessagingStore, QueueRow, TemplateRow, DeviceRow } from './store';
+export type { MessagingStore, QueueRow, TemplateRow, DeviceRow, DraftRow, RecipientStudent } from './store';
 export {
   normalizePK,
   isValidPK,

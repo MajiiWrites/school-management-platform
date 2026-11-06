@@ -5,7 +5,10 @@ import { parseBody, passwordSchema, emailSchema, uuidSchema, dateSchema } from '
 import { asyncHandler } from '../../lib/errors';
 import { authenticate } from '../../middleware/auth';
 import { requireSchool, schoolIdOf } from '../../middleware/tenant';
-import { requireAdmin } from '../../middleware/rbac';
+import { requireAdmin, requireAdminOrClerk } from '../../middleware/rbac';
+import { requirePermission, requireQueueable } from '../../middleware/permissions';
+import { queueIfClerk } from '../hardening/queueGate';
+import * as hardeningSvc from '../hardening/service';
 import * as service from './service';
 
 export const adminRouter = Router();
@@ -32,6 +35,7 @@ adminRouter.get(
 adminRouter.patch(
   '/settings',
   requireAdmin,
+  requirePermission('settings', 'update'),
   asyncHandler(async (req, res) => {
     const data = await service.updateSettings(getDb(), schoolIdOf(req), req.body as Record<string, unknown>, req.user!.sub);
     res.json({ ok: true, data });
@@ -41,11 +45,26 @@ adminRouter.patch(
 // --- Users / clerks ------------------------------------------------------------
 adminRouter.post(
   '/users/clerks',
-  requireAdmin,
+  requireAdminOrClerk,
+  requireQueueable('users', 'create'),
   asyncHandler(async (req, res) => {
     const body = parseBody(z.object({ email: emailSchema, password: passwordSchema }), req.body);
+    // 6A: clerk-proposed user creates go to the approval queue (202).
+    if (await queueIfClerk(req, res, { actionType: 'create', entity: 'user', payload: body })) return;
     const clerk = await service.createClerk(getDb(), schoolIdOf(req), body, req.user!.sub);
     res.status(201).json({ ok: true, data: clerk });
+  }),
+);
+
+// 6A: principal login (admin only). Login works like a clerk; every mutation 403s.
+adminRouter.post(
+  '/users/principals',
+  requireAdmin,
+  requirePermission('users', 'create'),
+  asyncHandler(async (req, res) => {
+    const body = parseBody(z.object({ email: emailSchema, password: passwordSchema }), req.body);
+    const principal = await hardeningSvc.createPrincipal(getDb(), schoolIdOf(req), body, req.user!.sub);
+    res.status(201).json({ ok: true, data: principal });
   }),
 );
 
@@ -60,9 +79,11 @@ adminRouter.get(
 
 adminRouter.delete(
   '/users/:id',
-  requireAdmin,
+  requireAdminOrClerk,
+  requireQueueable('users', 'delete'),
   asyncHandler(async (req, res) => {
     const { id } = parseBody(z.object({ id: uuidSchema }), req.params);
+    if (await queueIfClerk(req, res, { actionType: 'delete', entity: 'user', entityId: id, payload: { id } })) return;
     await service.deleteUser(getDb(), schoolIdOf(req), id, req.user!.sub);
     res.json({ ok: true, data: { message: 'User deleted' } });
   }),
@@ -79,9 +100,12 @@ adminRouter.get(
 
 adminRouter.post(
   '/holidays',
-  requireAdmin,
+  requireAdminOrClerk,
+  requireQueueable('holidays', 'create'),
   asyncHandler(async (req, res) => {
     const body = parseBody(z.object({ date: dateSchema, name: z.string().min(2).max(120) }), req.body);
+    // 6A: clerk holiday creates go to the approval queue (202).
+    if (await queueIfClerk(req, res, { actionType: 'create', entity: 'holiday', payload: body })) return;
     const created = await service.createHoliday(getDb(), schoolIdOf(req), body, req.user!.sub);
     res.status(201).json({ ok: true, data: created });
   }),
@@ -89,9 +113,11 @@ adminRouter.post(
 
 adminRouter.delete(
   '/holidays/:id',
-  requireAdmin,
+  requireAdminOrClerk,
+  requireQueueable('holidays', 'delete'),
   asyncHandler(async (req, res) => {
     const { id } = parseBody(z.object({ id: uuidSchema }), req.params);
+    if (await queueIfClerk(req, res, { actionType: 'delete', entity: 'holiday', entityId: id, payload: { id } })) return;
     await service.deleteHoliday(getDb(), schoolIdOf(req), id, req.user!.sub);
     res.json({ ok: true, data: { message: 'Holiday deleted' } });
   }),
@@ -148,6 +174,16 @@ adminRouter.get(
   '/leaves',
   asyncHandler(async (req, res) => {
     const items = await service.listLeaves(getDb(), schoolIdOf(req), req.query as Record<string, any>);
+    res.json({ ok: true, data: { items, total: items.length, page: 1, pages: 1 } });
+  }),
+);
+
+// 6C-2: late arrivals — read from attendance_records with status 'late'
+// (see service.listLateArrivals + FEATURES-6C2.md; no separate table).
+adminRouter.get(
+  '/leaves/late',
+  asyncHandler(async (req, res) => {
+    const items = await service.listLateArrivals(getDb(), schoolIdOf(req), req.query as Record<string, any>);
     res.json({ ok: true, data: { items, total: items.length, page: 1, pages: 1 } });
   }),
 );

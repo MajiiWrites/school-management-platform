@@ -13,6 +13,7 @@ import { authenticate } from '../middleware/auth';
 import { requireAdminOrClerk } from '../middleware/rbac';
 import { requireSchool } from '../middleware/tenant';
 import { getJobsStatus } from './registry';
+import { schoolIdOf } from '../middleware/tenant';
 
 export const jobsStatusRouter = Router();
 jobsStatusRouter.use(authenticate, requireSchool);
@@ -20,8 +21,9 @@ jobsStatusRouter.use(authenticate, requireSchool);
 jobsStatusRouter.get(
   '/status',
   requireAdminOrClerk,
-  asyncHandler(async (_req, res) => {
-    const data = await getJobsStatus(getDb());
+  asyncHandler(async (req, res) => {
+    // Tenant-scoped: a school sees only its own job runs (registry fix).
+    const data = await getJobsStatus(getDb(), schoolIdOf(req));
     res.json({ ok: true, data });
   }),
 );

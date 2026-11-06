@@ -63,15 +63,17 @@ function fakeDb(opts: { revoked?: boolean; expired?: boolean; optOut?: boolean }
 
   const db: any = {
     class: {
+      // Strict === matching, except Prisma `field: null` (IS NULL) also
+      // matches rows where the field is unset (6A: deletedAt filters).
       findFirst: async ({ where }: any) =>
-        classes.find((c) => Object.entries(where ?? {}).every(([k, v]) => c[k] === v)) ?? null,
+        classes.find((c) => Object.entries(where ?? {}).every(([k, v]) => (v === null ? c[k] == null : c[k] === v))) ?? null,
     },
     school: {
       findUnique: async ({ where }: any) => schools.find((s) => s.id === where.id) ?? null,
     },
     student: {
       findMany: async ({ where }: any) =>
-        students.filter((s) => Object.entries(where ?? {}).every(([k, v]) => s[k] === v)),
+        students.filter((s) => Object.entries(where ?? {}).every(([k, v]) => (v === null ? s[k] == null : s[k] === v))),
     },
     holiday: {
       findFirst: async ({ where }: any) => holidays.find((h) => h.schoolId === where.schoolId && same(h.date, where.date)) ?? null,

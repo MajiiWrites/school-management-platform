@@ -55,6 +55,8 @@ export function renderReceiptHtml(r: ReceiptData): string {
   <table>
     <tr><th>Description</th><th class="num">Amount</th></tr>
     <tr><td>Monthly fee — ${esc(monthLabel(r.month))}</td><td class="num">${formatPKR(r.amount_due)}</td></tr>
+    ${r.arrears > 0 ? `<tr><td>Arrears included</td><td class="num">${formatPKR(r.arrears)}</td></tr>` : ''}
+    ${r.scholarship_discount > 0 ? `<tr><td>Scholarship discount included</td><td class="num">&minus; ${formatPKR(r.scholarship_discount)}</td></tr>` : ''}
     <tr><td>Discount</td><td class="num">&minus; ${formatPKR(r.discount)}</td></tr>
     <tr><td>Amount paid${r.payment_method ? ` (${esc(r.payment_method)})` : ''}</td><td class="num">${formatPKR(r.amount_paid)}</td></tr>
     <tr class="total"><td>Balance due</td><td class="num">${formatPKR(r.balance)}</td></tr>
@@ -99,6 +101,12 @@ export async function renderReceiptPdf(r: ReceiptData): Promise<Buffer> {
   doc.moveDown();
   const rows: Array<[string, string]> = [
     [`Monthly fee — ${monthLabel(r.month)}`, formatPKR(r.amount_due)],
+    // 6C-2: arrears / scholarship are already inside amount_due; show them
+    // as informational lines so the parent can see the make-up.
+    ...(r.arrears > 0 ? ([[`Arrears included`, formatPKR(r.arrears)]] as Array<[string, string]>) : []),
+    ...(r.scholarship_discount > 0
+      ? ([[`Scholarship discount included`, `- ${formatPKR(r.scholarship_discount)}`]] as Array<[string, string]>)
+      : []),
     ['Discount', `- ${formatPKR(r.discount)}`],
     [`Amount paid${r.payment_method ? ` (${r.payment_method})` : ''}`, formatPKR(r.amount_paid)],
     ['Balance due', formatPKR(r.balance)],

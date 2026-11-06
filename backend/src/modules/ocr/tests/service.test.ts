@@ -25,12 +25,13 @@ function makeFakeDb(existing: { name: string; roll_no?: number | null; parent_ph
       uploads.set(id, { id, school_id: data.school_id, class_id: data.class_id, file_path: data.file_path, status: 'processing', raw_text: null });
       return { id };
     },
-    async getUpload(_schoolId, uploadId) {
-      return uploads.get(uploadId) ?? null;
+    async getUpload(schoolId, uploadId) {
+      const u = uploads.get(uploadId) ?? null;
+      return u && u.school_id === schoolId ? u : null;
     },
-    async updateUpload(uploadId, data) {
+    async updateUpload(schoolId, uploadId, data) {
       const u = uploads.get(uploadId);
-      if (u) uploads.set(uploadId, { ...u, ...data });
+      if (u && u.school_id === schoolId) uploads.set(uploadId, { ...u, ...data });
     },
     async createStudents(_s, _c, rows) {
       created.push(...rows);

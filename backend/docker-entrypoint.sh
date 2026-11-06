@@ -2,6 +2,11 @@
 # API container entrypoint: apply migrations, optionally seed demo data,
 # then start the server. Migrations are idempotent; the seed is idempotent
 # (upserts), so re-running this container is safe.
+#
+# Demo seeding is OFF by default and runs ONLY when SEED_ON_BOOT is
+# explicitly set to "true". Never enable it on the live site: the live
+# site must stay empty (no demo school). The seed script
+# (backend/prisma/seed.ts) is for local dev only.
 set -e
 
 echo "[entrypoint] applying database migrations..."

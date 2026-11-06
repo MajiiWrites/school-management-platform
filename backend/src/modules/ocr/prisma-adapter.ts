@@ -88,7 +88,16 @@ export function prismaOcrDb(prisma: PrismaLike): OcrDb {
       const row = await prisma.ocrUpload.findFirst({ where: { id: uploadId, schoolId } });
       return row ? toUploadRecord(row) : null;
     },
-    async updateUpload(uploadId, data) {
+    async updateUpload(schoolId, uploadId, data) {
+      // ISOLATION FIX: the old code updated by id alone, so any caller
+      // holding another school's upload id could overwrite its status /
+      // raw_text. Verify ownership first (scoped read), then update.
+      const owned = await prisma.ocrUpload.findFirst({ where: { id: uploadId, schoolId } });
+      if (!owned) {
+        const err = new Error('OCR upload not found') as Error & { status?: number; code?: string };
+        err.status = 404; err.code = 'NOT_FOUND';
+        throw err;
+      }
       const updateData: { status?: string; rawText?: string } = {};
       if (data.status !== undefined) updateData.status = data.status;
       if (data.raw_text !== undefined) updateData.rawText = data.raw_text;

@@ -1,8 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, ApiClientError } from '../lib/api';
-import type { MessageLogItem, MessageTemplate, PendingGroup, SmsStatus } from '../lib/types';
+import type { ClassItem, MessageLogItem, MessageTemplateRow, MessageType, PendingGroup, SmsStatus } from '../lib/types';
 import { fmtDateTime } from '../lib/utils';
 import { Badge, Button, Card, EmptyState, ErrorBanner, Spinner, Tabs, inputCls, useToast } from '../components/ui';
+import Tooltip from '../components/Tooltip'; // P8-TOUR: plain-word tooltip on "dedupe key".
+import ConfirmDialog from '../components/ConfirmDialog';
+import CustomMessages from '../components/CustomMessages';
+import TemplateManager from '../components/TemplateManager';
 
 function errText(e: unknown): string {
   return e instanceof ApiClientError ? e.message : 'Something went wrong.';
@@ -19,35 +23,53 @@ export default function MessagesPage() {
   const [tab, setTab] = useState('pending');
   const [pending, setPending] = useState<PendingGroup[]>([]);
   const [log, setLog] = useState<MessageLogItem[]>([]);
-  const [templates, setTemplates] = useState<MessageTemplate[]>([]);
+  const [templates, setTemplates] = useState<MessageTemplateRow[]>([]);
+  const [classes, setClasses] = useState<ClassItem[]>([]);
   const [sms, setSms] = useState<SmsStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [logFilter, setLogFilter] = useState<'all' | 'sent' | 'failed' | 'queued'>('all');
+  const [logType, setLogType] = useState<'all' | MessageType>('all');
+  const [logClass, setLogClass] = useState('');
+  const [pendingApprove, setPendingApprove] = useState<PendingGroup | null>(null);
+  const [pendingRetry, setPendingRetry] = useState<MessageLogItem | null>(null);
   const { push, view } = useToast();
+
+  // Section 11: the delivery log is filtered server-side by type + class.
+  const loadLog = useCallback(() => {
+    const params = new URLSearchParams({ limit: '100' });
+    if (logType !== 'all') params.set('type', logType);
+    if (logClass) params.set('class_id', logClass);
+    api<{ items: MessageLogItem[] }>(`/messages/log?${params.toString()}`)
+      .then((l) => setLog(l.items))
+      .catch(() => setError('Could not load the delivery log.'));
+  }, [logType, logClass]);
 
   const load = useCallback(() => {
     setLoading(true);
     Promise.all([
-      api<PendingGroup[]>('/messages/pending-approval'),
-      api<{ items: MessageLogItem[] }>('/messages/log?limit=100'),
-      api<MessageTemplate[]>('/messages/templates'),
+      api<{ groups: PendingGroup[] }>('/messages/pending-approval'),
+      api<{ templates: MessageTemplateRow[] }>('/messages/templates'),
       api<SmsStatus>('/sms/status'),
+      api<{ items: ClassItem[] }>('/classes'),
     ])
-      .then(([p, l, t, s]) => {
-        setPending(p);
-        setLog(l.items);
-        setTemplates(t);
+      .then(([p, t, s, c]) => {
+        setPending(p.groups ?? []);
+        setTemplates(t.templates ?? []);
         setSms(s);
+        setClasses(c.items ?? []);
         setError('');
       })
       .catch(() => setError('Could not load messages.'))
       .finally(() => setLoading(false));
-  }, []);
+    loadLog();
+  }, [loadLog]);
 
   useEffect(load, [load]);
+  useEffect(loadLog, [loadLog]);
 
   const approveGroup = async (g: PendingGroup) => {
+    // Runs ONLY from the ConfirmDialog onConfirm below — never directly from a button.
     try {
       await api('/messages/approve', {
         method: 'POST',
@@ -115,6 +137,7 @@ export default function MessagesPage() {
       <Tabs
         tabs={[
           { key: 'pending', label: `Pending approval (${totalPending})` },
+          { key: 'custom', label: 'Custom messages' },
           { key: 'log', label: 'Delivery log' },
           { key: 'templates', label: 'Templates' },
         ]}
@@ -122,13 +145,20 @@ export default function MessagesPage() {
         onChange={setTab}
       />
 
+      {tab === 'custom' && <CustomMessages />}
+
       {tab === 'pending' && (
         <>
           {pending.length === 0 ? (
-            <EmptyState title="Nothing waiting for approval" body="When a class submits attendance with absent students, their messages appear here first." />
+            <EmptyState
+              title="Nothing waiting for approval"
+              body="When a class submits attendance with absent students, their messages appear here first."
+              actionLabel="View delivery log"
+              onAction={() => setTab('log')}
+            />
           ) : (
             pending.map((g) => (
-              <PendingGroupCard key={g.group_id ?? `${g.class}-${g.date}`} group={g} onApprove={() => approveGroup(g)} onEditBody={editBody} />
+              <PendingGroupCard key={g.group_id ?? `${g.class}-${g.date}`} group={g} onApprove={() => setPendingApprove(g)} onEditBody={editBody} />
             ))
           )}
         </>
@@ -136,16 +166,42 @@ export default function MessagesPage() {
 
       {tab === 'log' && (
         <>
-          <div className="flex gap-2">
-            <select className={inputCls + ' w-auto'} value={logFilter} onChange={(e) => setLogFilter(e.target.value as typeof logFilter)}>
+          {/* P8-TOUR: dedupe key, explained in plain words. */}
+          <p className="text-sm text-slate-500">
+            Every message has a dedupe key
+            <Tooltip text="Dedupe means 'remove duplicates'. The key is a unique label for one message to one parent — the system uses it to make sure the same message is never sent twice to the same parent, even if it is approved twice." />
+            {' '}— the same message is never sent twice to the same parent.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <select className={inputCls + ' w-auto'} value={logFilter} onChange={(e) => setLogFilter(e.target.value as typeof logFilter)} autoComplete="off">
               <option value="all">All statuses</option>
               <option value="sent">Sent</option>
               <option value="queued">Queued</option>
               <option value="failed">Failed</option>
             </select>
+            <select className={inputCls + ' w-auto'} value={logType} onChange={(e) => setLogType(e.target.value as typeof logType)} autoComplete="off">
+              <option value="all">All types</option>
+              <option value="absent">Absent</option>
+              <option value="fee_reminder">Fee reminder</option>
+              <option value="teacher_reminder">Teacher reminder</option>
+              <option value="result">Result</option>
+              <option value="announcement">Announcement</option>
+              <option value="custom">Custom</option>
+            </select>
+            <select className={inputCls + ' w-auto'} value={logClass} onChange={(e) => setLogClass(e.target.value)} autoComplete="off">
+              <option value="">All classes</option>
+              {classes.map((c) => (
+                <option key={c.id} value={c.id}>{c.name}-{c.section}</option>
+              ))}
+            </select>
           </div>
           {filteredLog.length === 0 ? (
-            <EmptyState title="No messages yet" body="Sent, queued and failed messages will be listed here with their status." />
+            <EmptyState
+              title="No messages yet"
+              body="Sent, queued and failed messages will be listed here with their status."
+              actionLabel="Review pending approvals"
+              onAction={() => setTab('pending')}
+            />
           ) : (
             <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
               <table className="w-full min-w-[720px] text-sm">
@@ -170,11 +226,17 @@ export default function MessagesPage() {
                       <td className="px-4 py-2.5">
                         {statusBadge(m.status)}
                         {m.error && <p className="mt-1 text-xs text-red-600">{m.error}</p>}
+                        {m.delivery && (
+                          <p className="mt-1 text-xs text-slate-500">
+                            Delivery: {m.delivery.status}
+                            {m.delivery.error ? ` — ${m.delivery.error}` : ''}
+                          </p>
+                        )}
                       </td>
                       <td className="px-4 py-2.5 text-xs">{fmtDateTime(m.sent_at)}</td>
                       <td className="px-4 py-2.5 text-right">
                         {m.status === 'failed' && (
-                          <Button variant="secondary" onClick={() => retry(m.id)}>Retry</Button>
+                          <Button variant="secondary" onClick={() => setPendingRetry(m)}>Retry</Button>
                         )}
                       </td>
                     </tr>
@@ -186,7 +248,41 @@ export default function MessagesPage() {
         </>
       )}
 
-      {tab === 'templates' && <TemplatesEditor templates={templates} onSaved={load} push={push} />}
+      {tab === 'templates' && <TemplateManager templates={templates} onSaved={load} />}
+      <ConfirmDialog
+        open={pendingApprove !== null}
+        title="Approve & send these messages?"
+        message={
+          pendingApprove
+            ? `Are you sure? This will approve and queue ${pendingApprove.messages.length} message(s) for Class ${pendingApprove.class} (${pendingApprove.date}) — they will be sent to the parents of absent students.`
+            : ''
+        }
+        confirmLabel={`Approve & send ${pendingApprove?.messages.length ?? 0}`}
+        tone="primary"
+        onConfirm={() => {
+          const g = pendingApprove;
+          setPendingApprove(null);
+          if (g) approveGroup(g);
+        }}
+        onCancel={() => setPendingApprove(null)}
+      />
+      <ConfirmDialog
+        open={pendingRetry !== null}
+        title="Retry this message?"
+        message={
+          pendingRetry
+            ? `Are you sure? This will retry sending the failed message to ${pendingRetry.student_name ?? 'this parent'} (${pendingRetry.parent_phone_masked}).`
+            : ''
+        }
+        confirmLabel="Retry message"
+        tone="primary"
+        onConfirm={() => {
+          const m = pendingRetry;
+          setPendingRetry(null);
+          if (m) retry(m.id);
+        }}
+        onCancel={() => setPendingRetry(null)}
+      />
       {view}
     </div>
   );
@@ -203,6 +299,7 @@ function PendingGroupCard({
 }) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
+  const [confirmingEdit, setConfirmingEdit] = useState<{ id: string; body: string; student: string } | null>(null);
 
   return (
     <Card className="p-5">
@@ -236,10 +333,10 @@ function PendingGroupCard({
             </div>
             {editingId === m.id ? (
               <div className="mt-2">
-                <textarea className={inputCls} rows={3} value={draft} onChange={(e) => setDraft(e.target.value)} />
+                <textarea className={inputCls} rows={3} value={draft} onChange={(e) => setDraft(e.target.value)} autoComplete="off" />
                 <p className="mt-1 text-xs text-slate-500">{draft.length} characters (SMS: 160 chars per segment)</p>
                 <div className="mt-2 flex gap-2">
-                  <Button onClick={() => { onEditBody(m.id, draft); setEditingId(null); }}>Save</Button>
+                  <Button onClick={() => setConfirmingEdit({ id: m.id, body: draft, student: m.student })}>Save</Button>
                   <Button variant="secondary" onClick={() => setEditingId(null)}>Cancel</Button>
                 </div>
               </div>
@@ -249,78 +346,24 @@ function PendingGroupCard({
           </li>
         ))}
       </ul>
+      <ConfirmDialog
+        open={confirmingEdit !== null}
+        title="Save this edited message?"
+        message={
+          confirmingEdit
+            ? `Are you sure? This will replace the queued message for ${confirmingEdit.student} with your edited text.`
+            : ''
+        }
+        confirmLabel="Save message"
+        tone="primary"
+        onConfirm={() => {
+          const c = confirmingEdit;
+          setConfirmingEdit(null);
+          setEditingId(null);
+          if (c) onEditBody(c.id, c.body);
+        }}
+        onCancel={() => setConfirmingEdit(null)}
+      />
     </Card>
-  );
-}
-
-function TemplatesEditor({
-  templates,
-  onSaved,
-  push,
-}: {
-  templates: MessageTemplate[];
-  onSaved: () => void;
-  push: (kind: 'success' | 'error', text: string) => void;
-}) {
-  const [lang, setLang] = useState<'en' | 'ur'>('en');
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const [busy, setBusy] = useState<string | null>(null);
-
-  const save = async (t: MessageTemplate) => {
-    const body = drafts[t.id] ?? t.body;
-    setBusy(t.id);
-    try {
-      await api(`/messages/templates/${t.id}`, { method: 'PATCH', body: { body } });
-      push('success', 'Template saved.');
-      onSaved();
-    } catch (e) {
-      push('error', errText(e));
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const shown = templates.filter((t) => t.language === lang);
-  const typeLabel: Record<string, string> = {
-    absent: 'Absent alert',
-    fee_reminder: 'Fee reminder',
-    teacher_reminder: 'Teacher reminder',
-  };
-
-  return (
-    <div className="space-y-4">
-      <div className="flex gap-2">
-        <Button variant={lang === 'en' ? 'primary' : 'secondary'} onClick={() => setLang('en')}>English</Button>
-        <Button variant={lang === 'ur' ? 'primary' : 'secondary'} onClick={() => setLang('ur')}>اردو</Button>
-      </div>
-      <p className="text-sm text-slate-500">
-        Variables: {'{student_name}'} {'{class}'} {'{date}'} {'{month}'} {'{amount}'} {'{school_name}'}
-      </p>
-      {shown.length === 0 && <EmptyState title="No templates for this language" body="Templates are seeded for English and Urdu by the backend." />}
-      {shown.map((t) => {
-        const body = drafts[t.id] ?? t.body;
-        return (
-          <Card key={t.id} className="p-5">
-            <h3 className="text-sm font-semibold text-slate-900">{typeLabel[t.type] ?? t.type}</h3>
-            <textarea
-              className={`${inputCls} mt-2 ${lang === 'ur' ? 'urdu' : ''}`}
-              dir={lang === 'ur' ? 'rtl' : 'ltr'}
-              rows={4}
-              value={body}
-              onChange={(e) => setDrafts((d) => ({ ...d, [t.id]: e.target.value }))}
-            />
-            <div className="mt-2 flex items-center justify-between">
-              <p className="text-xs text-slate-500">
-                {body.length} characters · {Math.max(1, Math.ceil(body.length / 160))} SMS segment(s)
-                {body.length > 160 ? ' — long messages cost more and may arrive split.' : ''}
-              </p>
-              <Button disabled={busy === t.id || body === t.body} onClick={() => save(t)}>
-                {busy === t.id ? 'Saving…' : 'Save template'}
-              </Button>
-            </div>
-          </Card>
-        );
-      })}
-    </div>
   );
 }

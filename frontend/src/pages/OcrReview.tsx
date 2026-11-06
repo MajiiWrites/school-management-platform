@@ -3,6 +3,10 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { api, ApiClientError } from '../lib/api';
 import type { OcrRow, OcrUpload } from '../lib/types';
 import { Badge, Button, Card, EmptyState, ErrorBanner, Spinner, useToast } from '../components/ui';
+import ConfirmDialog from '../components/ConfirmDialog';
+
+/** OCR confidence below this is flagged for manual review. */
+export const OCR_LOW_CONFIDENCE_THRESHOLD = 0.7;
 
 function errText(e: unknown): string {
   return e instanceof ApiClientError ? e.message : 'Something went wrong.';
@@ -17,6 +21,8 @@ export default function OcrReviewPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [showRaw, setShowRaw] = useState(false);
+  const [confirmingSave, setConfirmingSave] = useState(false);
+  const [pendingRemoveRow, setPendingRemoveRow] = useState<number | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const { push, view } = useToast();
 
@@ -50,13 +56,22 @@ export default function OcrReviewPage() {
     return name !== '' && rows.findIndex((x) => x.name.trim().toLowerCase() === name) !== i;
   }).length;
 
-  const confirmSave = async () => {
+  const lowConfidenceCount = rows.filter((r) => r.confidence < OCR_LOW_CONFIDENCE_THRESHOLD).length;
+
+  const confirmSave = () => {
     if (!classId || !upload) return;
     const cleaned = rows.filter((r) => r.name.trim() !== '');
     if (cleaned.length === 0) {
       push('error', 'No rows to save — add at least one student name.');
       return;
     }
+    setConfirmingSave(true);
+  };
+
+  const doSave = async () => {
+    if (!classId || !upload) return;
+    const cleaned = rows.filter((r) => r.name.trim() !== '');
+    setConfirmingSave(false);
     setSaving(true);
     try {
       const res = await api<{ saved: number; skipped_duplicates: number }>(
@@ -86,6 +101,15 @@ export default function OcrReviewPage() {
       </div>
 
       {error && <ErrorBanner message={error} />}
+
+      {upload && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800" role="alert">
+          ⚠️ Review before saving — OCR may contain errors. Nothing is saved until you confirm.
+          {lowConfidenceCount > 0
+            ? ` ${lowConfidenceCount} row(s) below ${Math.round(OCR_LOW_CONFIDENCE_THRESHOLD * 100)}% confidence are highlighted — check them carefully.`
+            : ' All rows are above the confidence threshold.'}
+        </div>
+      )}
 
       {!upload && (
         <Card className="p-6 text-center">
@@ -134,7 +158,12 @@ export default function OcrReviewPage() {
           </Card>
 
           {rows.length === 0 ? (
-            <EmptyState title="No names extracted" body="Try a clearer photo, or add students manually below." />
+            <EmptyState
+              title="No names extracted"
+              body="Try a clearer photo, or add students manually below."
+              actionLabel="Add a missing student"
+              onAction={addRow}
+            />
           ) : (
             <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
               <table className="w-full min-w-[680px] text-sm">
@@ -150,58 +179,57 @@ export default function OcrReviewPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {rows.map((r, i) => (
-                    <tr key={i} className={r.duplicate ? 'bg-amber-50' : ''}>
+                  {rows.map((r, i) => {
+                    const lowConf = r.confidence < OCR_LOW_CONFIDENCE_THRESHOLD;
+                    return (
+                    <tr key={i} className={lowConf ? 'bg-red-50' : r.duplicate ? 'bg-amber-50' : ''} title={lowConf ? `Low confidence (${Math.round(r.confidence * 100)}%) — please check this row before saving.` : undefined}>
                       <td className="px-3 py-2 text-slate-500">{i + 1}</td>
                       <td className="px-3 py-2">
                         <input
-                          className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
+                          className={`w-full rounded border px-2 py-1 text-sm ${lowConf ? 'border-red-400 bg-red-50' : 'border-slate-300'}`}
                           value={r.name}
                           onChange={(e) => updateRow(i, { name: e.target.value })}
-                          placeholder="Student name"
-                        />
+                          placeholder="Student name" autoComplete="off" />
                       </td>
                       <td className="px-3 py-2">
                         <input
-                          className="urdu w-full rounded border border-slate-300 px-2 py-1 text-sm"
+                          className={`urdu w-full rounded border px-2 py-1 text-sm ${lowConf ? 'border-red-400 bg-red-50' : 'border-slate-300'}`}
                           dir="rtl"
                           value={r.name_ur ?? ''}
                           onChange={(e) => updateRow(i, { name_ur: e.target.value })}
-                          placeholder="نام"
-                        />
+                          placeholder="نام" autoComplete="off" />
                       </td>
                       <td className="px-3 py-2">
                         <input
-                          className="w-16 rounded border border-slate-300 px-2 py-1 text-sm"
+                          className={`w-16 rounded border px-2 py-1 text-sm ${lowConf ? 'border-red-400 bg-red-50' : 'border-slate-300'}`}
                           type="number"
                           min={1}
                           value={r.roll_no ?? ''}
-                          onChange={(e) => updateRow(i, { roll_no: e.target.value ? Number(e.target.value) : null })}
-                        />
+                          onChange={(e) => updateRow(i, { roll_no: e.target.value ? Number(e.target.value) : null })} autoComplete="off" />
                       </td>
                       <td className="px-3 py-2">
                         <input
-                          className="w-36 rounded border border-slate-300 px-2 py-1 font-mono text-sm"
+                          className={`w-36 rounded border px-2 py-1 font-mono text-sm ${lowConf ? 'border-red-400 bg-red-50' : 'border-slate-300'}`}
                           value={r.parent_phone ?? ''}
                           onChange={(e) => updateRow(i, { parent_phone: e.target.value })}
-                          placeholder="03XX…"
-                        />
+                          placeholder="03XX…" autoComplete="off" />
                       </td>
                       <td className="px-3 py-2">
-                        {r.confidence < 0.7 ? (
-                          <Badge tone="amber">{Math.round(r.confidence * 100)}% — check</Badge>
+                        {lowConf ? (
+                          <Badge tone="red">{Math.round(r.confidence * 100)}% — check</Badge>
                         ) : (
                           <span className="text-xs text-slate-500">{Math.round(r.confidence * 100)}%</span>
                         )}
                         {r.duplicate && <Badge tone="amber">Duplicate?</Badge>}
                       </td>
                       <td className="px-3 py-2">
-                        <button className="text-sm font-medium text-red-600 hover:underline" onClick={() => removeRow(i)}>
+                        <button className="text-sm font-medium text-red-600 hover:underline" onClick={() => setPendingRemoveRow(i)}>
                           Remove
                         </button>
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -216,6 +244,29 @@ export default function OcrReviewPage() {
           </div>
         </>
       )}
+      <ConfirmDialog
+        open={confirmingSave}
+        title="Save these students?"
+        message={`Are you sure? This will add ${rows.filter((r) => r.name.trim()).length} student(s) to this class from the OCR draft${lowConfidenceCount > 0 ? `, including ${lowConfidenceCount} low-confidence row(s) below ${Math.round(OCR_LOW_CONFIDENCE_THRESHOLD * 100)}% confidence — please check them first` : ''}. Nothing has been saved yet; this is the step that saves them.`}
+        confirmLabel={`Save ${rows.filter((r) => r.name.trim()).length} students`}
+        tone="primary"
+        busy={saving}
+        onConfirm={doSave}
+        onCancel={() => setConfirmingSave(false)}
+      />
+      <ConfirmDialog
+        open={pendingRemoveRow !== null}
+        title="Remove this row?"
+        message={pendingRemoveRow !== null && rows[pendingRemoveRow] ? `Are you sure? This will remove the draft row for "${rows[pendingRemoveRow].name || '(no name)'}" — it has not been saved, so this only drops it from the draft.` : ''}
+        confirmLabel="Remove row"
+        tone="danger"
+        onConfirm={() => {
+          const i = pendingRemoveRow;
+          setPendingRemoveRow(null);
+          if (i !== null) removeRow(i);
+        }}
+        onCancel={() => setPendingRemoveRow(null)}
+      />
       {view}
     </div>
   );

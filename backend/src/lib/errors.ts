@@ -5,6 +5,7 @@ export type ErrorCode =
   | 'NOT_FOUND'
   | 'CONFLICT'
   | 'RATE_LIMITED'
+  | 'SESSION_EXPIRED'
   | 'INTERNAL';
 
 const STATUS: Record<ErrorCode, number> = {
@@ -14,6 +15,7 @@ const STATUS: Record<ErrorCode, number> = {
   NOT_FOUND: 404,
   CONFLICT: 409,
   RATE_LIMITED: 429,
+  SESSION_EXPIRED: 401,
   INTERNAL: 500,
 };
 
@@ -42,6 +44,11 @@ export class ApiError extends Error {
   }
   static conflict(message: string): ApiError {
     return new ApiError('CONFLICT', message);
+  }
+  /** 6D: refresh token presented after the school's idle timeout. The
+   * frontend treats this code as "session expired — sign in again". */
+  static sessionExpired(message = 'Session expired due to inactivity — please sign in again'): ApiError {
+    return new ApiError('SESSION_EXPIRED', message);
   }
 }
 

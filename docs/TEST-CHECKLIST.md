@@ -4,9 +4,10 @@ A walk-through checklist for testing the platform by hand (or for re-running
 the QA pass). Tick each item; anything that fails goes in `backend/QA-REPORT.md`
 with file, line, reproduction steps and severity.
 
-**Setup:** fresh database (`npx prisma migrate deploy && npx prisma db seed`),
-API on `:4000`, frontend built (`npm run build`). Demo school login:
-`demo@school.pk / Demo1234!`. Automated version of most items below:
+**Setup:** fresh database (`npx prisma migrate deploy && npx prisma db seed` —
+local dev only), API on `:4000`, frontend built (`npm run build`). Log in
+with the locally seeded demo admin (credentials in `backend/prisma/README.md`,
+local-only) or sign up a new school. Automated version of most items below:
 `~/workspace/tmp/qa-e2e.sh` (log: `~/workspace/tmp/qa-e2e.log`).
 
 ## A. Admin signup & classes

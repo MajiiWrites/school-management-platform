@@ -20,6 +20,8 @@ import {
 import type {
   AuditLogInput,
   DeviceRow,
+  DraftApproval,
+  DraftRow,
   MessagingStore,
   QueueRow,
   TemplateRow,
@@ -28,7 +30,7 @@ import { maskPhone, normalizePK } from '../phone';
 import { renderTemplate } from '../templates';
 
 const TEST_KEY = crypto.randomBytes(32);
-const testCrypto = {
+export const testCrypto = {
   encrypt: (e164: string) => {
     const iv = crypto.randomBytes(12);
     const cipher = crypto.createCipheriv('aes-256-gcm', TEST_KEY, iv);
@@ -51,7 +53,7 @@ const SCHOOL = { id: 'school-1', name: 'Demo Public School', timezone: 'Asia/Kar
 const FRIDAY = '2026-11-06'; // a Friday (school day)
 const SUNDAY = '2026-11-08'; // a Sunday
 
-class FakeStore implements MessagingStore {
+export class FakeStore implements MessagingStore {
   queue: QueueRow[] = [];
   templates: TemplateRow[] = [];
   devices = new Map<string, DeviceRow>();
@@ -63,7 +65,11 @@ class FakeStore implements MessagingStore {
   async getSchool() {
     return SCHOOL;
   }
-  async getStudentsByIds(ids: string[]) {
+  async getStudentsByIds(ids: string[], schoolId: string) {
+    // Fake mirrors the fixed Prisma store: only this school's students.
+    // (This fake has no student table, so it fabricates names for ids the
+    // caller derived from its own school's queue rows.)
+    void schoolId;
     return ids.map((id) => ({ id, name: `Student ${id}` }));
   }
   async isHoliday(_schoolId: string, date: string) {
@@ -75,20 +81,89 @@ class FakeStore implements MessagingStore {
   async listTemplates() {
     return this.templates;
   }
-  async getTemplateById(id: string) {
-    return this.templates.find((t) => t.id === id) ?? null;
+  async getTemplateById(id: string, schoolId?: string) {
+    return this.templates.find((t) => t.id === id && (!schoolId || t.schoolId === schoolId)) ?? null;
   }
-  async updateTemplate(id: string, patch: { body?: string; isActive?: boolean }) {
-    const t = this.templates.find((x) => x.id === id)!;
+  async updateTemplate(id: string, patch: { body?: string; isActive?: boolean; name?: string | null; type?: any; language?: any }, schoolId?: string) {
+    const t = this.templates.find((x) => x.id === id && (!schoolId || x.schoolId === schoolId))!;
+    if (!t) throw Object.assign(new Error('Template not found'), { code: 'NOT_FOUND' });
     if (patch.body !== undefined) t.body = patch.body;
     if (patch.isActive !== undefined) t.isActive = patch.isActive;
+    if (patch.name !== undefined) t.name = patch.name;
+    if (patch.type !== undefined) t.type = patch.type;
+    if (patch.language !== undefined) t.language = patch.language;
     return t;
   }
-  async findQueueByDedupeKey(dedupeKey: string) {
-    return this.queue.find((q) => q.dedupeKey === dedupeKey) ?? null;
+  // --- Section 11 (Custom Messages): in-memory template/draft/recipient
+  // methods mirroring the fixed Prisma store's school-scoping. ---
+  drafts: DraftRow[] = [];
+  approvals: Array<DraftApproval & { schoolId: string; entityId: string }> = [];
+  async createTemplate(input: { schoolId: string; name: string; type: any; language: any; body: string; isCustom?: boolean }) {
+    if (this.templates.some((t) => t.schoolId === input.schoolId && t.type === input.type && t.language === input.language)) {
+      throw Object.assign(new Error('A template already exists for this type and language'), { code: 'CONFLICT' });
+    }
+    const row: TemplateRow = { id: `tpl-${++this.seq}`, schoolId: input.schoolId, type: input.type, language: input.language, body: input.body, isActive: true, name: input.name, isCustom: input.isCustom ?? true };
+    this.templates.push(row);
+    return row;
+  }
+  async deleteTemplate(id: string, schoolId: string) {
+    const idx = this.templates.findIndex((t) => t.id === id && t.schoolId === schoolId);
+    if (idx === -1) throw Object.assign(new Error('Template not found'), { code: 'NOT_FOUND' });
+    this.templates.splice(idx, 1);
+  }
+  async createDraft(draft: any) {
+    const row: DraftRow = { id: `d-${++this.seq}`, schoolId: draft.schoolId, createdBy: draft.createdBy ?? null, recipientType: draft.recipientType, targetClassId: draft.targetClassId ?? null, targetStudentIds: draft.targetStudentIds ?? [], body: draft.body, status: 'draft', scheduledFor: draft.scheduledFor ?? null, createdAt: new Date(), updatedAt: new Date() };
+    this.drafts.push(row);
+    return row;
+  }
+  async getDraftById(id: string, schoolId: string) {
+    return this.drafts.find((d) => d.id === id && d.schoolId === schoolId) ?? null;
+  }
+  async listDrafts(schoolId: string, filters: { status?: string; page: number; limit: number }) {
+    const items = this.drafts.filter((d) => d.schoolId === schoolId && (!filters.status || d.status === filters.status));
+    return { items, total: items.length };
+  }
+  async updateDraft(id: string, patch: any, schoolId: string) {
+    const d = this.drafts.find((x) => x.id === id && x.schoolId === schoolId);
+    if (!d) throw Object.assign(new Error('Draft not found'), { code: 'NOT_FOUND' });
+    Object.assign(d, patch, { updatedAt: new Date() });
+    return d;
+  }
+  async deleteDraft(id: string, schoolId: string) {
+    const idx = this.drafts.findIndex((d) => d.id === id && d.schoolId === schoolId);
+    if (idx === -1) throw Object.assign(new Error('Draft not found'), { code: 'NOT_FOUND' });
+    this.drafts.splice(idx, 1);
+  }
+  async listRecipients(schoolId: string, query: import('../store').RecipientQuery) {
+    void schoolId;
+    void query;
+    return [] as Array<{
+      id: string; name: string; fatherName: string | null; classId: string;
+      className: string; section: string; parentPhoneEnc: string | null; parentOptOut: boolean;
+    }>;
+  }
+  async listDeliveriesForQueueIds(queueIds: string[]) {
+    return this.deliveries
+      .filter((d) => queueIds.includes(String(d.queueId)))
+      .map((d) => ({ queueId: String(d.queueId), provider: 'sim', status: String(d.status), deliveredAt: null, error: (d.error as string | null) ?? null, createdAt: new Date() }));
+  }
+  async getDraftApproval(draftId: string, schoolId: string) {
+    const rows = this.approvals.filter((a) => a.entityId === draftId && a.schoolId === schoolId);
+    return rows[rows.length - 1] ?? null;
+  }
+  async hasApprovedDraftApproval(draftId: string, schoolId: string) {
+    return this.approvals.some((a) => a.entityId === draftId && a.schoolId === schoolId && a.status === 'approved');
+  }
+  async recordDraftApproval(input: { schoolId: string; draftId: string; adminId: string; payload: Record<string, unknown> }) {
+    const row: DraftApproval & { schoolId: string; entityId: string } = { id: `ap-${++this.seq}`, status: 'approved', requestedBy: input.adminId, decidedBy: input.adminId, decidedAt: new Date(), createdAt: new Date(), schoolId: input.schoolId, entityId: input.draftId };
+    this.approvals.push(row);
+    return row;
+  }
+  async findQueueByDedupeKey(dedupeKey: string, schoolId?: string) {
+    return this.queue.find((q) => q.dedupeKey === dedupeKey && (!schoolId || q.schoolId === schoolId)) ?? null;
   }
   async createQueue(row: Parameters<MessagingStore['createQueue']>[0]) {
-    const existing = await this.findQueueByDedupeKey(row.dedupeKey);
+    const existing = await this.findQueueByDedupeKey(row.dedupeKey, row.schoolId);
     if (existing) return { row: existing, created: false };
     const created: QueueRow = {
       id: `q-${++this.seq}`,
@@ -138,11 +213,12 @@ class FakeStore implements MessagingStore {
     );
     return { items, total: items.length };
   }
-  async getQueueById(id: string) {
-    return this.queue.find((q) => q.id === id) ?? null;
+  async getQueueById(id: string, schoolId?: string) {
+    return this.queue.find((q) => q.id === id && (!schoolId || q.schoolId === schoolId)) ?? null;
   }
-  async updateQueue(id: string, patch: Partial<QueueRow>) {
-    const row = this.queue.find((q) => q.id === id)!;
+  async updateQueue(id: string, patch: Partial<QueueRow>, schoolId?: string) {
+    const row = this.queue.find((q) => q.id === id && (!schoolId || q.schoolId === schoolId))!;
+    if (!row) throw Object.assign(new Error('Message not found'), { code: 'NOT_FOUND' });
     Object.assign(row, patch);
     return row;
   }
@@ -162,6 +238,10 @@ class FakeStore implements MessagingStore {
     return this.devices.get(deviceId) ?? null;
   }
   async upsertDevice(input: { schoolId: string; deviceId: string; name: string }) {
+    const existing = this.devices.get(input.deviceId);
+    if (existing && existing.schoolId !== input.schoolId) {
+      throw Object.assign(new Error('device_id is already registered to another school'), { code: 'CONFLICT' });
+    }
     const row: DeviceRow = {
       id: `dev-${input.deviceId}`,
       schoolId: input.schoolId,
@@ -194,7 +274,7 @@ class FakeStore implements MessagingStore {
   }
 }
 
-function enc(phone: string): string {
+export function enc(phone: string): string {
   return testCrypto.encrypt(phone);
 }
 

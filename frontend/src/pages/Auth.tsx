@@ -30,7 +30,7 @@ function errText(e: unknown): string {
 }
 
 export function LoginPage() {
-  const { login } = useAuth();
+  const { login, sessionExpired, clearSessionExpired } = useAuth();
   const navigate = useNavigate();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -53,6 +53,15 @@ export function LoginPage() {
 
   return (
     <AuthShell title="Welcome back" sub="Log in to your school portal.">
+      {/* 6D: shown when the previous session ended for inactivity. */}
+      {sessionExpired && (
+        <div className="mb-4 flex items-start justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          <span>Your session ended because you were inactive for a while. Please sign in again — your data is safe.</span>
+          <button onClick={clearSessionExpired} className="shrink-0 font-medium underline" aria-label="Dismiss">
+            Dismiss
+          </button>
+        </div>
+      )}
       {error && <ErrorBanner message={error} />}
       <form onSubmit={submit} className="space-y-4">
         <Field label="Email">
@@ -109,7 +118,7 @@ export function SignupPage() {
       {error && <ErrorBanner message={error} />}
       <form onSubmit={submit} className="space-y-4">
         <Field label="School name">
-          <input className={inputCls} required value={schoolName} onChange={(e) => setSchoolName(e.target.value)} placeholder="e.g. Al-Noor Public School" />
+          <input className={inputCls} required value={schoolName} onChange={(e) => setSchoolName(e.target.value)} placeholder="e.g. Al-Noor Public School" autoComplete="off" />
         </Field>
         <Field label="Admin email">
           <input className={inputCls} type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="admin@school.pk" autoComplete="email" />
@@ -201,7 +210,7 @@ export function ForgotPasswordPage() {
       ) : (
         <form onSubmit={submit} className="space-y-4">
           <Field label="Email">
-            <input className={inputCls} type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="admin@school.pk" />
+            <input className={inputCls} type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="admin@school.pk" autoComplete="off" />
           </Field>
           <Button type="submit" disabled={busy} className="w-full">
             {busy ? 'Sending…' : 'Send reset link'}

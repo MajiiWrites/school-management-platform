@@ -4,22 +4,45 @@ import { useAuth } from '../auth/AuthContext';
 import { api } from '../lib/api';
 import type { NotificationItem, Role } from '../lib/types';
 import { cx } from '../lib/utils';
+import { useLanguage } from '../lib/i18n';
 import DeveloperFooter from './DeveloperFooter';
+import IdleTimeout from './IdleTimeout'; // 6D component (added by its agent; import was missing)
+// P8-TOUR: guided tour (Phase 10 criterion E) — modal-based, no library.
+import GuidedTour, { startGuidedTour } from './GuidedTour';
 
-const NAV: { to: string; label: string; icon: string; roles: Role[] }[] = [
-  { to: '/', label: 'Dashboard', icon: '▦', roles: ['admin', 'clerk'] },
-  { to: '/classes', label: 'Classes', icon: '▤', roles: ['admin', 'clerk'] },
-  { to: '/students', label: 'Students', icon: '👥', roles: ['admin', 'clerk'] },
-  { to: '/parents', label: 'Parents', icon: '☎', roles: ['admin', 'clerk'] },
-  { to: '/fees', label: 'Fees', icon: '₨', roles: ['admin', 'clerk'] },
-  { to: '/messages', label: 'Messages', icon: '✉', roles: ['admin', 'clerk'] },
-  { to: '/reports', label: 'Reports', icon: '▧', roles: ['admin', 'clerk'] },
-  { to: '/settings', label: 'Settings', icon: '⚙', roles: ['admin'] },
+const NAV: { to: string; labelKey: string; icon: string; roles: Role[] }[] = [
+  { to: '/', labelKey: 'dashboard', icon: '▦', roles: ['admin', 'clerk'] },
+  { to: '/classes', labelKey: 'classes', icon: '▤', roles: ['admin', 'clerk'] },
+  { to: '/students', labelKey: 'students', icon: '👥', roles: ['admin', 'clerk'] },
+  { to: '/parents', labelKey: 'parents', icon: '☎', roles: ['admin', 'clerk'] },
+  { to: '/fees', labelKey: 'fees', icon: '₨', roles: ['admin', 'clerk'] },
+  { to: '/messages', labelKey: 'messages', icon: '✉', roles: ['admin', 'clerk'] },
+  { to: '/reports', labelKey: 'reports', icon: '▧', roles: ['admin', 'clerk'] },
+  // 6B: results (OCR sheets, toppers, report cards)
+  { to: '/results', labelKey: 'results', icon: '🏆', roles: ['admin', 'clerk'] },
+  // 6C-1: sessions / exams / timetable / staff & payroll.
+  { to: '/sessions', labelKey: 'sessions', icon: '🗓', roles: ['admin', 'clerk'] },
+  { to: '/exams', labelKey: 'exams', icon: '📝', roles: ['admin', 'clerk'] },
+  { to: '/timetable', labelKey: 'timetable', icon: '🕘', roles: ['admin', 'clerk'] },
+  { to: '/staff', labelKey: 'staff-payroll', icon: '👩‍🏫', roles: ['admin', 'clerk'] },
+  // 6C-2: expenses, announcements, events, certificates, leave/late, notifications.
+  { to: '/expenses', labelKey: 'expenses', icon: '🧾', roles: ['admin', 'clerk'] },
+  { to: '/announcements', labelKey: 'announcements', icon: '📢', roles: ['admin', 'clerk'] },
+  { to: '/events', labelKey: 'events', icon: '📅', roles: ['admin', 'clerk'] },
+  { to: '/certificates', labelKey: 'certificates', icon: '🎓', roles: ['admin', 'clerk'] },
+  { to: '/leaves', labelKey: 'leaves', icon: '🗓', roles: ['admin', 'clerk'] },
+  { to: '/notifications', labelKey: 'notifications', icon: '🔔', roles: ['admin', 'clerk'] },
+  // P8-TOUR: Help page (guided tour + how-tos + glossary).
+  { to: '/help', labelKey: 'help', icon: '?', roles: ['admin', 'clerk'] },
+  { to: '/settings', labelKey: 'settings', icon: '⚙', roles: ['admin'] },
+  // 6D: 2FA, roles & permissions, data export, deletion requests, login alerts, backups.
+  { to: '/security', labelKey: 'security', icon: '🔒', roles: ['admin'] },
 ];
 
 function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const { nav } = useLanguage();
 
   return (
     <div className="flex h-full flex-col">
@@ -42,7 +65,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
             }
           >
             <span className="w-5 text-center">{n.icon}</span>
-            {n.label}
+            {nav(n.labelKey)}
           </NavLink>
         ))}
       </nav>
@@ -83,6 +106,11 @@ export default function Layout() {
 
   return (
     <div className="min-h-screen lg:flex">
+      {/* 6D: idle/session-timeout warning + auto sign-out (authed area only). */}
+      <IdleTimeout />
+      {/* P8-TOUR: guided tour modal — auto-opens once on first login; the
+          header "?" button relaunches it anytime. */}
+      <GuidedTour />
       {/* Desktop sidebar */}
       <aside className="hidden w-64 shrink-0 border-r border-slate-200 bg-white lg:block">
         <div className="sticky top-0 h-screen">
@@ -111,7 +139,16 @@ export default function Layout() {
             ☰
           </button>
           <p className="flex-1 text-sm font-semibold text-slate-800 lg:hidden">School Manager</p>
-          <div className="relative ml-auto">
+          {/* P8-TOUR: relaunch the guided tour anytime. */}
+          <button
+            onClick={startGuidedTour}
+            className="ml-auto rounded-lg p-2 text-slate-600 hover:bg-slate-100"
+            title="Take the guided tour"
+            aria-label="Take the guided tour"
+          >
+            ?
+          </button>
+          <div className="relative">
             <button
               onClick={() => setBellOpen((v) => !v)}
               className="relative rounded-lg p-2 text-slate-600 hover:bg-slate-100"
@@ -142,6 +179,14 @@ export default function Layout() {
                     </button>
                   ))}
                 </div>
+                {/* 6C-2: the bell is a preview; the full center lives on its own page. */}
+                <NavLink
+                  to="/notifications"
+                  onClick={() => setBellOpen(false)}
+                  className="block border-t border-slate-200 px-4 py-2 text-center text-sm font-medium text-brand-700 hover:bg-slate-50"
+                >
+                  View all in the notification center →
+                </NavLink>
               </div>
             )}
           </div>

@@ -134,35 +134,41 @@ const FEE_AMOUNT: Record<string, number> = { '1-A': 1500, '5-A': 2000, '6-B': 25
 const FEE_MONTH = '2026-11'; // seeded fee month
 const ATTENDANCE_DATE = '2026-11-05'; // Thursday — one submitted day (class 5-A)
 
-const TEMPLATES: { type: string; language: string; body: string }[] = [
+const TEMPLATES: { type: string; language: string; name: string; body: string }[] = [
   {
     type: 'absent',
     language: 'en',
+    name: 'Absent Alert (EN)',
     body: 'Dear Parent, your child {student_name} (Class {class}) was marked ABSENT from school today ({date}). Please contact the school if needed. – {school_name}',
   },
   {
     type: 'absent',
     language: 'ur',
+    name: 'Absent Alert (UR)',
     body: 'پیارے والدین، آپ کا بچہ {student_name} (کلاس {class}) آج ({date}) اسکول سے غیر حاضر تھا۔ ضرورت ہو تو اسکول سے رابطہ کریں۔ – {school_name}',
   },
   {
     type: 'fee_reminder',
     language: 'en',
+    name: 'Fee Reminder (EN)',
     body: 'Dear Parent, the fee of {student_name} (Class {class}) for {month} is due. Amount: {amount}. Please pay at the earliest. – {school_name}',
   },
   {
     type: 'fee_reminder',
     language: 'ur',
+    name: 'Fee Reminder (UR)',
     body: 'پیارے والدین، {student_name} (کلاس {class}) کی {month} کی فیس واجب الادا ہے۔ رقم: {amount}۔ براہ کرم جلد از جلد ادا کریں۔ – {school_name}',
   },
   {
     type: 'teacher_reminder',
     language: 'en',
+    name: 'Teacher Reminder (EN)',
     body: 'Reminder: attendance for Class {class} has not been submitted today ({date}). Please submit it as soon as possible. – {school_name}',
   },
   {
     type: 'teacher_reminder',
     language: 'ur',
+    name: 'Teacher Reminder (UR)',
     body: 'یاد دہانی: کلاس {class} کی حاضری آج ({date}) ابھی تک جمع نہیں ہوئی۔ براہ کرم جلد از جلد جمع کروائیں۔ – {school_name}',
   },
 ];
@@ -383,11 +389,43 @@ async function main(): Promise<void> {
   for (const t of TEMPLATES) {
     await prisma.messageTemplate.upsert({
       where: { schoolId_type_language: { schoolId: school.id, type: t.type, language: t.language } },
-      update: { body: t.body, isActive: true },
-      create: { schoolId: school.id, type: t.type, language: t.language, body: t.body, isActive: true },
+      update: { body: t.body, name: t.name, isCustom: false, isActive: true },
+      create: { schoolId: school.id, type: t.type, language: t.language, name: t.name, body: t.body, isCustom: false, isActive: true },
     });
   }
   console.log('templates: absent / fee_reminder / teacher_reminder x en+ur');
+
+  // v2: default role permissions for the demo school (same matrix as the v2
+  // migration SQL, which covers schools that already exist at deploy time;
+  // the school does not exist yet when the migration runs on a fresh DB, so
+  // the seed covers it here). Admin = everything; clerk = view
+  // students/fees/results/attendance/reports + add students/fees/results
+  // (approval-gated in the app layer) + mark fee paid (v1 behaviour);
+  // principal = view-only, no settings/users.
+  const ROLE_RESOURCES = ['students', 'fees', 'results', 'attendance', 'classes', 'messages', 'reports',
+    'settings', 'users', 'staff', 'timetable', 'exams', 'announcements', 'expenses'];
+  const ROLE_ACTIONS = ['view', 'create', 'update', 'delete', 'approve', 'export'];
+  const ROLE_DEFAULTS: Record<string, [string, string][]> = {
+    admin: ROLE_RESOURCES.flatMap((r) => ROLE_ACTIONS.map((a): [string, string] => [r, a])),
+    clerk: [
+      ...['students', 'fees', 'results', 'attendance', 'reports'].map((r): [string, string] => [r, 'view']),
+      ['students', 'create'], ['fees', 'create'], ['results', 'create'], ['fees', 'update'],
+    ],
+    principal: ['students', 'fees', 'results', 'attendance', 'classes', 'messages', 'reports',
+      'staff', 'timetable', 'exams', 'announcements', 'expenses'].map((r): [string, string] => [r, 'view']),
+  };
+  let permCount = 0;
+  for (const [role, pairs] of Object.entries(ROLE_DEFAULTS)) {
+    for (const [resource, action] of pairs) {
+      await prisma.rolePermission.upsert({
+        where: { schoolId_role_resource_action: { schoolId: school.id, role, resource, action } },
+        update: { allowed: true },
+        create: { schoolId: school.id, role, resource, action, allowed: true },
+      });
+      permCount++;
+    }
+  }
+  console.log(`role permissions: ${permCount} rows (admin ${ROLE_DEFAULTS.admin.length}, clerk ${ROLE_DEFAULTS.clerk.length}, principal ${ROLE_DEFAULTS.principal.length})`);
 
   // Holiday + current academic session
   await prisma.holiday.upsert({

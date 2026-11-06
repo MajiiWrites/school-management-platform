@@ -19,6 +19,9 @@ uploads/
 backend/uploads/
 frontend/uploads/
 
+# 6D: nightly per-school backups contain fully decrypted parent phones — never commit
+backend/backups/
+
 # Logs & OS
 *.log
 npm-debug.log*

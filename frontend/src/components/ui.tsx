@@ -175,11 +175,40 @@ export function Spinner({ label = 'Loading…' }: { label?: string }) {
   );
 }
 
-export function EmptyState({ title, body }: { title: string; body?: string }) {
+export function EmptyState({
+  title,
+  body,
+  actionLabel,
+  onAction,
+  actionHref,
+}: {
+  title: string;
+  body?: string;
+  /** Optional call-to-action button shown under the message (never a blank page). */
+  actionLabel?: string;
+  onAction?: () => void;
+  actionHref?: string;
+}) {
   return (
     <div className="rounded-xl border border-dashed border-slate-300 bg-white px-4 py-10 text-center">
       <p className="text-sm font-medium text-slate-700">{title}</p>
       {body ? <p className="mt-1 text-sm text-slate-500">{body}</p> : null}
+      {actionLabel && onAction ? (
+        <button
+          onClick={onAction}
+          className="mt-4 inline-block rounded-lg bg-brand-700 px-4 py-2 text-sm font-medium text-white hover:bg-brand-900"
+        >
+          {actionLabel}
+        </button>
+      ) : null}
+      {actionLabel && !onAction && actionHref ? (
+        <a
+          href={actionHref}
+          className="mt-4 inline-block rounded-lg bg-brand-700 px-4 py-2 text-sm font-medium text-white hover:bg-brand-900"
+        >
+          {actionLabel}
+        </a>
+      ) : null}
     </div>
   );
 }

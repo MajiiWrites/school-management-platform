@@ -39,8 +39,6 @@ services:
         sync: false
       - key: UPLOAD_DIR
         value: /app/uploads
-      - key: SEED_ON_BOOT
-        value: "true"
       - key: OCR_PROVIDER
         value: tesseract
       - key: OCR_LANGS

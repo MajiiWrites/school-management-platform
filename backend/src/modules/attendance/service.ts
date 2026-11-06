@@ -28,13 +28,18 @@ async function getSchool(db: Db, schoolId: string): Promise<any> {
   return school;
 }
 
-async function getClassDay(db: Db, classId: string, date: string): Promise<any | null> {
-  return db.attendanceDay.findFirst({ where: { classId: classId, date: dateOnly(date) } });
+// ISOLATION FIX: the old lookup was by (classId, date) alone. Every caller
+// now passes the school that owns the class, so a day row can never be
+// resolved across schools even if ids were ever confused upstream.
+async function getClassDay(db: Db, classId: string, date: string, schoolId?: string): Promise<any | null> {
+  const where: Record<string, unknown> = { classId: classId, date: dateOnly(date) };
+  if (schoolId) where.schoolId = schoolId;
+  return db.attendanceDay.findFirst({ where });
 }
 
 /** Public link page data: class, today's date, students, submission state. */
-export async function getLinkPage(db: Db, token: string): Promise<Record<string, unknown>> {
-  const cls = await resolveLinkToken(db, token);
+export async function getLinkPage(db: Db, token: string, expectedSchoolId?: string): Promise<Record<string, unknown>> {
+  const cls = await resolveLinkToken(db, token, expectedSchoolId);
   if (!cls) throw ApiError.notFound('This attendance link is invalid, revoked or expired');
   const school = await getSchool(db, cls.schoolId);
   const date = todayInTz(school.timezone);
@@ -43,7 +48,7 @@ export async function getLinkPage(db: Db, token: string): Promise<Record<string,
     where: { classId: cls.id, status: 'active' },
     orderBy: [{ rollNo: 'asc' }, { name: 'asc' }],
   });
-  const day = await getClassDay(db, cls.id, date);
+  const day = await getClassDay(db, cls.id, date, cls.schoolId);
   let submitted: Record<string, string> = {};
   if (day) {
     const records = await db.attendanceRecord.findMany({ where: { attendanceDayId: day.id } });
@@ -68,6 +73,8 @@ export interface SubmitInput {
   records: Array<{ student_id: string; status: AttendanceStatus }>;
   /** Test/QA only — forces the submission date. Routes never set this. */
   dateOverride?: string;
+  /** Optional school context: when set, a token from another school is rejected (404). */
+  expectedSchoolId?: string;
 }
 
 export interface SubmitResult {
@@ -96,7 +103,7 @@ export interface SubmitResult {
  * - teacher absence NEVER creates messages (this flow is student-only)
  */
 export async function submitAttendance(db: Db, input: SubmitInput): Promise<SubmitResult> {
-  const cls = await resolveLinkToken(db, input.token);
+  const cls = await resolveLinkToken(db, input.token, input.expectedSchoolId);
   if (!cls) throw ApiError.notFound('This attendance link is invalid, revoked or expired');
   const school = await getSchool(db, cls.schoolId);
   const date = input.dateOverride ?? todayInTz(school.timezone);
@@ -120,7 +127,7 @@ export async function submitAttendance(db: Db, input: SubmitInput): Promise<Subm
     if (!statuses.has(s.id)) statuses.set(s.id, 'present');
   }
 
-  const existing = await getClassDay(db, cls.id, date);
+  const existing = await getClassDay(db, cls.id, date, cls.schoolId);
   if (existing && !existing.unlocked) {
     throw ApiError.conflict('Attendance for this class has already been submitted today');
   }
@@ -197,6 +204,9 @@ export async function submitAttendance(db: Db, input: SubmitInput): Promise<Subm
           parentName: s.parentName ?? null,
           parentPhoneEnc: s.parentPhoneEnc ?? null,
           parentOptOut: s.parentOptOut ?? false,
+          // Section 11: full 8-variable render context for absent templates.
+          fatherName: s.fatherName ?? null,
+          section: cls.section ?? null,
         })),
         language: lang,
       },
@@ -239,7 +249,7 @@ export async function unlockAttendance(db: Db, schoolId: string, classId: string
   if (!isValidDateString(date)) throw ApiError.validation('Date must be YYYY-MM-DD');
   const cls = await db.class.findFirst({ where: { id: classId, schoolId: schoolId } });
   if (!cls) throw ApiError.notFound('Class not found');
-  const day = await getClassDay(db, classId, date);
+  const day = await getClassDay(db, classId, date, schoolId);
   if (!day) throw ApiError.notFound('No attendance submission exists for this class and date');
   const updated = await db.attendanceDay.update({ where: { id: day.id }, data: { unlocked: true, unlockedBy: adminId } });
   await writeAudit(db, { schoolId, actorId: adminId, actorType: 'user', action: 'attendance.unlock', entity: 'attendance_day', entityId: day.id, details: { class_id: classId, date } });
@@ -319,7 +329,7 @@ export async function editAttendance(
       continue;
     }
     const dedupeKey = `absent:${s.id}:${date}`;
-    const already = await db.messageQueue.findUnique({ where: { dedupeKey: dedupeKey } });
+    const already = await db.messageQueue.findFirst({ where: { schoolId: schoolId, dedupeKey: dedupeKey } });
     if (already) continue;
     await db.messageQueue.create({
       data: {
@@ -357,7 +367,7 @@ export async function getClassAttendance(db: Db, schoolId: string, classId: stri
   if (!isValidDateString(date)) throw ApiError.validation('Date must be YYYY-MM-DD');
   const cls = await db.class.findFirst({ where: { id: classId, schoolId: schoolId } });
   if (!cls) throw ApiError.notFound('Class not found');
-  const day = await getClassDay(db, classId, date);
+  const day = await getClassDay(db, classId, date, schoolId);
   if (!day) return null;
   const records = await db.attendanceRecord.findMany({ where: { attendanceDayId: day.id } });
   const students = await db.student.findMany({ where: { classId: classId } });
