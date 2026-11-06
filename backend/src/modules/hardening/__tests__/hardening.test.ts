@@ -633,3 +633,70 @@ describe('soft-delete helpers', () => {
     });
   });
 });
+
+describe('recycle-bin re-create conflict (D1)', () => {
+  let db: any;
+  let admin: any;
+  let klass: any;
+
+  beforeEach(async () => {
+    db = new FakeDb();
+    ({ admin, klass } = await seedSchool(db));
+  });
+
+  /** The fake DB has no unique indexes, so a P2002 has to be simulated:
+   * replace the delegate's create/update with one that throws it. */
+  function failUnique(collection: any, method: 'create' | 'update') {
+    const err = Object.assign(new Error('Unique constraint failed on the fields'), { code: 'P2002' });
+    collection[method] = () => {
+      throw err;
+    };
+  }
+
+  it('re-creating a deleted class names the Recycle Bin instead of a bare P2002', async () => {
+    const gone = db.class.create({ data: { schoolId: SCHOOL, name: '6', section: 'B', teacherName: 'T' } });
+    await classesSvc.deleteClass(db, SCHOOL, gone.id, admin.id);
+    failUnique(db.class, 'create');
+    await expect(
+      classesSvc.createClass(db, SCHOOL, { name: '6', section: 'B', teacher_name: 'New Teacher' }, admin.id),
+    ).rejects.toMatchObject({ code: 'CONFLICT', message: expect.stringContaining('Recycle Bin') });
+  });
+
+  it('P2002 with no deleted class behind it still says "already exists"', async () => {
+    failUnique(db.class, 'create');
+    await expect(
+      classesSvc.createClass(db, SCHOOL, { name: '7', section: 'C', teacher_name: 'T' }, admin.id),
+    ).rejects.toMatchObject({ code: 'CONFLICT', message: expect.stringContaining('already exists') });
+  });
+
+  it('renaming a class onto a deleted class name names the Recycle Bin', async () => {
+    const gone = db.class.create({ data: { schoolId: SCHOOL, name: '6', section: 'B', teacherName: 'T' } });
+    await classesSvc.deleteClass(db, SCHOOL, gone.id, admin.id);
+    failUnique(db.class, 'update');
+    await expect(classesSvc.updateClass(db, SCHOOL, klass.id, { name: '6', section: 'B' }, admin.id)).rejects.toMatchObject({
+      code: 'CONFLICT',
+      message: expect.stringContaining('Recycle Bin'),
+    });
+  });
+
+  it('re-adding a student on a deleted roll number names the Recycle Bin', async () => {
+    const gone = await studentsSvc.createStudent(db, SCHOOL, klass.id, { name: 'Old Roll', roll_no: 5 }, admin.id);
+    await studentsSvc.deleteStudent(db, SCHOOL, gone.id, admin.id);
+    failUnique(db.student, 'create');
+    await expect(
+      studentsSvc.createStudent(db, SCHOOL, klass.id, { name: 'New Roll', roll_no: 5 }, admin.id),
+    ).rejects.toMatchObject({ code: 'CONFLICT', message: expect.stringContaining('Recycle Bin') });
+  });
+
+  it('restore blocked by a live row with the same key is a clear 409, not a 500', async () => {
+    const gone = db.class.create({ data: { schoolId: SCHOOL, name: '6', section: 'B', teacherName: 'T' } });
+    await classesSvc.deleteClass(db, SCHOOL, gone.id, admin.id);
+    const bin = await recycleBin.listRecycleBin(db, SCHOOL, {});
+    // Simulate the DB refusing the un-delete (live row took the key).
+    failUnique(db.class, 'update');
+    await expect(recycleBin.restoreDeletedRecord(db, SCHOOL, bin.items[0].id, admin.id)).rejects.toMatchObject({
+      code: 'CONFLICT',
+      message: expect.stringContaining('live record'),
+    });
+  });
+});

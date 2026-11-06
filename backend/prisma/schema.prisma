@@ -137,6 +137,7 @@ model Class {
   teacherPhoneEnc     String?
   teacherPhoneHash    String?
   attendanceTokenHash String?
+  attendanceTokenEnc  String?
   tokenExpiresAt      DateTime? @db.Timestamptz(6)
   tokenRevoked        Boolean   @default(false)
   // v2: soft delete — list queries must exclude rows where deletedAt IS NOT NULL.

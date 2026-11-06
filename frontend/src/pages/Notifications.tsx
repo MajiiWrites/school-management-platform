@@ -2,6 +2,7 @@
 // approvals, failed messages, OCR items needing review, fee dues.
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api';
+import type { NotificationItem } from '../lib/types';
 import { fmtPKR } from '../lib/utils';
 import { Card, EmptyState, ErrorBanner, Spinner } from '../components/ui';
 import { useLanguage } from '../lib/i18n';
@@ -39,6 +40,17 @@ export default function NotificationsPage() {
       })
       .catch(() => setError('Could not load the notification center.'))
       .finally(() => setLoading(false));
+    // Phase 9 fix (stale header badge): opening the notification center
+    // counts as viewing the notifications, so mark the unread ones read
+    // — the header badge (refetched on navigation) then clears instead
+    // of staying stuck at the old count.
+    api<{ items: NotificationItem[] }>('/notifications?limit=100')
+      .then((d) => {
+        for (const n of d.items.filter((x) => !x.is_read)) {
+          api(`/notifications/${n.id}/read`, { method: 'POST' }).catch(() => undefined);
+        }
+      })
+      .catch(() => undefined);
   }, []);
 
   useEffect(load, [load]);

@@ -1097,7 +1097,19 @@ export function createMessagingRouter(deps: MessagingRouterDeps): express.Router
     deps.requireAuth,
     wrap(async (req, res) => {
       const schoolId = requireSchool(req);
-      ok(res, await getSmsStatus(serviceDeps, { schoolId }));
+      const s = await getSmsStatus(serviceDeps, { schoolId });
+      // Phase 9 fix: getSmsStatus returns camelCase, but the contract is
+      // snake_case (see SmsStatus in the frontend) and ok() does no case
+      // conversion — the header read `queued_count` as undefined and
+      // always showed "0 queued" (and "SIM offline") while the log showed
+      // a Queued row. Serialize explicitly, like the other routes.
+      ok(res, {
+        provider: s.provider,
+        sim_connected: s.simConnected,
+        last_seen_at: s.lastSeenAt ? s.lastSeenAt.toISOString() : null,
+        queued_count: s.queuedCount,
+        pending_approval_count: s.pendingApprovalCount,
+      });
     }),
   );
 

@@ -59,6 +59,10 @@ export interface SaveResult {
   saved: number;
   linked: number;
   unlinked: number;
+  /** Exam the rows were saved under — the frontend uses this to refresh
+   * the exam filter and select the (possibly just auto-created) exam. */
+  exam_id: string;
+  exam_name: string;
   skipped: Array<{ row: number; reason: string }>;
   /** Rows that saved with review flags (e.g. obtained_gt_total). */
   flagged: Array<{ roll_no: number; flags: string[] }>;
@@ -391,7 +395,7 @@ export async function saveResultRows(
       throw ApiError.validation('Result sheet does not belong to this exam and class');
     }
   }
-  const out: SaveResult = { saved: 0, linked: 0, unlinked: 0, skipped: [], flagged: [] };
+  const out: SaveResult = { saved: 0, linked: 0, unlinked: 0, exam_id: input.exam_id, exam_name: exam.name, skipped: [], flagged: [] };
   const seenRolls = new Set<number>();
   for (let i = 0; i < input.rows.length; i++) {
     const row = input.rows[i]!;
@@ -669,6 +673,8 @@ export interface ReportCardData {
   percentage: number | null;
   grade: string | null;
   position: number | null;
+  /** Remarks entered with the results (manual entry / review table). */
+  remarks: string[];
 }
 
 export async function getReportCard(db: Db, schoolId: string, studentId: string, examId: string): Promise<ReportCardData> {
@@ -688,13 +694,18 @@ export async function getReportCard(db: Db, schoolId: string, studentId: string,
   const percentage = total > 0 ? Math.round((obtained / total) * 10000) / 100 : null;
   const { grade } = await gradeForPercentage(db, schoolId, first.classId, percentage);
   const position = rows.map((r: any) => r.position).filter((p: any) => p !== null && p !== undefined).sort((a: number, b: number) => a - b)[0] ?? null;
+  // Father's name: the student record wins; fall back to the father's name
+  // entered with the result itself (manual entry / review table), so a
+  // result entered for a student whose profile has no father still shows one.
+  const resultFather = rows.map((r: any) => (r.fatherName ?? '').trim()).find((f: string) => f) ?? null;
+  const remarks = rows.map((r: any) => (r.remarks ?? '').trim()).filter((m: string) => m);
   return {
     school_name: (school as any)?.name ?? 'School',
     exam_name: exam.name,
     student: {
       id: student.id,
       name: student.name,
-      father_name: student.fatherName ?? null,
+      father_name: student.fatherName ?? resultFather,
       admission_no: student.admissionNo ?? null,
       roll_no: student.rollNo ?? null,
     },
@@ -705,6 +716,7 @@ export async function getReportCard(db: Db, schoolId: string, studentId: string,
     percentage,
     grade,
     position,
+    remarks,
   };
 }
 
@@ -725,6 +737,7 @@ export function renderReportCardHtml(card: ReportCardData): string {
 Father: ${card.student.father_name ?? '—'} &nbsp; Admission no: ${card.student.admission_no ?? '—'}</p>
 <table><tr><th>Subject</th><th>Obtained</th><th>Total</th></tr>${subjectRows}</table>
 <p><strong>Total: ${card.obtained ?? '—'} / ${card.total ?? '—'}</strong> &nbsp; Percentage: ${card.percentage ?? '—'}% &nbsp; Grade: ${card.grade ?? '—'} &nbsp; Position: ${card.position ?? '—'}</p>
+${card.remarks.length > 0 ? `<p>Remarks: ${card.remarks.join('; ')}</p>` : ''}
 <button onclick="window.print()" style="margin-top:16px">Print</button></body></html>`;
 }
 
@@ -750,6 +763,10 @@ export async function renderReportCardPdf(card: ReportCardData): Promise<Buffer>
   }
   doc.moveDown();
   doc.fontSize(13).text(`Total: ${card.obtained ?? '—'} / ${card.total ?? '—'}    Percentage: ${card.percentage ?? '—'}%    Grade: ${card.grade ?? '—'}    Position: ${card.position ?? '—'}`);
+  if (card.remarks.length > 0) {
+    doc.moveDown();
+    doc.fontSize(12).text(`Remarks: ${card.remarks.join('; ')}`);
+  }
   doc.end();
   return done;
 }
@@ -763,15 +780,21 @@ export async function exportResults(
   if (!['xlsx', 'pdf'].includes(format)) throw ApiError.validation('format must be xlsx or pdf');
   const examId = String(query.exam_id ?? '');
   const classId = String(query.class_id ?? '');
-  if (!examId || !classId) throw ApiError.validation('exam_id and class_id are required');
-  const exam = await assertExamInSchool(db, schoolId, examId);
+  // exam_id is optional: with no exam selected the export covers every
+  // exam in the class (the "All exams" filter). class_id is still required.
+  if (!classId) throw ApiError.validation('class_id is required');
   const klass = await assertClassInSchool(db, schoolId, classId);
+  const exam = examId ? await assertExamInSchool(db, schoolId, examId) : null;
+  const where: Record<string, unknown> = { schoolId, classId, deletedAt: null };
+  if (examId) where.examId = examId;
   const rows = await db.result.findMany({
-    where: { schoolId, examId, classId, deletedAt: null },
+    where,
     orderBy: [{ position: 'asc' }, { rollNo: 'asc' }],
   });
-  const title = `Results — ${exam.name} — ${klass.name}-${klass.section}`;
-  const headers = ['Position', 'Roll', 'Student', 'Father', 'Obtained', 'Total', 'Percentage', 'Grade', 'Linked'];
+  const title = exam
+    ? `Results — ${exam.name} — ${klass.name}-${klass.section}`
+    : `Results — All exams — ${klass.name}-${klass.section}`;
+  const headers = ['Position', 'Roll', 'Student', 'Father', 'Obtained', 'Total', 'Percentage', 'Grade', 'Linked', 'Remarks'];
   const data = rows.map((r: any) => [
     r.position ?? '—',
     r.rollNo,
@@ -782,13 +805,14 @@ export async function exportResults(
     r.percentage ?? '',
     r.grade ?? '',
     r.studentId ? 'Yes' : 'No',
+    r.remarks ?? '',
   ]);
   if (format === 'pdf') {
     const buffer = await exportPdf(title, headers, data);
-    return { buffer, filename: `results-${examId.slice(0, 8)}.pdf`, contentType: 'application/pdf' };
+    return { buffer, filename: `results-${(examId || classId).slice(0, 8)}.pdf`, contentType: 'application/pdf' };
   }
   const buffer = await exportXlsx(title, headers, data);
-  return { buffer, filename: `results-${examId.slice(0, 8)}.xlsx`, contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' };
+  return { buffer, filename: `results-${(examId || classId).slice(0, 8)}.xlsx`, contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' };
 }
 
 /* ------------------------------------------------------------------ */

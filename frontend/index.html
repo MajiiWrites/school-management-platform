@@ -10,7 +10,16 @@
     <title>School Manager — Attendance, SMS & Fees</title>
   </head>
   <body>
-    <div id="root"></div>
+    <!-- Phase 9 fix: the first paint used to be blank white for ~20s while
+         the JS bundle loaded and /auth/me waited on a cold backend. This
+         inline fallback paints immediately and is replaced once React mounts. -->
+    <div id="root">
+      <div style="min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;font-family:system-ui,-apple-system,'Segoe UI',sans-serif;color:#475569;background:#f8fafc">
+        <p style="font-size:20px;font-weight:700;color:#14532d;margin:0">🏫 School Manager</p>
+        <p style="font-size:14px;margin:0">Loading…</p>
+        <p style="font-size:12px;color:#94a3b8;margin:0">If this takes a while, the server is waking up — please wait a moment.</p>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

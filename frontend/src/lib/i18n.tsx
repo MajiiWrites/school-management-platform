@@ -37,6 +37,10 @@ const NAV_LABELS: Record<string, { en: string; ur: string }> = {
   // P8-TOUR: Help page nav label.
   help: { en: 'Help', ur: 'مدد' },
   security: { en: 'Security', ur: 'سیکیورٹی' },
+  approvals: { en: 'Approval Queue', ur: 'منظوری کی قطار' },
+  // D1: Recycle Bin + Change History nav labels.
+  'recycle-bin': { en: 'Recycle Bin', ur: 'ری سائیکل بن' },
+  'change-history': { en: 'Change History', ur: 'تبدیلیوں کی تاریخ' },
 };
 
 const PAGE_TITLES: Record<string, { en: string; ur: string }> = {

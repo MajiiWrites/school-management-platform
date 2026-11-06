@@ -83,6 +83,11 @@ export async function writeChangeLogs(
   return written;
 }
 
+/** True when the error is a Prisma unique-constraint violation (P2002). */
+export function isUniqueViolation(err: unknown): boolean {
+  return (err as { code?: unknown } | null)?.code === 'P2002';
+}
+
 /**
  * Soft-delete a row: set deleted_at + write a deleted_records snapshot row
  * (restore deadline = deleted_at + 30 days). Throws 404 when the row does

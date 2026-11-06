@@ -37,7 +37,7 @@ export default function ClassesPage() {
   const remove = async (c: ClassItem) => {
     try {
       await api(`/classes/${c.id}`, { method: 'DELETE' });
-      push('success', 'Class deleted.');
+      push('success', 'Class moved to the Recycle Bin.');
       load();
     } catch (e) {
       push('error', errText(e));
@@ -53,14 +53,22 @@ export default function ClassesPage() {
           <h1 className="text-2xl font-bold text-slate-900">Classes</h1>
           <p className="text-sm text-slate-500">Each class has a teacher and a secure attendance link.</p>
         </div>
-        <Button
-          onClick={() => {
-            setEditing(null);
-            setShowForm(true);
-          }}
-        >
-          + Add class
-        </Button>
+        <div className="flex gap-2">
+          <Link
+            to="/recycle-bin"
+            className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+          >
+            ♻ Recycle Bin
+          </Link>
+          <Button
+            onClick={() => {
+              setEditing(null);
+              setShowForm(true);
+            }}
+          >
+            + Add class
+          </Button>
+        </div>
       </div>
 
       {error && <ErrorBanner message={error} onRetry={load} />}
@@ -87,7 +95,7 @@ export default function ClassesPage() {
         title="Delete this class?"
         message={
           pendingDelete
-            ? `Are you sure? This will remove Class ${displayClass(pendingDelete)}${pendingDelete.student_count ? ` and its ${pendingDelete.student_count} student record(s)` : ''}. This is blocked if students exist, and cannot be undone.`
+            ? `Are you sure? This will move Class ${displayClass(pendingDelete)} to the Recycle Bin. You can restore it within 30 days. Deleting is blocked while the class still has students.`
             : ''
         }
         confirmLabel="Delete class"
@@ -131,7 +139,16 @@ function ClassCard({
 }) {
   const [link, setLink] = useState<string | null>(c.attendance_link ?? null);
   const [busy, setBusy] = useState(false);
-  const [confirmKind, setConfirmKind] = useState<'regen' | 'revoke' | null>(null);
+  const [unlockBusy, setUnlockBusy] = useState(false);
+  const [confirmKind, setConfirmKind] = useState<'regen' | 'revoke' | 'unlock' | null>(null);
+
+  // Fix C (Phase 9): the card used to keep the link only in local state,
+  // initialised once from props — after a reload the API never sent the
+  // link back, so the card forgot it. The API now returns attendance_link,
+  // so sync local state whenever the server value changes.
+  useEffect(() => {
+    setLink(c.attendance_link ?? null);
+  }, [c.attendance_link]);
 
   const regen = async () => {
     setBusy(true);
@@ -157,6 +174,24 @@ function ClassCard({
       push('error', errText(e));
     } finally {
       setBusy(false);
+    }
+  };
+
+  // Fix C (Phase 9): admin unlock was unreachable — the card forgot the
+  // submitted state, and no unlock button existed. Unlocks today's
+  // submission (attendance_date comes from the server, school-local) so
+  // the teacher link can submit again.
+  const unlock = async () => {
+    if (!c.attendance_date) return;
+    setUnlockBusy(true);
+    try {
+      await api(`/classes/${c.id}/attendance/unlock`, { method: 'PATCH', body: { date: c.attendance_date } });
+      push('success', 'Attendance unlocked — the teacher can submit again.');
+      onChanged();
+    } catch (e) {
+      push('error', errText(e));
+    } finally {
+      setUnlockBusy(false);
     }
   };
 
@@ -188,6 +223,21 @@ function ClassCard({
         </p>
       )}
 
+      {c.submitted_today && !c.attendance_unlocked && (
+        <div className="mt-3 flex items-center justify-between gap-2 rounded-lg bg-slate-50 px-3 py-2">
+          <p className="text-sm text-slate-600">Locked — only the admin can reopen it.</p>
+          <Button variant="secondary" disabled={unlockBusy} onClick={() => setConfirmKind('unlock')}>
+            Unlock
+          </Button>
+        </div>
+      )}
+
+      {c.submitted_today && c.attendance_unlocked && (
+        <p className="mt-3 rounded-lg bg-blue-50 px-3 py-2 text-sm font-medium text-blue-700">
+          Unlocked — the teacher can submit attendance again today.
+        </p>
+      )}
+
       <div className="mt-4 space-y-2 border-t border-slate-100 pt-3">
         <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Teacher attendance link</p>
         {link ? (
@@ -207,6 +257,16 @@ function ClassCard({
               <Button variant="ghost" disabled={busy} onClick={() => setConfirmKind('revoke')}>Revoke</Button>
             </div>
           </>
+        ) : c.attendance_link_active ? (
+          <>
+            <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              An active link exists for this class, but it was created before this update so the link itself can&apos;t be shown. Regenerate to get a link you can copy and share.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="secondary" disabled={busy} onClick={() => setConfirmKind('regen')}>Regenerate link</Button>
+              <Button variant="ghost" disabled={busy} onClick={() => setConfirmKind('revoke')}>Revoke</Button>
+            </div>
+          </>
         ) : (
           <Button variant="secondary" disabled={busy} onClick={() => setConfirmKind('regen')}>
             Generate attendance link
@@ -215,20 +275,31 @@ function ClassCard({
       </div>
       <ConfirmDialog
         open={confirmKind !== null}
-        title={confirmKind === 'revoke' ? 'Revoke this attendance link?' : 'Generate a new attendance link?'}
+        title={
+          confirmKind === 'revoke'
+            ? 'Revoke this attendance link?'
+            : confirmKind === 'unlock'
+              ? `Unlock today's attendance?`
+              : 'Generate a new attendance link?'
+        }
         message={
           confirmKind === 'revoke'
             ? `Are you sure? This will revoke the attendance link for Class ${displayClass(c)} — teachers will no longer be able to open it.`
-            : `Are you sure? This will generate a new attendance link for Class ${displayClass(c)} — the old link will stop working.`
+            : confirmKind === 'unlock'
+              ? `Are you sure? This will unlock today's attendance for Class ${displayClass(c)} — the teacher will be able to submit it again, replacing today's submission.`
+              : `Are you sure? This will generate a new attendance link for Class ${displayClass(c)} — the old link will stop working.`
         }
-        confirmLabel={confirmKind === 'revoke' ? 'Revoke link' : 'Generate new link'}
-        tone="danger"
-        busy={busy}
+        confirmLabel={
+          confirmKind === 'revoke' ? 'Revoke link' : confirmKind === 'unlock' ? 'Unlock attendance' : 'Generate new link'
+        }
+        tone={confirmKind === 'unlock' ? 'primary' : 'danger'}
+        busy={busy || unlockBusy}
         onConfirm={() => {
           const kind = confirmKind;
           setConfirmKind(null);
           if (kind === 'revoke') revoke();
           else if (kind === 'regen') regen();
+          else if (kind === 'unlock') unlock();
         }}
         onCancel={() => setConfirmKind(null)}
       />
@@ -244,6 +315,13 @@ function ClassCard({
   );
 }
 
+/** The API masks phone numbers (+92 3XX XXXX123). A masked value is not a
+ * real number — never send it back as an edit; treat it as "unchanged".
+ * (Same rule as StudentsPanel.) */
+function isMaskedPhone(v: string): boolean {
+  return v.includes('X');
+}
+
 function ClassForm({
   initial,
   onClose,
@@ -256,7 +334,11 @@ function ClassForm({
   const [name, setName] = useState(initial?.name ?? '');
   const [section, setSection] = useState(initial?.section ?? '');
   const [teacherName, setTeacherName] = useState(initial?.teacher_name ?? '');
-  const [teacherPhone, setTeacherPhone] = useState(initial?.teacher_phone ?? '');
+  // Fix C (Phase 9): the edit form read initial.teacher_phone, which the API
+  // never returns (it returns teacher_phone_masked) — the field always came
+  // up empty. Pre-fill from the masked value; it is sent back only if the
+  // admin actually changes it to a real number.
+  const [teacherPhone, setTeacherPhone] = useState(initial?.teacher_phone_masked ?? initial?.teacher_phone ?? '');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState(false);
@@ -271,7 +353,7 @@ function ClassForm({
     setConfirming(false);
     setBusy(true);
     try {
-      const body = { name: name.trim(), section: section.trim(), teacher_name: teacherName.trim(), teacher_phone: teacherPhone.trim() || undefined };
+      const body = { name: name.trim(), section: section.trim(), teacher_name: teacherName.trim(), teacher_phone: teacherPhone.trim() && !isMaskedPhone(teacherPhone.trim()) ? teacherPhone.trim() : undefined };
       if (initial) await api(`/classes/${initial.id}`, { method: 'PATCH', body });
       else await api('/classes', { method: 'POST', body });
       onSaved();

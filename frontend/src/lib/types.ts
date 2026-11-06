@@ -1,6 +1,6 @@
 // Shared types — mirror contracts/API.md + contracts/SCHEMA.md (CONTRACT v1.0)
 
-export type Role = 'admin' | 'clerk';
+export type Role = 'admin' | 'clerk' | 'principal';
 export type AttendanceStatus = 'present' | 'absent' | 'late' | 'leave';
 export type TeacherStatus = 'present' | 'absent' | 'leave';
 export type FeeStatus = 'unpaid' | 'partial' | 'paid';
@@ -65,11 +65,21 @@ export interface ClassItem {
   section: string;
   teacher_name: string;
   teacher_phone?: string | null;
+  /** Masked teacher phone (+92 3XX XXXX123) — what the edit form pre-fills from. */
+  teacher_phone_masked?: string | null;
   student_count?: number;
   submitted_today?: boolean;
   absent_today?: number;
   present_today?: number;
   attendance_link?: string | null;
+  /** True when a valid (unrevoked, unexpired) link exists — even for links
+   * created before the encrypted-token column, whose URL is unrecoverable. */
+  attendance_link_active?: boolean;
+  token_expires_at?: string | null;
+  /** School-local date the submitted_* counts refer to (for the unlock call). */
+  attendance_date?: string | null;
+  /** True when today's submission was unlocked by an admin (re-submit open). */
+  attendance_unlocked?: boolean;
   display_name?: string;
 }
 
@@ -154,7 +164,7 @@ export interface OcrUpload {
 }
 
 export interface TeacherLinkData {
-  class: { id: string; name: string; section: string };
+  class: { id: string; name: string; section: string; display_name?: string; teacher_name?: string };
   date: string;
   students: { id: string; name: string; roll_no: number | null; status?: AttendanceStatus }[];
   already_submitted: boolean;
@@ -184,6 +194,10 @@ export interface FeeStructure {
   class_name?: string;
   monthly_amount: number;
   effective_from: string;
+  /** One-time admission fee (v2; 0 when unset). */
+  admission_fee?: number;
+  /** Sibling discount percent, 0–100 (v2; 0 when unset). */
+  sibling_discount_pct?: number;
 }
 
 export interface PendingMessage {
@@ -231,6 +245,7 @@ export interface SmsStatus {
   sim_connected: boolean;
   last_seen_at?: string | null;
   queued_count: number;
+  pending_approval_count?: number;
 }
 
 export interface AuditLog {
@@ -270,6 +285,38 @@ export interface PageResult<T> {
   total: number;
   page: number;
   pages: number;
+}
+
+/* ------------------------------------------------------------------ */
+/* Section 12 — Recycle Bin + Change History (D1, contracts/SCHEMA.md  */
+/* §4/§5). Mirrors GET /recycle-bin and GET /change-logs.             */
+/* ------------------------------------------------------------------ */
+
+/** One row of GET /recycle-bin — the deleted_records snapshot is kept as-is. */
+export interface DeletedRecord {
+  id: string;
+  school_id: string;
+  entity: string;
+  entity_id: string;
+  snapshot: Record<string, unknown>;
+  deleted_by: string | null;
+  deleted_at: string;
+  restore_by: string | null;
+  permanently_deleted_at: string | null;
+}
+
+/** One row of GET /change-logs — one row per changed field, old → new. */
+export interface ChangeLogEntry {
+  id: string;
+  school_id: string;
+  actor_id: string | null;
+  actor_type: string;
+  entity: string;
+  entity_id: string | null;
+  field: string;
+  old_value: string | null;
+  new_value: string | null;
+  changed_at: string;
 }
 
 export interface ApiError {

@@ -14,7 +14,7 @@ import { ApiError } from '../../lib/errors';
 import { writeAudit } from '../../lib/audit';
 import { paginatedResponse, parsePagination } from '../../lib/pagination';
 import type { Db } from '../../lib/db';
-import { ENTITY_DELEGATES } from './helpers';
+import { ENTITY_DELEGATES, isUniqueViolation } from './helpers';
 
 /** Public (snake_case) view of a deleted_records row (snapshot kept as-is). */
 export function toPublicDeletedRecord(r: any): Record<string, unknown> {
@@ -58,7 +58,19 @@ export async function restoreDeletedRecord(db: Db, schoolId: string, id: string,
   const delegate = (db as any)[delegateKey];
   const row = await delegate.findFirst({ where: { id: record.entityId, schoolId } });
   if (!row) throw ApiError.notFound(`${record.entity} row no longer exists`);
-  await delegate.update({ where: { id: record.entityId }, data: { deletedAt: null } });
+  try {
+    await delegate.update({ where: { id: record.entityId }, data: { deletedAt: null } });
+  } catch (err) {
+    // A live row already holds the unique key (e.g. a class with the same
+    // name was created after the delete): the DB unique index blocks the
+    // un-delete. Say so plainly instead of surfacing a raw P2002 500.
+    if (isUniqueViolation(err)) {
+      throw ApiError.conflict(
+        `Cannot restore this ${record.entity}: a live record with the same name or number already exists. Rename or delete the live record first, then restore.`,
+      );
+    }
+    throw err;
+  }
   await (db as any).deletedRecord.delete({ where: { id } });
   await writeAudit(db, {
     schoolId,

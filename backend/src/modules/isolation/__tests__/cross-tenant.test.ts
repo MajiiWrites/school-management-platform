@@ -672,7 +672,7 @@ describe('cross-tenant isolation: School B vs School A', () => {
       const logs = await adminSvc.listAuditLogs(db as any, B, {});
       expect(logs.items.every((l: any) => l.schoolId === B)).toBe(true);
       const notes = await adminSvc.listNotifications(db as any, B, {});
-      expect(notes.items.every((n: any) => n.schoolId === B)).toBe(true);
+      expect(notes.items.every((n: any) => n.school_id === B)).toBe(true);
       await expectNotFound(adminSvc.markNotificationRead(db as any, B, 'n-a1'));
     });
   });

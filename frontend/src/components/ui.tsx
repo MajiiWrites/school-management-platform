@@ -13,6 +13,7 @@ export function Button({
   disabled,
   onClick,
   className,
+  title,
 }: {
   children: ReactNode;
   variant?: ButtonVariant;
@@ -20,6 +21,8 @@ export function Button({
   disabled?: boolean;
   onClick?: () => void;
   className?: string;
+  /** Native tooltip — used for disabled-state reasons. */
+  title?: string;
 }) {
   const styles: Record<ButtonVariant, string> = {
     primary: 'bg-brand-700 text-white hover:bg-brand-900 disabled:bg-slate-300',
@@ -33,6 +36,7 @@ export function Button({
       type={type}
       disabled={disabled}
       onClick={onClick}
+      title={title}
       className={cx(
         'inline-flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-600',
         styles[variant],
@@ -142,6 +146,13 @@ export function Modal({
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
+
+  // Defence in depth: a Modal must never paint an empty shell. Every
+  // call site guards the render on real content, but if one ever mounts
+  // with no children (e.g. `{x && <Modal>…}` written the other way
+  // round), render nothing instead of a stuck empty overlay that no
+  // close action can dismiss.
+  if (!children) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-0 sm:items-center sm:p-4" onClick={onClose}>

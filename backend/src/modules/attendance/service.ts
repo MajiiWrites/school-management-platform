@@ -55,7 +55,11 @@ export async function getLinkPage(db: Db, token: string, expectedSchoolId?: stri
     submitted = Object.fromEntries(records.map((r: any) => [r.studentId, r.status]));
   }
   return {
-    class: { id: cls.id, display_name: `${cls.name}-${cls.section}`, teacher_name: cls.teacherName },
+    // Fix C (Phase 9): the teacher page reads class.name / class.section,
+    // but this used to return only display_name — the heading rendered
+    // "Class -" and the confirm dialog "Class undefined-undefined".
+    // display_name is kept for older cached clients.
+    class: { id: cls.id, name: cls.name, section: cls.section, display_name: `${cls.name}-${cls.section}`, teacher_name: cls.teacherName },
     date,
     non_school_day: nonSchoolDay,
     already_submitted: Boolean(day),

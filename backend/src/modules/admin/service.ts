@@ -59,7 +59,26 @@ export async function getDashboard(db: Db, schoolId: string): Promise<Record<str
     teachers_absent: teachersAbsent,
     fee_collected_this_month: feeCollected,
     fee_pending_this_month: feePending,
-    recent_notifications: notifications,
+    // Phase 9 fix: serialize to the snake_case contract (see
+    // toNotificationView) — the raw row's `isRead` never matched the
+    // frontend's `is_read`, so every notification showed as unread.
+    recent_notifications: (notifications as any[]).map(toNotificationView),
+  };
+}
+
+/** Snake_case notification view (the contract the frontend uses) — see
+ * listNotifications for why the raw Prisma row cannot be returned. */
+export function toNotificationView(n: any): Record<string, unknown> {
+  return {
+    id: n.id,
+    school_id: n.schoolId ?? null,
+    type: n.type,
+    title: n.title,
+    body: n.body,
+    related_type: n.relatedType ?? null,
+    related_id: n.relatedId ?? null,
+    is_read: n.isRead === true,
+    created_at: n.createdAt ? new Date(n.createdAt).toISOString() : new Date().toISOString(),
   };
 }
 
@@ -370,14 +389,35 @@ export async function createLeave(db: Db, schoolId: string, input: { student_id:
     data: { schoolId: schoolId, studentId: input.student_id, fromDate: dateOnly(input.from_date), toDate: dateOnly(input.to_date), reason: input.reason.trim(), status: 'pending' },
   });
   await writeAudit(db, { schoolId, actorId: adminId, actorType: 'user', action: 'leave.create', entity: 'leave_application', entityId: created.id, details: { student_id: input.student_id } });
-  return created;
+  return toLeaveView(created, student.name);
+}
+
+/** Snake_case leave view (the contract the frontend uses). The raw Prisma
+ * row is camelCase — returning it made the Leaves page crash on
+ * `from_date.slice(...)` (Phase 9 fix). */
+export function toLeaveView(r: any, studentName: string | null): Record<string, unknown> {
+  return {
+    id: r.id,
+    student_id: r.studentId,
+    student_name: studentName,
+    from_date: new Date(r.fromDate).toISOString().slice(0, 10),
+    to_date: new Date(r.toDate).toISOString().slice(0, 10),
+    reason: r.reason,
+    status: r.status,
+    created_at: r.createdAt ? new Date(r.createdAt).toISOString() : new Date().toISOString(),
+  };
 }
 
 export async function listLeaves(db: Db, schoolId: string, query: Record<string, any>): Promise<any[]> {
   const where: Record<string, unknown> = { schoolId: schoolId };
   if (query.student_id) where.studentId = String(query.student_id);
   if (query.status) where.status = String(query.status);
-  return db.leaveApplication.findMany({ where, orderBy: [{ createdAt: 'desc' }] });
+  const rows = await db.leaveApplication.findMany({ where, orderBy: [{ createdAt: 'desc' }] });
+  const students: any[] = rows.length
+    ? await db.student.findMany({ where: { schoolId: schoolId, id: { in: [...new Set(rows.map((r: any) => r.studentId))] } } })
+    : [];
+  const nameById = new Map(students.map((s: any) => [s.id, s.name as string]));
+  return rows.map((r: any) => toLeaveView(r, nameById.get(r.studentId) ?? null));
 }
 
 export async function decideLeave(db: Db, schoolId: string, id: string, status: 'approved' | 'rejected', adminId: string): Promise<any> {
@@ -415,18 +455,22 @@ export async function listLateArrivals(
   schoolId: string,
   query: Record<string, any>,
 ): Promise<Array<{ date: string; student_id: string; student_name: string; roll_no: number | null; class_id: string; class_name: string }>> {
-  const { start, end } = (() => {
-    if (query.date) {
-      if (!isValidDateString(String(query.date))) throw ApiError.validation('date must be YYYY-MM-DD');
-      return { start: String(query.date), end: String(query.date) };
-    }
-    if (query.month) {
-      if (!/^\d{4}-\d{2}$/.test(String(query.month))) throw ApiError.validation('month must be YYYY-MM');
-      return monthRange(String(query.month));
-    }
-    const today = todayInTz('Asia/Karachi');
-    return { start: today, end: today };
-  })();
+  // Default (no date/month given): today in the SCHOOL timezone.
+  let start: string;
+  let end: string;
+  if (query.date) {
+    if (!isValidDateString(String(query.date))) throw ApiError.validation('date must be YYYY-MM-DD');
+    start = String(query.date);
+    end = String(query.date);
+  } else if (query.month) {
+    if (!/^\d{4}-\d{2}$/.test(String(query.month))) throw ApiError.validation('month must be YYYY-MM');
+    ({ start, end } = monthRange(String(query.month)));
+  } else {
+    const schoolRow: any = await db.school.findUnique({ where: { id: schoolId } }).catch(() => null);
+    const today = todayInTz((schoolRow?.timezone as string | undefined) ?? 'Asia/Karachi');
+    start = today;
+    end = today;
+  }
   const dayWhere: Record<string, unknown> = { schoolId: schoolId, date: { gte: dateOnly(start), lte: dateOnly(end) } };
   if (query.class_id) dayWhere.classId = String(query.class_id);
   const days = await db.attendanceDay.findMany({ where: dayWhere, orderBy: [{ date: 'asc' }] });
@@ -483,11 +527,17 @@ export async function listNotifications(db: Db, schoolId: string, query: Record<
     db.notification.findMany({ where, orderBy: [{ isRead: 'asc' }, { createdAt: 'desc' }], skip, take: limit }),
     db.notification.count({ where }),
   ]);
-  return paginatedResponse(items, total, { page, limit, skip });
+  // Phase 9 fix: the raw Prisma row is camelCase (isRead/createdAt) but the
+  // frontend NotificationItem reads snake_case (is_read/created_at) — so
+  // `!n.is_read` was true for EVERY row and the header badge stayed stuck
+  // at its count even after marking items read. Serialize to the contract.
+  const views = (items as any[]).map(toNotificationView);
+  return paginatedResponse(views, total, { page, limit, skip });
 }
 
 export async function markNotificationRead(db: Db, schoolId: string, id: string): Promise<any> {
   const n = await db.notification.findFirst({ where: { id, schoolId: schoolId } });
   if (!n) throw ApiError.notFound('Notification not found');
-  return db.notification.update({ where: { id }, data: { isRead: true } });
+  const updated: any = await db.notification.update({ where: { id }, data: { isRead: true } });
+  return toNotificationView(updated);
 }

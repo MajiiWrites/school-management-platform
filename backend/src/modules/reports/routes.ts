@@ -52,12 +52,7 @@ reportsRouter.get(
   '/attendance/daily',
   asyncHandler(async (req, res) => {
     const report = await service.attendanceDaily(getDb(), req.schoolId!, req.query as Record<string, any>);
-    const format = String(req.query.format ?? '');
-    if (format === 'pdf' || format === 'xlsx') {
-      const exp = service.buildExportRows(report, 'attendance');
-      await sendExport(res, format, exp.title, exp.headers, exp.rows, `attendance-daily-${report.date}`);
-      return;
-    }
+    if (await maybeExport(req, res, report, 'attendance', `attendance-daily-${report.date}`)) return;
     res.json({ ok: true, data: report });
   }),
 );
@@ -66,12 +61,7 @@ reportsRouter.get(
   '/attendance/weekly',
   asyncHandler(async (req, res) => {
     const report = await service.attendanceWeekly(getDb(), req.schoolId!, req.query as Record<string, any>);
-    const format = String(req.query.format ?? '');
-    if (format === 'pdf' || format === 'xlsx') {
-      const exp = service.buildExportRows(report, 'attendance');
-      await sendExport(res, format, exp.title, exp.headers, exp.rows, `attendance-weekly-${report.week_start}`);
-      return;
-    }
+    if (await maybeExport(req, res, report, 'attendance', `attendance-weekly-${report.week_start}`)) return;
     res.json({ ok: true, data: report });
   }),
 );
@@ -80,12 +70,7 @@ reportsRouter.get(
   '/attendance/monthly',
   asyncHandler(async (req, res) => {
     const report = await service.attendanceMonthly(getDb(), req.schoolId!, req.query as Record<string, any>);
-    const format = String(req.query.format ?? '');
-    if (format === 'pdf' || format === 'xlsx') {
-      const exp = service.buildExportRows(report, 'attendance');
-      await sendExport(res, format, exp.title, exp.headers, exp.rows, `attendance-monthly-${report.month}`);
-      return;
-    }
+    if (await maybeExport(req, res, report, 'attendance', `attendance-monthly-${report.month}`)) return;
     res.json({ ok: true, data: report });
   }),
 );

@@ -46,7 +46,7 @@ async function uniqueSlug(db: Db, name: string): Promise<string> {
 export async function signup(
   db: Db,
   input: { school_name: string; email: string; password: string },
-): Promise<{ user: PublicUser; school: { id: string; name: string; slug: string }; dev_token?: string }> {
+): Promise<{ user: PublicUser; school: { id: string; name: string; slug: string }; access: string; refresh: string; dev_token?: string }> {
   const email = input.email.trim().toLowerCase();
   const existing = await db.user.findFirst({ where: { email } });
   if (existing) throw ApiError.conflict('An account with this email already exists');
@@ -98,9 +98,16 @@ export async function signup(
   const mail = verificationEmailBody(input.school_name, token);
   await sendMail({ to: email, ...mail });
 
-  const out: { user: PublicUser; school: { id: string; name: string; slug: string }; dev_token?: string } = {
+  // Phase 9 fix: the frontend's signup handler stores data.access /
+  // data.refresh as the session (like login does), but signup used to
+  // return no tokens — so localStorage got the literal string "undefined"
+  // and every call after signup 401'd. Login-before-verification is
+  // allowed by design, so issue tokens here exactly like login does.
+  const out: { user: PublicUser; school: { id: string; name: string; slug: string }; access: string; refresh: string; dev_token?: string } = {
     user: toPublicUser(user),
     school: { id: school.id, name: school.name, slug: school.slug },
+    access: signAccessToken(user),
+    refresh: signRefreshToken(user),
   };
   if (config.nodeEnv !== 'production') out.dev_token = token;
   return out;

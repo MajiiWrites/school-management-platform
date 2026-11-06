@@ -10,6 +10,7 @@ import type { ClassItem, PageResult } from '../lib/types';
 import { Badge, Button, Card, EmptyState, ErrorBanner, Field, inputCls, Spinner, useToast } from '../components/ui';
 import ConfirmDialog from '../components/ConfirmDialog';
 import { useLanguage } from '../lib/i18n';
+import { fmtDateTz } from '../lib/utils';
 
 function errText(e: unknown): string {
   return e instanceof ApiClientError ? e.message : 'Something went wrong.';
@@ -208,7 +209,7 @@ export default function AnnouncementsPage() {
                   <p className="font-semibold text-slate-900">{a.title}</p>
                   <p className="mt-1 text-sm text-slate-600">{a.body}</p>
                   <p className="mt-2 text-xs text-slate-500">
-                    {a.target_type === 'all' ? 'All classes' : `Class ${a.target_class_name ?? ''}`} · {a.created_at.slice(0, 10)}
+                    {a.target_type === 'all' ? 'All classes' : `Class ${a.target_class_name ?? ''}`} · {fmtDateTz(a.created_at)}
                     {a.sms_send ? ' · SMS requested' : ''}
                     {a.status === 'sent' ? ' · SMS sent' : ''}
                   </p>

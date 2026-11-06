@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import { api, apiPrint, ApiClientError } from '../lib/api';
-import type { FeeRow, FeeStructure, PageResult } from '../lib/types';
-import { currentMonth, fmtPKR, monthName } from '../lib/utils';
+import type { ClassItem, FeeRow, FeeStructure, PageResult } from '../lib/types';
+import { currentMonth, fmtPKR, monthName, todayISO } from '../lib/utils';
 import { Badge, Button, Card, EmptyState, ErrorBanner, Field, inputCls, Modal, Spinner, Tabs, useToast } from '../components/ui';
 import Tooltip from '../components/Tooltip'; // P8-TOUR: plain-word tooltips on confusing labels.
 import ConfirmDialog from '../components/ConfirmDialog';
@@ -22,11 +22,14 @@ export default function FeesPage() {
   const [statusFilter, setStatusFilter] = useState<'all' | 'paid' | 'partial' | 'unpaid'>('all');
   const [fees, setFees] = useState<FeeRow[]>([]);
   const [structures, setStructures] = useState<FeeStructure[]>([]);
+  const [classes, setClasses] = useState<ClassItem[]>([]);
   const [tab, setTab] = useState('fees');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [paying, setPaying] = useState<FeeRow | null>(null);
   const [receipt, setReceipt] = useState<ReceiptData | null>(null);
+  const [editingStructure, setEditingStructure] = useState<FeeStructure | 'new' | null>(null);
+  const [deletingStructure, setDeletingStructure] = useState<FeeStructure | null>(null);
   // 6C-2: fee vouchers / challans for the month.
   const [vouchers, setVouchers] = useState<{ voucher_no: string; student_name: string; class_name: string; month: string; amount_due: number; due_date: string; status: string }[]>([]);
   const [voucherBusy, setVoucherBusy] = useState(false);
@@ -36,13 +39,17 @@ export default function FeesPage() {
     setLoading(true);
     Promise.all([
       api<PageResult<FeeRow>>(`/fees?month=${month}&limit=200`),
-      api<PageResult<FeeStructure>>('/fees/structures'),
+      // GET /fees/structures returns a BARE ARRAY, not a PageResult —
+      // reading `.items` off it yields undefined and blanked the page.
+      api<FeeStructure[]>('/fees/structures'),
       api<PageResult<{ voucher_no: string; student_name: string; class_name: string; month: string; amount_due: number; due_date: string; status: string }>>(`/fees/vouchers?month=${month}&limit=200`),
+      api<PageResult<ClassItem>>('/classes'),
     ])
-      .then(([f, s, v]) => {
-        setFees(f.items);
-        setStructures(s.items);
-        setVouchers(v.items);
+      .then(([f, s, v, c]) => {
+        setFees(Array.isArray(f?.items) ? f.items : []);
+        setStructures(Array.isArray(s) ? s : []);
+        setVouchers(Array.isArray(v?.items) ? v.items : []);
+        setClasses(Array.isArray(c?.items) ? c.items : []);
         setError('');
       })
       .catch(() => setError('Could not load fees.'))
@@ -52,8 +59,8 @@ export default function FeesPage() {
   useEffect(load, [load]);
 
   const filtered = fees.filter((f) => (statusFilter === 'all' ? true : f.status === statusFilter));
-  const collected = fees.reduce((a, f) => a + f.amount_paid, 0);
-  const pending = fees.reduce((a, f) => a + (f.amount_due - f.amount_paid - f.discount), 0);
+  const collected = fees.reduce((a, f) => a + (f.amount_paid ?? 0), 0);
+  const pending = fees.reduce((a, f) => a + ((f.amount_due ?? 0) - (f.amount_paid ?? 0) - (f.discount ?? 0)), 0);
 
   if (loading) return <Spinner label="Loading fees…" />;
 
@@ -139,8 +146,8 @@ export default function FeesPage() {
                     <tr key={`${f.student_id}-${f.month}`} className="hover:bg-slate-50">
                       <td className="px-4 py-2.5 font-medium text-slate-900">{f.student_name}</td>
                       <td className="px-4 py-2.5">{f.class_name}</td>
-                      <td className="px-4 py-2.5">{fmtPKR(f.amount_due)}</td>
-                      <td className="px-4 py-2.5">{fmtPKR(f.amount_paid)}</td>
+                      <td className="px-4 py-2.5">{fmtPKR(f.amount_due ?? 0)}</td>
+                      <td className="px-4 py-2.5">{fmtPKR(f.amount_paid ?? 0)}</td>
                       <td className="px-4 py-2.5">{statusBadge(f.status)}</td>
                       <td className="px-4 py-2.5 font-mono text-xs">{f.receipt_no ?? '—'}</td>
                       <td className="px-4 py-2.5 text-right">
@@ -164,23 +171,49 @@ export default function FeesPage() {
                         >
                           Voucher
                         </button>
-                        {f.status !== 'paid' ? (
-                          <Button variant="secondary" onClick={() => setPaying(f)}>Mark paid</Button>
-                        ) : (
-                          <button
-                            className="font-medium text-brand-700 hover:underline"
-                            onClick={async () => {
-                              try {
-                                const r = await api<ReceiptData>(`/fees/receipts/${f.receipt_no}`);
-                                setReceipt(r);
-                              } catch (e) {
-                                push('error', errText(e));
-                              }
-                            }}
-                          >
-                            Receipt
-                          </button>
-                        )}
+                        {/* Collect and Receipt are ALWAYS rendered, so neither
+                            flickers between loads. Collect is enabled whenever
+                            there is something to collect: a fee record exists
+                            for this student/month, or a structure gives this
+                            row an amount due (pay creates the record on the
+                            fly). It is disabled only when the month is fully
+                            paid, or when there is no structure and no record
+                            (nothing due at all). Receipt is enabled only once
+                            a payment exists (receipt_no set); otherwise it is
+                            disabled with the reason as its hint. */}
+                        <Button
+                          variant="secondary"
+                          disabled={f.status === 'paid' || (!f.record_exists && (f.amount_due ?? 0) <= 0)}
+                          title={
+                            f.status === 'paid'
+                              ? 'Already paid in full for this month'
+                              : !f.record_exists && (f.amount_due ?? 0) <= 0
+                                ? 'No fee structure for this class yet — set one in Fee structures first'
+                                : 'Record a payment for this student'
+                          }
+                          onClick={() => setPaying(f)}
+                        >
+                          Collect
+                        </Button>{' '}
+                        <button
+                          className="font-medium text-brand-700 hover:underline disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:no-underline"
+                          disabled={!f.receipt_no}
+                          title={f.receipt_no ? 'View the payment receipt' : 'No receipt yet — record a payment first'}
+                          onClick={async () => {
+                            if (!f.receipt_no) return;
+                            try {
+                              // ?format=json: the receipt endpoint serves an
+                              // HTML page by default, which the JSON client
+                              // cannot parse (Receipt used to do nothing).
+                              const r = await api<ReceiptData>(`/fees/receipts/${f.receipt_no}?format=json`);
+                              setReceipt(r);
+                            } catch (e) {
+                              push('error', errText(e));
+                            }
+                          }}
+                        >
+                          Receipt
+                        </button>
                       </td>
                     </tr>
                   ))}
@@ -193,24 +226,37 @@ export default function FeesPage() {
 
       {tab === 'structures' && (
         <Card className="p-5">
-          <h2 className="text-base font-semibold">Monthly fee per class</h2>
-          <p className="mt-1 text-sm text-slate-500">
-            New fee records are created from these structures at the start of each month. Paid records are never re-created.
-          </p>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-base font-semibold">Monthly fee per class</h2>
+              <p className="mt-1 text-sm text-slate-500">
+                New fee records are created from these structures at the start of each month. Paid records are never re-created.
+              </p>
+            </div>
+            <Button onClick={() => setEditingStructure('new')}>Add fee structure</Button>
+          </div>
           {structures.length === 0 ? (
-            <EmptyState
-              title="No fee structures yet"
-              body="Add a class first, then set its monthly fee here."
-              actionLabel="Add your first class"
-              actionHref="/classes"
-            />
+            <div className="mt-4">
+              <EmptyState
+                title="No fee structures yet"
+                body="Add a class first, then set its monthly fee here."
+                actionLabel="Add your first class"
+                actionHref="/classes"
+              />
+            </div>
           ) : (
             <ul className="mt-4 divide-y divide-slate-100">
               {structures.map((s) => (
-                <li key={s.id} className="flex items-center justify-between py-2 text-sm">
-                  <span className="font-medium">Class {s.class_name}</span>
-                  <span>
-                    {fmtPKR(s.monthly_amount)} / month · from {s.effective_from}
+                <li key={s.id} className="flex flex-wrap items-center justify-between gap-2 py-2 text-sm">
+                  <span className="font-medium">Class {s.class_name ?? '—'}</span>
+                  <span className="text-slate-600">
+                    {fmtPKR(s.monthly_amount ?? 0)} / month · from {s.effective_from ?? '—'}
+                    {(s.admission_fee ?? 0) > 0 ? ` · admission ${fmtPKR(s.admission_fee ?? 0)}` : ''}
+                    {(s.sibling_discount_pct ?? 0) > 0 ? ` · sibling discount ${s.sibling_discount_pct}%` : ''}
+                  </span>
+                  <span className="flex gap-3">
+                    <button className="font-medium text-brand-700 hover:underline" onClick={() => setEditingStructure(s)}>Edit</button>
+                    <button className="font-medium text-red-600 hover:underline" onClick={() => setDeletingStructure(s)}>Delete</button>
                   </span>
                 </li>
               ))}
@@ -295,7 +341,7 @@ export default function FeesPage() {
             push('success', `Payment recorded — receipt ${receiptNo}.`);
             load();
             try {
-              const r = await api<ReceiptData>(`/fees/receipts/${receiptNo}`);
+              const r = await api<ReceiptData>(`/fees/receipts/${receiptNo}?format=json`);
               setReceipt(r);
             } catch {
               /* receipt view is optional */
@@ -327,6 +373,40 @@ export default function FeesPage() {
           </div>
         </Modal>
       )}
+      {editingStructure && (
+        <StructureModal
+          structure={editingStructure === 'new' ? null : editingStructure}
+          classes={classes}
+          takenClassIds={new Set(structures.map((s) => s.class_id))}
+          onClose={() => setEditingStructure(null)}
+          onDone={(queued) => {
+            setEditingStructure(null);
+            push('success', queued ? 'Submitted for admin approval — nothing was applied yet.' : 'Fee structure saved.');
+            load();
+          }}
+        />
+      )}
+
+      {deletingStructure && (
+        <ConfirmDialog
+          open
+          title="Delete this fee structure?"
+          message={`Delete the fee structure for Class ${deletingStructure.class_name ?? '—'}? A structure that already produced fee records cannot be deleted — those records stay untouched.`}
+          confirmLabel="Delete structure"
+          tone="danger"
+          onConfirm={async () => {
+            try {
+              await api(`/fees/structures/${deletingStructure.id}`, { method: 'DELETE' });
+              push('success', 'Fee structure deleted.');
+              setDeletingStructure(null);
+              load();
+            } catch (e) {
+              push('error', errText(e));
+            }
+          }}
+          onCancel={() => setDeletingStructure(null)}
+        />
+      )}
       {view}
     </div>
   );
@@ -343,6 +423,125 @@ interface ReceiptData {
   discount: number;
   payment_method?: string | null;
   paid_at?: string | null;
+}
+
+function StructureModal({
+  structure,
+  classes,
+  takenClassIds,
+  onClose,
+  onDone,
+}: {
+  structure: FeeStructure | null;
+  classes: ClassItem[];
+  takenClassIds: Set<string>;
+  onClose: () => void;
+  onDone: (queued: boolean) => void;
+}) {
+  const availableClasses = structure
+    ? classes.filter((c) => c.id === structure.class_id)
+    : classes.filter((c) => !takenClassIds.has(c.id));
+  const [classId, setClassId] = useState(structure?.class_id ?? availableClasses[0]?.id ?? '');
+  const [monthlyAmount, setMonthlyAmount] = useState(structure ? String(structure.monthly_amount) : '');
+  const [admissionFee, setAdmissionFee] = useState(structure ? String(structure.admission_fee ?? 0) : '0');
+  const [siblingPct, setSiblingPct] = useState(structure ? String(structure.sibling_discount_pct ?? 0) : '0');
+  const [effectiveFrom, setEffectiveFrom] = useState(structure?.effective_from ?? todayISO());
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setError('');
+    const amount = Number(monthlyAmount);
+    const admission = Number(admissionFee);
+    const sibling = Number(siblingPct);
+    if (!classId) {
+      setError('Pick a class first.');
+      return;
+    }
+    if (!Number.isInteger(amount) || amount <= 0) {
+      setError('Monthly amount must be a whole number greater than 0.');
+      return;
+    }
+    if (!Number.isInteger(admission) || admission < 0) {
+      setError('Admission fee must be a whole number of 0 or more.');
+      return;
+    }
+    if (!Number.isInteger(sibling) || sibling < 0 || sibling > 100) {
+      setError('Sibling discount must be a whole number from 0 to 100.');
+      return;
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(effectiveFrom)) {
+      setError('Effective-from must be a valid date.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const body = {
+        class_id: classId,
+        monthly_amount: amount,
+        admission_fee: admission,
+        sibling_discount_pct: sibling,
+        effective_from: effectiveFrom,
+      };
+      const res = structure
+        ? await api<Record<string, unknown>>(`/fees/structures/${structure.id}`, { method: 'PATCH', body })
+        : await api<Record<string, unknown>>('/fees/structures', { method: 'POST', body });
+      // Clerks go through the approval queue (202): the response carries
+      // approval_request_id instead of the created structure.
+      onDone(typeof res === 'object' && res !== null && 'approval_request_id' in res);
+    } catch (err) {
+      setError(errText(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal title={structure ? `Edit fee structure — Class ${structure.class_name ?? ''}` : 'Add fee structure'} onClose={onClose}>
+      {error && <ErrorBanner message={error} />}
+      {availableClasses.length === 0 && !structure ? (
+        <EmptyState
+          title="No class left to price"
+          body="Every class already has a fee structure. Add a new class first, or edit an existing structure."
+          actionLabel="Add a class"
+          actionHref="/classes"
+        />
+      ) : (
+        <form onSubmit={submit} className="space-y-4" autoComplete="off">
+          <Field label="Class">
+            {structure ? (
+              <input className={inputCls} value={`Class ${structure.class_name ?? ''}`} disabled />
+            ) : (
+              <select className={inputCls} value={classId} onChange={(e) => setClassId(e.target.value)}>
+                {availableClasses.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    Class {c.name}-{c.section}
+                  </option>
+                ))}
+              </select>
+            )}
+          </Field>
+          <Field label="Monthly amount (PKR)">
+            <input className={inputCls} type="number" min={1} step={1} required value={monthlyAmount} onChange={(e) => setMonthlyAmount(e.target.value)} placeholder="e.g. 2500" autoComplete="off" />
+          </Field>
+          <Field label="Admission fee (PKR, one-time)" hint="Added only to a student's first fee record. Enter 0 for none.">
+            <input className={inputCls} type="number" min={0} step={1} value={admissionFee} onChange={(e) => setAdmissionFee(e.target.value)} autoComplete="off" />
+          </Field>
+          <Field label="Sibling discount (%)" hint="Discount for families with two or more children in the school. Enter 0 for none.">
+            <input className={inputCls} type="number" min={0} max={100} step={1} value={siblingPct} onChange={(e) => setSiblingPct(e.target.value)} autoComplete="off" />
+          </Field>
+          <Field label="Effective from">
+            <input className={inputCls} type="date" required value={effectiveFrom} onChange={(e) => setEffectiveFrom(e.target.value)} autoComplete="off" />
+          </Field>
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={onClose}>Cancel</Button>
+            <Button type="submit" disabled={busy}>{busy ? 'Saving…' : structure ? 'Save changes' : 'Add structure'}</Button>
+          </div>
+        </form>
+      )}
+    </Modal>
+  );
 }
 
 function PayModal({

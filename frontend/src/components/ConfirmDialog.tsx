@@ -10,7 +10,7 @@ import { Button, Modal } from './ui';
  *   <ConfirmDialog
  *     open={pending !== null}
  *     title="Delete class?"
- *     message="Are you sure? This will remove Class 5-A. This cannot be undone."
+ *     message="Are you sure? This will move Class 5-A to the Recycle Bin. It can be restored within 30 days."
  *     confirmLabel="Delete class"
  *     tone="danger"
  *     onConfirm={() => { setPending(null); doDelete(); }}

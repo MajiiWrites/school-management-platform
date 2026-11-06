@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { useCallback, useEffect, useState } from 'react';
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { api } from '../lib/api';
 import type { NotificationItem, Role } from '../lib/types';
@@ -11,29 +11,34 @@ import IdleTimeout from './IdleTimeout'; // 6D component (added by its agent; im
 import GuidedTour, { startGuidedTour } from './GuidedTour';
 
 const NAV: { to: string; labelKey: string; icon: string; roles: Role[] }[] = [
-  { to: '/', labelKey: 'dashboard', icon: '▦', roles: ['admin', 'clerk'] },
-  { to: '/classes', labelKey: 'classes', icon: '▤', roles: ['admin', 'clerk'] },
-  { to: '/students', labelKey: 'students', icon: '👥', roles: ['admin', 'clerk'] },
-  { to: '/parents', labelKey: 'parents', icon: '☎', roles: ['admin', 'clerk'] },
-  { to: '/fees', labelKey: 'fees', icon: '₨', roles: ['admin', 'clerk'] },
-  { to: '/messages', labelKey: 'messages', icon: '✉', roles: ['admin', 'clerk'] },
-  { to: '/reports', labelKey: 'reports', icon: '▧', roles: ['admin', 'clerk'] },
+  { to: '/', labelKey: 'dashboard', icon: '▦', roles: ['admin', 'clerk', 'principal'] },
+  { to: '/classes', labelKey: 'classes', icon: '▤', roles: ['admin', 'clerk', 'principal'] },
+  { to: '/students', labelKey: 'students', icon: '👥', roles: ['admin', 'clerk', 'principal'] },
+  { to: '/parents', labelKey: 'parents', icon: '☎', roles: ['admin', 'clerk', 'principal'] },
+  { to: '/fees', labelKey: 'fees', icon: '₨', roles: ['admin', 'clerk', 'principal'] },
+  { to: '/messages', labelKey: 'messages', icon: '✉', roles: ['admin', 'clerk', 'principal'] },
+  { to: '/reports', labelKey: 'reports', icon: '▧', roles: ['admin', 'clerk', 'principal'] },
   // 6B: results (OCR sheets, toppers, report cards)
-  { to: '/results', labelKey: 'results', icon: '🏆', roles: ['admin', 'clerk'] },
+  { to: '/results', labelKey: 'results', icon: '🏆', roles: ['admin', 'clerk', 'principal'] },
   // 6C-1: sessions / exams / timetable / staff & payroll.
-  { to: '/sessions', labelKey: 'sessions', icon: '🗓', roles: ['admin', 'clerk'] },
-  { to: '/exams', labelKey: 'exams', icon: '📝', roles: ['admin', 'clerk'] },
-  { to: '/timetable', labelKey: 'timetable', icon: '🕘', roles: ['admin', 'clerk'] },
-  { to: '/staff', labelKey: 'staff-payroll', icon: '👩‍🏫', roles: ['admin', 'clerk'] },
+  { to: '/sessions', labelKey: 'sessions', icon: '🗓', roles: ['admin', 'clerk', 'principal'] },
+  { to: '/exams', labelKey: 'exams', icon: '📝', roles: ['admin', 'clerk', 'principal'] },
+  { to: '/timetable', labelKey: 'timetable', icon: '🕘', roles: ['admin', 'clerk', 'principal'] },
+  { to: '/staff', labelKey: 'staff-payroll', icon: '👩‍🏫', roles: ['admin', 'clerk', 'principal'] },
   // 6C-2: expenses, announcements, events, certificates, leave/late, notifications.
-  { to: '/expenses', labelKey: 'expenses', icon: '🧾', roles: ['admin', 'clerk'] },
-  { to: '/announcements', labelKey: 'announcements', icon: '📢', roles: ['admin', 'clerk'] },
-  { to: '/events', labelKey: 'events', icon: '📅', roles: ['admin', 'clerk'] },
-  { to: '/certificates', labelKey: 'certificates', icon: '🎓', roles: ['admin', 'clerk'] },
-  { to: '/leaves', labelKey: 'leaves', icon: '🗓', roles: ['admin', 'clerk'] },
-  { to: '/notifications', labelKey: 'notifications', icon: '🔔', roles: ['admin', 'clerk'] },
+  { to: '/expenses', labelKey: 'expenses', icon: '🧾', roles: ['admin', 'clerk', 'principal'] },
+  { to: '/announcements', labelKey: 'announcements', icon: '📢', roles: ['admin', 'clerk', 'principal'] },
+  { to: '/events', labelKey: 'events', icon: '📅', roles: ['admin', 'clerk', 'principal'] },
+  { to: '/certificates', labelKey: 'certificates', icon: '🎓', roles: ['admin', 'clerk', 'principal'] },
+  { to: '/leaves', labelKey: 'leaves', icon: '🗓', roles: ['admin', 'clerk', 'principal'] },
+  { to: '/notifications', labelKey: 'notifications', icon: '🔔', roles: ['admin', 'clerk', 'principal'] },
   // P8-TOUR: Help page (guided tour + how-tos + glossary).
-  { to: '/help', labelKey: 'help', icon: '?', roles: ['admin', 'clerk'] },
+  { to: '/help', labelKey: 'help', icon: '?', roles: ['admin', 'clerk', 'principal'] },
+  // D2: approval queue — clerk creates/updates/deletes land here for admin decision.
+  { to: '/approvals', labelKey: 'approvals', icon: '☑', roles: ['admin'] },
+  // D1: Recycle Bin (30-day restore) + Change History (old → new audit).
+  { to: '/recycle-bin', labelKey: 'recycle-bin', icon: '♻', roles: ['admin'] },
+  { to: '/change-history', labelKey: 'change-history', icon: '↺', roles: ['admin'] },
   { to: '/settings', labelKey: 'settings', icon: '⚙', roles: ['admin'] },
   // 6D: 2FA, roles & permissions, data export, deletion requests, login alerts, backups.
   { to: '/security', labelKey: 'security', icon: '🔒', roles: ['admin'] },
@@ -90,12 +95,24 @@ export default function Layout() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [bellOpen, setBellOpen] = useState(false);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const location = useLocation();
 
-  useEffect(() => {
+  // Phase 9 fix (stale badge): the bell used to fetch once on mount and
+  // never again, so after viewing the notification center (which marks
+  // items read) the header badge still showed the old unread count until
+  // a full reload. Re-fetch on every navigation and whenever the bell
+  // is opened, so header and notification center always agree.
+  const loadNotifications = useCallback(() => {
     api<{ items: NotificationItem[] }>('/notifications?limit=10')
       .then((d) => setNotifications(d.items))
       .catch(() => undefined);
   }, []);
+
+  useEffect(loadNotifications, [loadNotifications, location.pathname]);
+
+  useEffect(() => {
+    if (bellOpen) loadNotifications();
+  }, [bellOpen, loadNotifications]);
 
   const unread = notifications.filter((n) => !n.is_read).length;
 

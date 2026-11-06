@@ -72,6 +72,11 @@ describe('auth service', () => {
     expect(result.user.email_verified).toBe(false);
     expect(result.school.slug).toBe('demo-public-school');
     expect(result.dev_token).toBeTruthy();
+    // Phase 9 fix: signup must issue a session like login does — the
+    // frontend stores data.access/data.refresh; without them the new
+    // admin's post-signup calls all 401 with a literal "undefined" token.
+    expect(result.access).toBeTruthy();
+    expect(result.refresh).toBeTruthy();
     expect(db.__users).toHaveLength(1);
     expect(db.__schools).toHaveLength(1);
   });

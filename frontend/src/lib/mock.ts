@@ -32,9 +32,9 @@ const STUDENTS: Student[] = [
 ];
 
 const CLASSES: ClassItem[] = [
-  { id: 'cl-1', name: '5', section: 'A', teacher_name: 'Ms. Shazia Parveen', teacher_phone: '+92 3XX XXXX901', student_count: 8, submitted_today: true, absent_today: 2, present_today: 6, attendance_link: 'http://localhost:5173/t/demo-token-5a' },
-  { id: 'cl-2', name: '6', section: 'B', teacher_name: 'Mr. Naveed Akhtar', teacher_phone: '+92 3XX XXXX902', student_count: 4, submitted_today: false, absent_today: 0, present_today: 0, attendance_link: 'http://localhost:5173/t/demo-token-6b' },
-  { id: 'cl-3', name: '1', section: 'A', teacher_name: 'Ms. Rabia Anwar', teacher_phone: '+92 3XX XXXX903', student_count: 3, submitted_today: true, absent_today: 0, present_today: 3, attendance_link: 'http://localhost:5173/t/demo-token-1a' },
+  { id: 'cl-1', name: '5', section: 'A', teacher_name: 'Ms. Shazia Parveen', teacher_phone: '+92 3XX XXXX901', teacher_phone_masked: '+92 3XX XXXX901', student_count: 8, submitted_today: true, absent_today: 2, present_today: 6, attendance_link: 'http://localhost:5173/t/demo-token-5a', attendance_link_active: true, attendance_date: '2026-11-06', attendance_unlocked: false },
+  { id: 'cl-2', name: '6', section: 'B', teacher_name: 'Mr. Naveed Akhtar', teacher_phone: '+92 3XX XXXX902', teacher_phone_masked: '+92 3XX XXXX902', student_count: 4, submitted_today: false, absent_today: 0, present_today: 0, attendance_link: 'http://localhost:5173/t/demo-token-6b', attendance_link_active: true, attendance_date: '2026-11-06', attendance_unlocked: false },
+  { id: 'cl-3', name: '1', section: 'A', teacher_name: 'Ms. Rabia Anwar', teacher_phone: '+92 3XX XXXX903', teacher_phone_masked: '+92 3XX XXXX903', student_count: 3, submitted_today: true, absent_today: 0, present_today: 3, attendance_link: 'http://localhost:5173/t/demo-token-1a', attendance_link_active: true, attendance_date: '2026-11-06', attendance_unlocked: true },
 ];
 
 const FEES: FeeRow[] = STUDENTS.map((s, i) => ({
@@ -142,6 +142,9 @@ export async function mockRequest<T>(path: string, method: string, body?: unknow
   }
   if (seg[0] === 'classes' && seg[2] === 'attendance-link' && method === 'POST') {
     return { link: `http://localhost:5173/t/mock-${seg[1]}` } as T;
+  }
+  if (seg[0] === 'classes' && seg[2] === 'attendance' && seg[3] === 'unlock' && method === 'PATCH') {
+    return { id: `day-mock-${seg[1]}`, unlocked: true } as T;
   }
 
   // Students
@@ -291,6 +294,19 @@ export async function mockRequest<T>(path: string, method: string, body?: unknow
     return page([{ id: 'u-1', email: 'admin@mock.local', role: 'admin' }, { id: 'u-2', email: 'clerk@school.pk', role: 'clerk' }]) as T;
   }
   if (rawPath === '/users/clerks' && method === 'POST') return { ok: true } as T;
+  if (rawPath === '/users/principals' && method === 'POST') return { ok: true } as T;
+  // D2: approval queue (mock: one pending student-create example).
+  if (rawPath === '/approvals' && method === 'GET') {
+    return page([
+      { id: 'ap-1', school_id: 's-1', requested_by: 'u-2', action_type: 'create', entity: 'student', entity_id: null, payload: { name: 'Mock Student', class_id: 'c-1' }, status: 'pending', decided_by: null, decided_at: null, created_at: '2026-11-07T02:00:00Z' },
+    ]) as T;
+  }
+  if (rawPath === '/approvals/ap-1/approve' && method === 'POST') {
+    return { id: 'ap-1', status: 'approved', applied: { student_id: 'st-mock-1' } } as T;
+  }
+  if (rawPath === '/approvals/ap-1/reject' && method === 'POST') {
+    return { id: 'ap-1', status: 'rejected' } as T;
+  }
   if (rawPath === '/promotions' && method === 'POST') return { ok: true } as T;
   if (rawPath === '/leaves' && method === 'GET') return page([]) as T;
   if (rawPath === '/leaves' && method === 'POST') return { ok: true } as T;

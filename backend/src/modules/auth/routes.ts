@@ -168,6 +168,12 @@ authRouter.get(
     if (!req.user) throw ApiError.unauthorized();
     const user = await getDb().user.findUnique({ where: { id: req.user.sub } });
     if (!user) throw ApiError.unauthorized();
-    res.json({ ok: true, data: { user: service.toPublicUser(user) } });
+    // Phase 9: include the school name so the header can show it (the
+    // public user shape has no school_name; the frontend fell back to
+    // "Your school").
+    const school = user.schoolId
+      ? await getDb().school.findUnique({ where: { id: user.schoolId } })
+      : null;
+    res.json({ ok: true, data: { user: { ...service.toPublicUser(user), school_name: school?.name ?? null } } });
   }),
 );

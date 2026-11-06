@@ -149,6 +149,16 @@ export default function TeacherLinkPage() {
       )
     : null;
 
+  // Fix C (Phase 9): the API used to return only display_name, so
+  // data.class.name/section were undefined ("Class -" / "undefined-
+  // undefined"). The API now returns name + section; fall back to
+  // display_name for copies cached on the device before the fix.
+  const classLabel = data
+    ? data.class.name && data.class.section
+      ? `${data.class.name}-${data.class.section}`
+      : (data.class.display_name ?? '—')
+    : '—';
+
   if (loading) return <Spinner label="Opening attendance…" />;
 
   return (
@@ -173,7 +183,7 @@ export default function TeacherLinkPage() {
           <p className="text-4xl">✅</p>
           <h1 className="mt-2 text-xl font-bold text-slate-900">Attendance saved</h1>
           <p className="mt-1 text-sm text-slate-500">
-            Class {data.class.name}-{data.class.section} · {data.date}
+            Class {classLabel} · {data.date}
           </p>
           <p className="mt-3 text-sm text-slate-700">
             {counts?.present ?? 0} present · {counts?.absent ?? 0} absent · {counts?.late ?? 0} late · {counts?.leave ?? 0} on leave
@@ -193,7 +203,7 @@ export default function TeacherLinkPage() {
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <h1 className="text-lg font-bold text-slate-900">
-                  Class {data.class.name}-{data.class.section}
+                  Class {classLabel}
                 </h1>
                 <p className="text-sm text-slate-500">Date: {data.date}</p>
               </div>
@@ -266,7 +276,7 @@ export default function TeacherLinkPage() {
             title="Submit attendance?"
             message={
               counts
-                ? `Are you sure? This will submit attendance for Class ${data.class.name}-${data.class.section} (${data.date}): ${counts.present} present, ${counts.absent} absent, ${counts.late} late, ${counts.leave} on leave. One submission per class per day — it locks afterwards and only the admin can unlock it.`
+                ? `Are you sure? This will submit attendance for Class ${classLabel} (${data.date}): ${counts.present} present, ${counts.absent} absent, ${counts.late} late, ${counts.leave} on leave. One submission per class per day — it locks afterwards and only the admin can unlock it.`
                 : ''
             }
             confirmLabel="Submit attendance"

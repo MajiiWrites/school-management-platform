@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, ApiClientError } from '../lib/api';
 import type { PageResult, Student } from '../lib/types';
 import { normalizePkPhone } from '../lib/utils';
@@ -10,6 +10,23 @@ function errText(e: unknown): string {
   return e instanceof ApiClientError ? e.message : 'Something went wrong.';
 }
 
+interface ParentImportPreviewItem {
+  row: number;
+  status: 'ok' | 'duplicate' | 'invalid';
+  reason: string | null;
+  data: { admission_no?: string | null; student_name: string; parent_name?: string | null; parent_phone?: string | null };
+  student_id: string | null;
+  student_name: string | null;
+}
+
+interface ParentImportPreview {
+  total: number;
+  valid: number;
+  duplicates_flagged: number;
+  invalid_rows: Array<{ row: number; reason: string }>;
+  preview: ParentImportPreviewItem[];
+}
+
 export default function ParentsPage() {
   const [flag, setFlag] = useState<'missing' | 'invalid' | 'duplicate'>('missing');
   const [students, setStudents] = useState<Student[]>([]);
@@ -17,6 +34,45 @@ export default function ParentsPage() {
   const [error, setError] = useState('');
   const [editing, setEditing] = useState<Student | null>(null);
   const { push, view } = useToast();
+  // Phase 9 fix: bulk import of parent numbers (CSV/Excel) — same
+  // preview-first pattern as the student import.
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [pendingImport, setPendingImport] = useState<File | null>(null);
+  const [preview, setPreview] = useState<{ file: File; data: ParentImportPreview } | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [importing, setImporting] = useState(false);
+
+  const previewImport = async (file: File) => {
+    setPreviewLoading(true);
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      const data = await api<ParentImportPreview>('/parents/import-preview', { method: 'POST', body: form });
+      setPreview({ file, data });
+    } catch (e) {
+      push('error', errText(e));
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  const importCsv = async (file: File) => {
+    setImporting(true);
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      const res = await api<{ imported: number; duplicates_flagged: number; invalid_rows: Array<{ row: number; reason: string }> }>(
+        '/parents/import-csv',
+        { method: 'POST', body: form },
+      );
+      push('success', `Updated ${res.imported} parent number(s) (${res.duplicates_flagged} duplicates skipped, ${res.invalid_rows.length} invalid rows).`);
+      load();
+    } catch (e) {
+      push('error', errText(e));
+    } finally {
+      setImporting(false);
+    }
+  };
 
   const load = useCallback(() => {
     setLoading(true);
@@ -41,12 +97,33 @@ export default function ParentsPage() {
 
   return (
     <div className="space-y-5">
-      <div>
-        <h1 className="text-2xl font-bold text-slate-900">Parents & phone numbers</h1>
-        <p className="text-sm text-slate-500">
-          Absent alerts and fee reminders can only reach parents with a valid number. Fix the flagged students below —
-          numbers are stored encrypted and shown masked everywhere else.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900">Parents & phone numbers</h1>
+          <p className="text-sm text-slate-500">
+            Absent alerts and fee reminders can only reach parents with a valid number. Fix the flagged students below —
+            numbers are stored encrypted and shown masked everywhere else.
+          </p>
+        </div>
+        <div>
+          <Button variant="secondary" disabled={importing || previewLoading} onClick={() => fileRef.current?.click()}>
+            {previewLoading ? 'Checking file…' : importing ? 'Importing…' : 'Import parent numbers (CSV)'}
+          </Button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".csv,.xlsx,.xls"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) setPendingImport(f);
+              e.target.value = '';
+            }}
+          />
+          <p className="mt-1 max-w-xs text-right text-xs text-slate-500">
+            Columns: admission_no, student, parent_name, parent_phone
+          </p>
+        </div>
       </div>
       {error && <ErrorBanner message={error} onRetry={load} />}
 
@@ -110,6 +187,71 @@ export default function ParentsPage() {
             load();
           }}
         />
+      )}
+      <ConfirmDialog
+        open={pendingImport !== null}
+        title="Check this file first?"
+        message={
+          pendingImport
+            ? `This will validate "${pendingImport.name}" and show a preview — nothing is updated yet. Only rows marked valid will be imported when you confirm the preview. Match students by admission number (best) or by name.`
+            : ''
+        }
+        confirmLabel="Check file"
+        tone="primary"
+        busy={previewLoading}
+        onConfirm={() => {
+          const f = pendingImport;
+          setPendingImport(null);
+          if (f) void previewImport(f);
+        }}
+        onCancel={() => setPendingImport(null)}
+      />
+      {preview && (
+        <Modal title={`Import preview — ${preview.file.name}`} onClose={() => setPreview(null)}>
+          <p className="mb-3 text-sm text-slate-600">
+            {preview.data.valid} of {preview.data.total} rows are valid · {preview.data.duplicates_flagged} duplicates ·{' '}
+            {preview.data.invalid_rows.length} invalid. Only valid rows will update parent numbers.
+          </p>
+          <div className="max-h-80 overflow-auto rounded-xl border border-slate-200">
+            <table className="w-full min-w-[520px] text-sm">
+              <thead>
+                <tr className="border-b border-slate-200 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+                  <th className="px-3 py-2">Row</th>
+                  <th className="px-3 py-2">Student</th>
+                  <th className="px-3 py-2">Parent phone</th>
+                  <th className="px-3 py-2">Status</th>
+                  <th className="px-3 py-2">Note</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {preview.data.preview.map((r) => (
+                  <tr key={r.row} className={r.status === 'ok' ? '' : r.status === 'duplicate' ? 'bg-amber-50' : 'bg-red-50'}>
+                    <td className="px-3 py-2">{r.row}</td>
+                    <td className="px-3 py-2 font-medium">{r.student_name ?? r.data.student_name ?? '—'}</td>
+                    <td className="px-3 py-2 font-mono text-xs">{r.data.parent_phone ?? '—'}</td>
+                    <td className="px-3 py-2">
+                      {r.status === 'ok' ? <Badge tone="green">Valid</Badge> : r.status === 'duplicate' ? <Badge tone="amber">Duplicate</Badge> : <Badge tone="red">Invalid</Badge>}
+                    </td>
+                    <td className="px-3 py-2 text-xs text-slate-600">{r.reason ?? '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="mt-4 flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => setPreview(null)}>Cancel</Button>
+            <Button
+              disabled={preview.data.valid === 0 || importing}
+              onClick={() => {
+                const f = preview.file;
+                setPreview(null);
+                void importCsv(f);
+              }}
+            >
+              {importing ? 'Importing…' : `Update ${preview.data.valid} parent number(s)`}
+            </Button>
+          </div>
+        </Modal>
       )}
       {view}
     </div>

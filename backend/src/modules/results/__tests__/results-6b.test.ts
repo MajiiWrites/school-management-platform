@@ -690,3 +690,74 @@ describe('6B soft delete / recycle bin + cross-tenant', () => {
     expect(cardPdf.length).toBeGreaterThan(100);
   });
 });
+
+describe('Fix E (Phase 9): manual entry fields, exam id on save, class-only export, report-card father/remarks', () => {
+  it('manual entry auto-creates the exam, returns its id, and stores father_name + remarks', async () => {
+    await seedClasses();
+    await seedStudent();
+    const out = await resultsSvc.saveManualResults(db, SCHOOL_A, {
+      exam_name: 'Midterm',
+      class_id: classA.id,
+      rows: [{ roll_no: 1, student_name: 'Ahmed Raza', father_name: 'Muhammad Raza', obtained_marks: 85, total_marks: 100, remarks: 'Good effort' }],
+    }, ADMIN);
+    expect(out.saved).toBe(1);
+    expect(out.linked).toBe(1);
+    // The frontend needs this id to refresh + select the exam in the filter.
+    expect(out.exam_id).toBeTruthy();
+    expect(out.exam_name).toBe('Midterm');
+    const list = await resultsSvc.listResults(db, SCHOOL_A, { exam_id: out.exam_id, class_id: classA.id });
+    expect(list.total).toBe(1);
+    const row = list.items[0] as any;
+    expect(row.father_name).toBe('Muhammad Raza');
+    expect(row.remarks).toBe('Good effort');
+    expect(row.percentage).toBe(85);
+    expect(row.grade).toBe('A');
+    expect(row.position).toBe(1);
+    // Toppers / summary still work for the auto-created exam.
+    const toppers = await resultsSvc.getToppers(db, SCHOOL_A, { exam_id: out.exam_id, class_id: classA.id });
+    expect(toppers[0].student_name).toBe('Ahmed Raza');
+    const summary = await resultsSvc.getSummary(db, SCHOOL_A, { exam_id: out.exam_id, class_id: classA.id });
+    expect(summary.total).toBe(1);
+    expect(summary.passed).toBe(1);
+  });
+
+  it('export works with no exam_id (All exams) and still works per-exam', async () => {
+    await seedClasses();
+    await seedStudent();
+    const out = await resultsSvc.saveManualResults(db, SCHOOL_A, {
+      exam_name: 'Midterm',
+      class_id: classA.id,
+      rows: [{ roll_no: 1, student_name: 'Ahmed Raza', father_name: 'Muhammad Raza', obtained_marks: 85, total_marks: 100, remarks: 'Good effort' }],
+    }, ADMIN);
+    const xlsxAll = await resultsSvc.exportResults(db, SCHOOL_A, { format: 'xlsx', class_id: classA.id });
+    expect(xlsxAll.buffer.length).toBeGreaterThan(100);
+    expect(xlsxAll.contentType).toContain('spreadsheet');
+    const pdfAll = await resultsSvc.exportResults(db, SCHOOL_A, { format: 'pdf', class_id: classA.id });
+    expect(pdfAll.buffer.length).toBeGreaterThan(100);
+    const xlsxOne = await resultsSvc.exportResults(db, SCHOOL_A, { format: 'xlsx', exam_id: out.exam_id, class_id: classA.id });
+    expect(xlsxOne.buffer.length).toBeGreaterThan(100);
+    await expect(resultsSvc.exportResults(db, SCHOOL_A, { format: 'xlsx' })).rejects.toThrow(/class_id/i);
+  });
+
+  it('report card falls back to the result father_name and shows remarks', async () => {
+    await seedClasses();
+    // Student with NO father on the profile.
+    await studentsSvc.createStudent(db, SCHOOL_A, classA.id, { name: 'Noor Fatima', roll_no: 5, parent_phone: '03001112222', admission_no: 'ADM-005' }, ADMIN);
+    const out = await resultsSvc.saveManualResults(db, SCHOOL_A, {
+      exam_name: 'Midterm',
+      class_id: classA.id,
+      rows: [{ roll_no: 5, student_name: 'Noor Fatima', father_name: 'Abdul Kareem', obtained_marks: 90, total_marks: 100, remarks: 'Excellent work' }],
+    }, ADMIN);
+    expect(out.linked).toBe(1);
+    const students = await studentsSvc.listStudentsSchoolWide(db, SCHOOL_A, { admission_no: 'ADM-005' });
+    const card = await resultsSvc.getReportCard(db, SCHOOL_A, students.items[0].id, out.exam_id);
+    expect(card.student.father_name).toBe('Abdul Kareem');
+    expect(card.remarks).toContain('Excellent work');
+    const html = resultsSvc.renderReportCardHtml(card);
+    expect(html).toContain('Abdul Kareem');
+    expect(html).toContain('Excellent work');
+    const pdf = await resultsSvc.renderReportCardPdf(card);
+    expect(pdf.length).toBeGreaterThan(100);
+    expect(pdf.subarray(0, 5).toString()).toBe('%PDF-');
+  });
+});

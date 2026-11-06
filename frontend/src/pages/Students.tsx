@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { api } from '../lib/api';
 import type { ClassItem, PageResult, Student } from '../lib/types';
 import { displayClass } from '../lib/utils';
@@ -66,6 +67,9 @@ export default function StudentsPage() {
                 </option>
               ))}
             </select>
+            <Link to="/recycle-bin" className="ml-auto text-sm font-medium text-brand-700 hover:underline">
+              ♻ Recycle Bin — restore deleted students
+            </Link>
           </div>
           {listLoading ? (
             <Spinner label="Loading students…" />

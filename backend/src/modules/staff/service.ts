@@ -327,7 +327,7 @@ export function renderPayslipHtml(p: { school_name: string; staff_name: string; 
 <div class="slip">
 <div class="row"><div><h1>${esc(p.school_name)}</h1><div class="sub">Monthly Payslip</div></div><div><span class="badge">${p.paid ? 'PAID' : 'UNPAID'}</span></div></div>
 <div class="row"><span>Payslip No: <strong>${esc(p.payslip_no ?? '—')}</strong></span><span>Month: <strong>${esc(monthLabel)}</strong></span></div>
-<div class="row"><span>Staff: <strong>${esc(p.staff_name)}</strong> (${esc(p.role)})</span><span>Paid on: ${p.paid_at ? esc(new Date(p.paid_at).toLocaleDateString('en-GB')) : '—'}</span></div>
+<div class="row"><span>Staff: <strong>${esc(p.staff_name)}</strong> (${esc(p.role)})</span><span>Paid on: ${p.paid_at ? esc(new Date(p.paid_at).toLocaleDateString('en-GB', { timeZone: 'Asia/Karachi' })) : '—'}</span></div>
 <table><tr><th>Description</th><th class="num">Amount</th></tr>
 <tr><td>Base salary</td><td class="num">${fmt(p.base_salary)}</td></tr>
 <tr><td>Deductions</td><td class="num">&minus; ${fmt(p.deductions)}</td></tr>

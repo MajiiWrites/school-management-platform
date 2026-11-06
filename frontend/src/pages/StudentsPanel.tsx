@@ -39,6 +39,15 @@ function phoneBadge(s: Student) {
   return <Badge tone="green">OK</Badge>;
 }
 
+/** Phase 9 fix: a student marked Left (or Struck off / Graduated) showed
+ * nothing in the list — the status was only visible inside the edit form. */
+function statusBadge(s: Student) {
+  if (!s.status || s.status === 'active') return null;
+  if (s.status === 'left') return <Badge tone="amber">Left</Badge>;
+  if (s.status === 'struck_off') return <Badge tone="red">Struck off</Badge>;
+  return <Badge tone="blue">Graduated</Badge>;
+}
+
 export default function StudentsPanel({
   classId,
   students,
@@ -93,7 +102,7 @@ export default function StudentsPanel({
     try {
       await api(`/students/${s.id}`, { method: 'DELETE' });
       setStudents(students.filter((x) => x.id !== s.id));
-      push('success', 'Student removed.');
+      push('success', 'Student moved to the Recycle Bin.');
     } catch (e) {
       push('error', errText(e));
     }
@@ -222,6 +231,7 @@ export default function StudentsPanel({
               <tr className="border-b border-slate-200 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
                 <th className="px-4 py-3">Roll</th>
                 <th className="px-4 py-3">Student</th>
+                <th className="px-4 py-3">Status</th>
                 <th className="px-4 py-3">Parent</th>
                 <th className="px-4 py-3">Phone</th>
                 <th className="px-4 py-3">Phone status</th>
@@ -236,6 +246,7 @@ export default function StudentsPanel({
                     <span className="font-medium text-slate-900">{s.name}</span>
                     {s.name_ur ? <span className="urdu ml-2 text-slate-500">{s.name_ur}</span> : null}
                   </td>
+                  <td className="px-4 py-2.5">{statusBadge(s) ?? <span className="text-xs text-slate-400">Active</span>}</td>
                   <td className="px-4 py-2.5">{s.parent_name ?? '—'}</td>
                   <td className="px-4 py-2.5 font-mono text-xs">{s.parent_phone ?? '—'}</td>
                   <td className="px-4 py-2.5">{phoneBadge(s)}</td>
@@ -285,7 +296,7 @@ export default function StudentsPanel({
       <ConfirmDialog
         open={pendingRemove !== null}
         title="Remove this student?"
-        message={pendingRemove ? `Are you sure? This will remove ${pendingRemove.name} from this class. This cannot be undone.` : ''}
+        message={pendingRemove ? `Are you sure? This will move ${pendingRemove.name} to the Recycle Bin. You can restore them within 30 days.` : ''}
         confirmLabel="Remove student"
         tone="danger"
         onConfirm={() => {

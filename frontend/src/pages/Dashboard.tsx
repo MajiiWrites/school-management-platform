@@ -11,16 +11,22 @@ export default function DashboardPage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
 
+  // Phase 9 fix: /sms/status used to block the whole dashboard (Promise.all
+  // with /dashboard) — a slow SIM-status call held the first paint for
+  // 10–25s. The dashboard renders as soon as its own data arrives; the
+  // SMS card fills in (or stays blank) independently.
   const load = () => {
     setLoading(true);
-    Promise.all([api<DashboardData>('/dashboard'), api<SmsStatus>('/sms/status')])
-      .then(([d, s]) => {
+    api<DashboardData>('/dashboard')
+      .then((d) => {
         setData(d);
-        setSms(s);
         setError('');
       })
       .catch(() => setError('Could not load the dashboard.'))
       .finally(() => setLoading(false));
+    api<SmsStatus>('/sms/status')
+      .then((s) => setSms(s))
+      .catch(() => undefined);
   };
 
   useEffect(load, []);

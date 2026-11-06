@@ -54,6 +54,9 @@ export interface CertificateView {
   logo_url: string | null;
   issued_at: string;
   issued_by: string | null;
+  /** School IANA timezone — printable renderers format the issue date in
+   * it (Phase 9 fix: the server renders in UTC, a day behind PKT). */
+  timezone: string;
 }
 
 export interface IdCardView {
@@ -66,6 +69,8 @@ export interface IdCardView {
   school_name: string;
   logo_url: string | null;
   id_card_issued_at: string | null;
+  /** School IANA timezone — see CertificateView.timezone. */
+  timezone: string;
 }
 
 function certificateNo(schoolSlug: string, type: CertificateType, id: string): string {
@@ -112,6 +117,7 @@ async function toCertificateView(db: Db, schoolId: string, school: any, row: any
     logo_url: (settings.logo_url as string | null) ?? null,
     issued_at: row.issuedAt ? new Date(row.issuedAt).toISOString() : new Date().toISOString(),
     issued_by: row.issuedBy ?? null,
+    timezone: (school.timezone as string | undefined) ?? 'Asia/Karachi',
   };
 }
 
@@ -212,6 +218,7 @@ async function toIdCardView(db: Db, schoolId: string, school: any, student: any)
     school_name: school.name,
     logo_url: (settings.logo_url as string | null) ?? null,
     id_card_issued_at: student.idCardIssuedAt ? new Date(student.idCardIssuedAt).toISOString() : null,
+    timezone: (school.timezone as string | undefined) ?? 'Asia/Karachi',
   };
 }
 
@@ -224,6 +231,10 @@ function esc(s: string): string {
 }
 
 export function renderCertificateHtml(c: CertificateView): string {
+  // Phase 9: format in the SCHOOL timezone — the server renders in UTC,
+  // which showed the issue date a day behind in PKT.
+  const tz = c.timezone ?? 'Asia/Karachi';
+  const issuedDate = new Date(c.issued_at).toLocaleDateString('en-GB', { timeZone: tz });
   const bodyText =
     c.type === 'leaving'
       ? `This is to certify that <strong>${esc(c.student_name)}</strong>, son/daughter of <strong>${esc(c.father_name ?? '—')}</strong>, was a student of this school in Class <strong>${esc(c.class_name)}</strong>${c.roll_no !== null ? ` (Roll No. ${c.roll_no})` : ''}${c.admission_no ? `, Admission No. ${esc(c.admission_no)}` : ''}. The student has left the school and is hereby issued this School Leaving Certificate.`
@@ -257,7 +268,7 @@ export function renderCertificateHtml(c: CertificateView): string {
   ${c.school_address ? `<p class="meta">${esc(c.school_address)}</p>` : ''}
   <h2>${esc(c.type_label)}</h2>
   <p class="body">${bodyText}</p>
-  <p class="meta">Certificate No: <strong>${esc(c.certificate_no)}</strong> &nbsp;·&nbsp; Issued on ${esc(new Date(c.issued_at).toLocaleDateString('en-GB'))}</p>
+  <p class="meta">Certificate No: <strong>${esc(c.certificate_no)}</strong> &nbsp;·&nbsp; Issued on ${esc(issuedDate)}</p>
   <div class="sig"><span>Principal / Head</span><span>Office Seal</span></div>
 </div>
 </body>
@@ -265,6 +276,8 @@ export function renderCertificateHtml(c: CertificateView): string {
 }
 
 export async function renderCertificatePdf(c: CertificateView): Promise<Buffer> {
+  const tz = c.timezone ?? 'Asia/Karachi';
+  const issuedDate = new Date(c.issued_at).toLocaleDateString('en-GB', { timeZone: tz });
   let PDFDocument: any;
   try {
     const mod = await import('pdfkit');
@@ -295,7 +308,7 @@ export async function renderCertificatePdf(c: CertificateView): Promise<Buffer> 
   );
   doc.moveDown();
   doc.fontSize(11).fillColor('#555').text(`Certificate No: ${c.certificate_no}`);
-  doc.text(`Issued on ${new Date(c.issued_at).toLocaleDateString('en-GB')}`);
+  doc.text(`Issued on ${issuedDate}`);
   doc.moveDown(3);
   doc.fontSize(11).fillColor('#333').text('Principal / Head: ______________________        Office Seal: ______________________');
   doc.end();
@@ -303,6 +316,11 @@ export async function renderCertificatePdf(c: CertificateView): Promise<Buffer> 
 }
 
 export function renderIdCardHtml(card: IdCardView): string {
+  // Phase 9: format in the SCHOOL timezone (see renderCertificateHtml).
+  const tz = card.timezone ?? 'Asia/Karachi';
+  const issuedDate = card.id_card_issued_at
+    ? new Date(card.id_card_issued_at).toLocaleDateString('en-GB', { timeZone: tz })
+    : '—';
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -336,7 +354,7 @@ export function renderIdCardHtml(card: IdCardView): string {
       Father: ${esc(card.father_name ?? '—')}
     </div>
   </div>
-  <div class="foot">Issued: ${card.id_card_issued_at ? esc(new Date(card.id_card_issued_at).toLocaleDateString('en-GB')) : '—'} · This card is the property of ${esc(card.school_name)}.</div>
+  <div class="foot">Issued: ${esc(issuedDate)} · This card is the property of ${esc(card.school_name)}.</div>
 </div>
 </body>
 </html>`;

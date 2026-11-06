@@ -67,8 +67,8 @@ export default function ResultsPage() {
   const fileRef = useRef<HTMLInputElement>(null);
   // Manual entry
   const [showManual, setShowManual] = useState(false);
-  const [manualRows, setManualRows] = useState<Array<{ roll_no: string; student_name: string; obtained_marks: string; total_marks: string }>>([
-    { roll_no: '', student_name: '', obtained_marks: '', total_marks: '' },
+  const [manualRows, setManualRows] = useState<Array<{ roll_no: string; student_name: string; father_name: string; obtained_marks: string; total_marks: string; remarks: string }>>([
+    { roll_no: '', student_name: '', father_name: '', obtained_marks: '', total_marks: '', remarks: '' },
   ]);
   const [manualExamName, setManualExamName] = useState('');
   const [manualSaving, setManualSaving] = useState(false);
@@ -84,15 +84,28 @@ export default function ResultsPage() {
   const [reportLoading, setReportLoading] = useState(false);
   const { push, view } = useToast();
 
+  // Exam list: fetched once on mount AND refreshed after every save that
+  // can create an exam (manual entry / OCR review). The old code only
+  // fetched on mount, so an exam auto-created by a manual save never
+  // appeared in the filter until a full page reload — with "All exams"
+  // selected, report cards and exports stayed disabled forever.
+  // limit=100: the API default page is 20, which would silently truncate
+  // the filter for schools with many exams.
+  const loadExams = async (): Promise<ExamItem[]> => {
+    const e = await api<PageResult<ExamItem>>('/exams?limit=100');
+    setExams(e.items);
+    return e.items;
+  };
+
   useEffect(() => {
-    Promise.all([api<PageResult<ClassItem>>('/classes'), api<PageResult<ExamItem>>('/exams')])
-      .then(([c, e]) => {
+    Promise.all([api<PageResult<ClassItem>>('/classes'), loadExams()])
+      .then(([c]) => {
         setClasses(c.items);
-        setExams(e.items);
         if (c.items.length > 0) setClassId(c.items[0].id);
       })
       .catch(() => setError('Could not load classes or exams.'))
       .finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -111,6 +124,12 @@ export default function ResultsPage() {
       const d = await api<PageResult<ResultRow>>(`/results?${q.toString()}`);
       setResults(d.items);
       setTotal(d.total);
+      // Safety net: if a result references an exam this page has never
+      // seen (created in another tab, or by an OCR upload), refresh the
+      // filter list so the exam becomes selectable instead of invisible.
+      if (d.items.some((r) => !exams.some((e) => e.id === r.exam_id))) {
+        await loadExams().catch(() => undefined);
+      }
       if (examId) {
         const [t, s] = await Promise.all([
           api<{ items: ResultRow[] }>(`/results/toppers?exam_id=${examId}&class_id=${classId}`),
@@ -133,6 +152,16 @@ export default function ResultsPage() {
     void loadResults();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [classId, examId]);
+
+  const downloadExport = async (format: 'xlsx' | 'pdf') => {
+    try {
+      const q = new URLSearchParams({ format, class_id: classId });
+      if (examId) q.set('exam_id', examId);
+      await apiDownload(`/results/export?${q.toString()}`, format === 'xlsx' ? 'results.xlsx' : 'results.pdf');
+    } catch (e) {
+      push('error', errText(e));
+    }
+  };
 
   const uploadSheet = async (file: File) => {
     if (!examName.trim()) {
@@ -175,13 +204,15 @@ export default function ResultsPage() {
           remarks: r.remarks || undefined,
           confidence: r.confidence,
         }));
-      const out = await api<{ saved: number; linked: number; unlinked: number; skipped: Array<{ row: number; reason: string }>; flagged: Array<{ roll_no: number; flags: string[] }> }>(
+      const out = await api<{ saved: number; linked: number; unlinked: number; skipped: Array<{ row: number; reason: string }>; flagged: Array<{ roll_no: number; flags: string[] }>; exam_id: string; exam_name: string }>(
         `/result-sheets/${review.result_sheet_id}/confirm`,
         { method: 'POST', body: { rows } },
       );
       push('success', `Saved ${out.saved} results (${out.linked} linked to students, ${out.unlinked} unlinked).${out.skipped.length > 0 ? ` ${out.skipped.length} rows skipped.` : ''}`);
       setReview(null);
       setReviewRows([]);
+      await loadExams().catch(() => undefined);
+      if (out.exam_id) setExamId(out.exam_id);
       await loadResults();
     } catch (e) {
       push('error', errText(e));
@@ -216,8 +247,10 @@ export default function ResultsPage() {
       .map((r) => ({
         roll_no: Number(r.roll_no),
         student_name: r.student_name.trim(),
+        father_name: r.father_name.trim() || undefined,
         obtained_marks: r.obtained_marks ? Number(r.obtained_marks) : undefined,
         total_marks: r.total_marks ? Number(r.total_marks) : undefined,
+        remarks: r.remarks.trim() || undefined,
       }));
     if (rows.length === 0) {
       push('error', 'Add at least one row with a roll number and a name.');
@@ -230,13 +263,17 @@ export default function ResultsPage() {
     }
     setManualSaving(true);
     try {
-      const out = await api<{ saved: number; linked: number; unlinked: number }>(`/results/manual`, {
+      const out = await api<{ saved: number; linked: number; unlinked: number; exam_id: string; exam_name: string }>(`/results/manual`, {
         method: 'POST',
         body: { exam_id: examId || undefined, exam_name: examId ? undefined : name, class_id: classId, rows },
       });
       push('success', `Saved ${out.saved} results (${out.linked} linked, ${out.unlinked} unlinked).`);
       setShowManual(false);
-      setManualRows([{ roll_no: '', student_name: '', obtained_marks: '', total_marks: '' }]);
+      setManualRows([{ roll_no: '', student_name: '', father_name: '', obtained_marks: '', total_marks: '', remarks: '' }]);
+      // Refresh the filter so the (possibly just auto-created) exam shows
+      // up, and select it so toppers / report cards / exports unlock.
+      await loadExams().catch(() => undefined);
+      if (out.exam_id) setExamId(out.exam_id);
       await loadResults();
     } catch (e) {
       push('error', errText(e));
@@ -296,20 +333,30 @@ export default function ResultsPage() {
             </select>
             <div className="ml-auto flex flex-wrap gap-2">
               <Button variant="secondary" onClick={() => { setManualExamName(''); setShowManual(true); }}>+ Manual entry</Button>
-              <Button
-                variant="secondary"
-                disabled={!examId || !classId}
-                onClick={() => void apiDownload(`/results/export?format=xlsx&exam_id=${examId}&class_id=${classId}`, 'results.xlsx')}
-              >
-                Export Excel
-              </Button>
-              <Button
-                variant="secondary"
-                disabled={!examId || !classId}
-                onClick={() => void apiDownload(`/results/export?format=pdf&exam_id=${examId}&class_id=${classId}`, 'results.pdf')}
-              >
-                Export PDF
-              </Button>
+              {/* Exports unlock as soon as any results exist for the
+                  current filter — they no longer require an exam to be
+                  picked (the backend exports the whole class when no
+                  exam is selected). Previously they were gated on
+                  examId, which was unreachable while the filter was
+                  stale, so they looked permanently disabled. */}
+              <span title={results.length === 0 ? 'No results to export yet' : examId ? 'Export this exam' : 'Export all exams in this class'}>
+                <Button
+                  variant="secondary"
+                  disabled={!classId || results.length === 0}
+                  onClick={() => void downloadExport('xlsx')}
+                >
+                  Export Excel
+                </Button>
+              </span>
+              <span title={results.length === 0 ? 'No results to export yet' : examId ? 'Export this exam' : 'Export all exams in this class'}>
+                <Button
+                  variant="secondary"
+                  disabled={!classId || results.length === 0}
+                  onClick={() => void downloadExport('pdf')}
+                >
+                  Export PDF
+                </Button>
+              </span>
             </div>
           </div>
 
@@ -365,16 +412,18 @@ export default function ResultsPage() {
             />
           ) : (
             <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
-              <table className="w-full min-w-[720px] text-sm">
+              <table className="w-full min-w-[860px] text-sm">
                 <thead>
                   <tr className="border-b border-slate-200 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
                     <th className="px-4 py-3">Pos</th>
                     <th className="px-4 py-3">Roll</th>
                     <th className="px-4 py-3">Student</th>
+                    <th className="px-4 py-3">Father</th>
                     <th className="px-4 py-3">Obtained</th>
                     <th className="px-4 py-3">Total</th>
                     <th className="px-4 py-3">%</th>
                     <th className="px-4 py-3">Grade</th>
+                    <th className="px-4 py-3">Remarks</th>
                     <th className="px-4 py-3">Linked</th>
                     <th className="px-4 py-3 text-right">Actions</th>
                   </tr>
@@ -385,10 +434,12 @@ export default function ResultsPage() {
                       <td className="px-4 py-2.5">{r.position ?? '—'}</td>
                       <td className="px-4 py-2.5 font-medium">{r.roll_no}</td>
                       <td className="px-4 py-2.5 font-medium text-slate-900">{r.student_name}</td>
+                      <td className="px-4 py-2.5">{r.father_name ?? '—'}</td>
                       <td className="px-4 py-2.5">{r.obtained_marks ?? '—'}</td>
                       <td className="px-4 py-2.5">{r.total_marks ?? '—'}</td>
                       <td className="px-4 py-2.5">{r.percentage ?? '—'}</td>
                       <td className="px-4 py-2.5">{r.grade ?? '—'}</td>
+                      <td className="px-4 py-2.5">{r.remarks ?? '—'}</td>
                       <td className="px-4 py-2.5">{r.linked ? <Badge tone="green">Linked</Badge> : <Badge tone="amber">Unlinked</Badge>}</td>
                       <td className="px-4 py-2.5 text-right">
                         <button className="mr-3 font-medium text-brand-700 hover:underline" onClick={() => setEditing(r)}>Edit</button>
@@ -527,14 +578,20 @@ export default function ResultsPage() {
               )}
             </Field>
             {manualRows.map((r, i) => (
-              <div key={i} className="grid grid-cols-4 gap-2">
-                <input className={inputCls} type="number" placeholder="Roll" value={r.roll_no} onChange={(e) => setManualRows(manualRows.map((x, j) => (j === i ? { ...x, roll_no: e.target.value } : x)))} autoComplete="off" />
-                <input className={inputCls} placeholder="Student name" value={r.student_name} onChange={(e) => setManualRows(manualRows.map((x, j) => (j === i ? { ...x, student_name: e.target.value } : x)))} autoComplete="off" />
-                <input className={inputCls} type="number" placeholder="Obtained" value={r.obtained_marks} onChange={(e) => setManualRows(manualRows.map((x, j) => (j === i ? { ...x, obtained_marks: e.target.value } : x)))} autoComplete="off" />
-                <input className={inputCls} type="number" placeholder="Total" value={r.total_marks} onChange={(e) => setManualRows(manualRows.map((x, j) => (j === i ? { ...x, total_marks: e.target.value } : x)))} autoComplete="off" />
+              <div key={i} className="space-y-2 rounded-lg border border-slate-200 p-2">
+                <div className="grid grid-cols-4 gap-2">
+                  <input className={inputCls} type="number" placeholder="Roll" value={r.roll_no} onChange={(e) => setManualRows(manualRows.map((x, j) => (j === i ? { ...x, roll_no: e.target.value } : x)))} autoComplete="off" />
+                  <input className={inputCls} placeholder="Student name" value={r.student_name} onChange={(e) => setManualRows(manualRows.map((x, j) => (j === i ? { ...x, student_name: e.target.value } : x)))} autoComplete="off" />
+                  <input className={inputCls} type="number" placeholder="Obtained" value={r.obtained_marks} onChange={(e) => setManualRows(manualRows.map((x, j) => (j === i ? { ...x, obtained_marks: e.target.value } : x)))} autoComplete="off" />
+                  <input className={inputCls} type="number" placeholder="Total" value={r.total_marks} onChange={(e) => setManualRows(manualRows.map((x, j) => (j === i ? { ...x, total_marks: e.target.value } : x)))} autoComplete="off" />
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <input className={inputCls} placeholder="Father's name (optional)" value={r.father_name} onChange={(e) => setManualRows(manualRows.map((x, j) => (j === i ? { ...x, father_name: e.target.value } : x)))} autoComplete="off" />
+                  <input className={inputCls} placeholder="Remarks (optional, e.g. Good effort)" value={r.remarks} onChange={(e) => setManualRows(manualRows.map((x, j) => (j === i ? { ...x, remarks: e.target.value } : x)))} autoComplete="off" />
+                </div>
               </div>
             ))}
-            <Button variant="secondary" onClick={() => setManualRows([...manualRows, { roll_no: '', student_name: '', obtained_marks: '', total_marks: '' }])}>+ Add row</Button>
+            <Button variant="secondary" onClick={() => setManualRows([...manualRows, { roll_no: '', student_name: '', father_name: '', obtained_marks: '', total_marks: '', remarks: '' }])}>+ Add row</Button>
             <div className="flex justify-end gap-2">
               <Button variant="secondary" onClick={() => setShowManual(false)}>Cancel</Button>
               <Button disabled={manualSaving} onClick={() => void saveManual()}>{manualSaving ? 'Saving…' : 'Save results'}</Button>
@@ -645,6 +702,7 @@ export default function ResultsPage() {
 function EditResultForm({ row, onClose, onSaved }: { row: ResultRow; onClose: () => void; onSaved: (r: ResultRow) => void }) {
   const [obtained, setObtained] = useState(row.obtained_marks !== null && row.obtained_marks !== undefined ? String(row.obtained_marks) : '');
   const [total, setTotal] = useState(row.total_marks !== null && row.total_marks !== undefined ? String(row.total_marks) : '');
+  const [fatherName, setFatherName] = useState(row.father_name ?? '');
   const [remarks, setRemarks] = useState(row.remarks ?? '');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -663,6 +721,7 @@ function EditResultForm({ row, onClose, onSaved }: { row: ResultRow; onClose: ()
             body: {
               obtained_marks: obtained ? Number(obtained) : null,
               total_marks: total ? Number(total) : null,
+              father_name: fatherName.trim() || null,
               remarks: remarks || null,
             },
           });
@@ -685,6 +744,9 @@ function EditResultForm({ row, onClose, onSaved }: { row: ResultRow; onClose: ()
       </div>
       <Field label="Remarks">
         <input className={inputCls} value={remarks} onChange={(e) => setRemarks(e.target.value)} placeholder="e.g. Good effort" autoComplete="off" />
+      </Field>
+      <Field label="Father's name">
+        <input className={inputCls} value={fatherName} onChange={(e) => setFatherName(e.target.value)} placeholder="e.g. Muhammad Raza" autoComplete="off" />
       </Field>
       <p className="text-xs text-slate-500">Percentage and grade are recomputed from the marks; positions are recomputed for the whole exam and class.</p>
       <div className="flex justify-end gap-2">

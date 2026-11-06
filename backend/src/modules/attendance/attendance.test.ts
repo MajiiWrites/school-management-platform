@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { submitAttendance } from './service';
+import { submitAttendance, getLinkPage } from './service';
 import { hashToken, encryptPhone, sha256Hex } from '../../lib/crypto';
 
 /**
@@ -221,5 +221,19 @@ describe('submitAttendance rules', () => {
     expect(result.messages_drafted).toBe(0);
     expect(db.__queue).toHaveLength(0);
     expect(db.__notifications).toHaveLength(0);
+  });
+});
+
+describe('getLinkPage (Fix C — teacher page class name)', () => {
+  it('returns the class name and section the teacher page renders', async () => {
+    const db = fakeDb();
+    const page = await getLinkPage(db as any, 'valid-token');
+    // Was: only display_name — the page rendered "Class -" and
+    // "Class undefined-undefined" in the submit dialog.
+    expect((page.class as any).name).toBe('5');
+    expect((page.class as any).section).toBe('A');
+    expect((page.class as any).display_name).toBe('5-A');
+    expect(page.already_submitted).toBe(false);
+    expect((page.students as any[])).toHaveLength(2);
   });
 });

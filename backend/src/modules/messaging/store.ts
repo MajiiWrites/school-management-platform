@@ -12,6 +12,7 @@
  */
 
 import type { TemplateLanguage, TemplateType } from './templates';
+import { todayInTz, currentMonthInTz } from '../../lib/dates';
 
 /**
  * Tenant-isolation rule for this store (ISOLATION-AUDIT 2026-11-06):
@@ -617,8 +618,13 @@ export function createPrismaMessagingStore(prisma: any): MessagingStore {
 
     /* ---------------- Section 11: recipients ---------------- */
     async listRecipients(schoolId, query) {
-      const month = query.month ?? new Date().toISOString().slice(0, 7);
-      const date = query.date ?? new Date().toISOString().slice(0, 10);
+      // Phase 9: the default month/date used to come from
+      // `new Date().toISOString()` (UTC) — in PKT that is a day behind
+      // before 05:00. Default to the SCHOOL-local day/month instead.
+      const schoolRow: any = await prisma.school.findUnique({ where: { id: schoolId } }).catch(() => null);
+      const tz = (schoolRow?.timezone as string | undefined) ?? 'Asia/Karachi';
+      const month = query.month ?? currentMonthInTz(tz);
+      const date = query.date ?? todayInTz(tz);
       // Malformed UUIDs never match a row — drop them instead of letting
       // Prisma throw a 500 on the `id: {in: [...]}` filter.
       const targetIds = (query.targetStudentIds ?? []).filter(isUuid);

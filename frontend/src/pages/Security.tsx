@@ -277,6 +277,12 @@ function RolesTab() {
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [confirmPrincipal, setConfirmPrincipal] = useState(false);
+  // D2: clerk creation lives here next to the Principal form (the backend
+  // user record is email + password only — there is no name field on users,
+  // so no name is collected or stored).
+  const [clerkEmail, setClerkEmail] = useState('');
+  const [clerkPassword, setClerkPassword] = useState('');
+  const [confirmClerk, setConfirmClerk] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -306,6 +312,22 @@ function RolesTab() {
       push('success', `Permission ${allowed ? 'granted' : 'revoked'}: ${role} — ${resource} ${action}.`);
     } catch (err) {
       push('error', errText(err));
+    }
+  };
+
+  const createClerk = async () => {
+    setConfirmClerk(false);
+    setBusy(true);
+    try {
+      await api('/users/clerks', { method: 'POST', body: { email: clerkEmail.trim(), password: clerkPassword } });
+      push('success', `Clerk account created for ${clerkEmail.trim()}. Their creates, updates and deletes go to the Approval Queue — nothing applies until an admin approves it.`);
+      setClerkEmail('');
+      setClerkPassword('');
+      await load();
+    } catch (err) {
+      push('error', errText(err));
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -383,6 +405,32 @@ function RolesTab() {
       </Card>
 
       <Card className="max-w-2xl p-5">
+        <h2 className="text-base font-semibold text-slate-900">Create a Clerk account</h2>
+        <p className="mt-1 text-sm text-slate-500">
+          Clerks can view records and submit changes, but every create, update and delete goes to the Approval Queue
+          instead of applying directly — an admin approves it first.
+        </p>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            setConfirmClerk(true);
+          }}
+          className="mt-4 space-y-3"
+          autoComplete="off"
+        >
+          <Field label="Clerk email">
+            <input className={inputCls} type="email" required value={clerkEmail} onChange={(e) => setClerkEmail(e.target.value)} placeholder="clerk@school.pk" autoComplete="off" />
+          </Field>
+          <Field label="Temporary password">
+            <input className={inputCls} type="password" required minLength={8} value={clerkPassword} onChange={(e) => setClerkPassword(e.target.value)} placeholder="At least 8 characters" autoComplete="new-password" />
+          </Field>
+          <Button type="submit" disabled={busy || !clerkEmail || clerkPassword.length < 8}>
+            Create Clerk account
+          </Button>
+        </form>
+      </Card>
+
+      <Card className="max-w-2xl p-5">
         <h2 className="text-base font-semibold text-slate-900">Create a Principal account</h2>
         <p className="mt-1 text-sm text-slate-500">Principals sign in like clerks but can only view — every change is blocked.</p>
         <form
@@ -424,6 +472,16 @@ function RolesTab() {
           </ul>
         )}
       </Card>
+      <ConfirmDialog
+        open={confirmClerk}
+        title="Create a Clerk account?"
+        message={`Are you sure? This creates a clerk login for ${clerkEmail.trim() || '—'}. Clerk creates, updates and deletes go to the Approval Queue — nothing applies until an admin approves it.`}
+        confirmLabel="Create Clerk account"
+        tone="primary"
+        busy={busy}
+        onConfirm={() => void createClerk()}
+        onCancel={() => setConfirmClerk(false)}
+      />
       <ConfirmDialog
         open={confirmPrincipal}
         title="Create a Principal account?"

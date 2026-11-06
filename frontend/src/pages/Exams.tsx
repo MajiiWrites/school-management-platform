@@ -198,10 +198,10 @@ export default function ExamsPage() {
                 </select>
               </Field>
               <Field label="Start date">
-                <input type="date" className={inputCls} value={startDate} onChange={(e) => setStartDate(e.target.value)} autoComplete="off" />
+                <input type="date" lang="en-GB" className={inputCls} value={startDate} onChange={(e) => setStartDate(e.target.value)} autoComplete="off" />
               </Field>
               <Field label="End date">
-                <input type="date" className={inputCls} value={endDate} onChange={(e) => setEndDate(e.target.value)} autoComplete="off" />
+                <input type="date" lang="en-GB" className={inputCls} value={endDate} onChange={(e) => setEndDate(e.target.value)} autoComplete="off" />
               </Field>
               <div className="flex items-end">
                 <Button type="submit">Add exam</Button>
@@ -267,7 +267,7 @@ export default function ExamsPage() {
                           <input className={inputCls} value={dsSubject} onChange={(e) => setDsSubject(e.target.value)} placeholder="Math" autoComplete="off" required />
                         </Field>
                         <Field label="Date">
-                          <input type="date" className={inputCls} value={dsDate} onChange={(e) => setDsDate(e.target.value)} autoComplete="off" required />
+                          <input type="date" lang="en-GB" className={inputCls} value={dsDate} onChange={(e) => setDsDate(e.target.value)} autoComplete="off" required />
                         </Field>
                         <Field label="Start">
                           <input type="time" className={inputCls} value={dsStart} onChange={(e) => setDsStart(e.target.value)} autoComplete="off" required />

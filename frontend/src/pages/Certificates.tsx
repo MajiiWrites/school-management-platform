@@ -7,6 +7,7 @@ import type { ClassItem, PageResult } from '../lib/types';
 import { Button, Card, EmptyState, ErrorBanner, Field, inputCls, Spinner, useToast } from '../components/ui';
 import ConfirmDialog from '../components/ConfirmDialog';
 import { useLanguage } from '../lib/i18n';
+import { fmtDateTz } from '../lib/utils';
 
 function errText(e: unknown): string {
   return e instanceof ApiClientError ? e.message : 'Something went wrong.';
@@ -152,7 +153,7 @@ export default function CertificatesPage() {
             <Button variant="secondary" onClick={() => apiPrint(`/students/${studentId}/id-card`).catch((e) => setError(errText(e)))}>Print ID card</Button>
           )}
         </div>
-        {idCardIssuedAt && <p className="mt-3 text-sm text-slate-600">ID card issued on {idCardIssuedAt.slice(0, 10)}.</p>}
+        {idCardIssuedAt && <p className="mt-3 text-sm text-slate-600">ID card issued on {fmtDateTz(idCardIssuedAt)}.</p>}
       </Card>
 
       {!studentId ? (
@@ -175,7 +176,7 @@ export default function CertificatesPage() {
                 <tr key={c.id} className="hover:bg-slate-50">
                   <td className="px-4 py-2.5 font-mono text-xs">{c.certificate_no}</td>
                   <td className="px-4 py-2.5">{c.type_label}</td>
-                  <td className="px-4 py-2.5">{c.issued_at.slice(0, 10)}</td>
+                  <td className="px-4 py-2.5">{fmtDateTz(c.issued_at)}</td>
                   <td className="px-4 py-2.5 text-right">
                     <button className="font-medium text-brand-700 hover:underline" onClick={() => apiPrint(`/certificates/${c.id}`).catch((e) => setError(errText(e)))}>View</button>
                     {' · '}

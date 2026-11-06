@@ -208,3 +208,47 @@ parentsRouter.get(
     res.json({ ok: true, data: result });
   }),
 );
+
+// Phase 9 fix: bulk import of parent numbers (CSV/Excel) — the Parents page
+// had no import control. Same preview-first pattern as the student import:
+// POST .../import-preview validates and shows the table, POST .../import-csv
+// writes only the 'ok' rows. Columns: admission_no, student, parent_name,
+// parent_phone. Clerk imports go through the approval queue like the
+// student import.
+parentsRouter.post(
+  '/import-preview',
+  requireAdminOrClerk,
+  upload.single('file'),
+  asyncHandler(async (req, res) => {
+    if (!req.file) {
+      res.status(400).json({ ok: false, error: { code: 'VALIDATION', message: 'Upload a CSV or Excel file as field "file"' } });
+      return;
+    }
+    const isXlsx = /\.(xlsx|xls)$/i.test(req.file.originalname);
+    const rows = isXlsx
+      ? service.parentRowsFromGrid(await service.parseXlsxGrid(req.file.buffer))
+      : service.parentRowsFromGrid(service.parseCsvText(req.file.buffer.toString('utf8')));
+    const preview = await service.previewParentsImport(getDb(), schoolIdOf(req), rows);
+    res.json({ ok: true, data: preview });
+  }),
+);
+
+parentsRouter.post(
+  '/import-csv',
+  requireAdminOrClerk,
+  requireQueueable('students', 'update'),
+  upload.single('file'),
+  asyncHandler(async (req, res) => {
+    if (!req.file) {
+      res.status(400).json({ ok: false, error: { code: 'VALIDATION', message: 'Upload a CSV or Excel file as field "file"' } });
+      return;
+    }
+    const isXlsx = /\.(xlsx|xls)$/i.test(req.file.originalname);
+    const rows = isXlsx
+      ? service.parentRowsFromGrid(await service.parseXlsxGrid(req.file.buffer))
+      : service.parentRowsFromGrid(service.parseCsvText(req.file.buffer.toString('utf8')));
+    if (await queueIfClerk(req, res, { actionType: 'bulk', entity: 'student', payload: { parent_import_rows: rows } })) return;
+    const result = await service.importParents(getDb(), schoolIdOf(req), rows, req.user!.sub);
+    res.json({ ok: true, data: result });
+  }),
+);

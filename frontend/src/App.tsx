@@ -2,6 +2,7 @@ import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import type { ReactNode } from 'react';
 import { AuthProvider, useAuth } from './auth/AuthContext';
 import Layout from './components/Layout';
+import ErrorBoundary from './components/ErrorBoundary';
 import { Spinner } from './components/ui';
 import { ForgotPasswordPage, LoginPage, ResetPasswordPage, SignupPage, VerifyEmailPage } from './pages/Auth';
 import DashboardPage from './pages/Dashboard';
@@ -23,6 +24,9 @@ import LeavesPage from './pages/Leaves';
 import NotificationsPage from './pages/Notifications';
 import { LanguageProvider } from './lib/i18n';
 import SecurityPage from './pages/Security'; // 6D: 2FA, roles & permissions, data export, login alerts, backups
+import ApprovalsPage from './pages/Approvals'; // D2: admin approval queue for clerk changes
+import RecycleBinPage from './pages/RecycleBin'; // D1: admin recycle bin (30-day restore)
+import ChangeHistoryPage from './pages/ChangeHistory'; // D1: admin change history (old → new)
 import ResultsPage from './pages/Results'; // 6B: results (OCR sheets, toppers, report cards)
 // 6C-1 pages: sessions / exams / timetable / staff & payroll.
 import SessionsPage from './pages/Sessions';
@@ -68,7 +72,9 @@ function NotFound() {
 export default function App() {
   return (
     <AuthProvider>
-      <Routes>
+      {/* A single page's render error must never blank the whole app again. */}
+      <ErrorBoundary>
+        <Routes>
         {/* Public */}
         <Route path="/login" element={<LoginPage />} />
         <Route path="/signup" element={<SignupPage />} />
@@ -112,6 +118,39 @@ export default function App() {
           <Route path="staff" element={<StaffPage />} />
           {/* P8-TOUR: Help page (guided tour + how-tos + glossary). */}
           <Route path="help" element={<HelpPage />} />
+          {/* Phase 9 fix: dead routes — /calendar, /holidays and /leave
+              404'd (old bookmarks / in-page references). The calendar
+              lives on /events (it merges holidays), holidays are managed
+              in Settings, and leave applications live on /leaves. */}
+          <Route path="calendar" element={<Navigate to="/events" replace />} />
+          <Route path="holidays" element={<Navigate to="/events" replace />} />
+          <Route path="leave" element={<Navigate to="/leaves" replace />} />
+          {/* D2: Approval Queue page (admin only) */}
+          <Route
+            path="approvals"
+            element={
+              <RequireAdmin>
+                <ApprovalsPage />
+              </RequireAdmin>
+            }
+          />
+          {/* D1: Recycle Bin + Change History pages (admin only) */}
+          <Route
+            path="recycle-bin"
+            element={
+              <RequireAdmin>
+                <RecycleBinPage />
+              </RequireAdmin>
+            }
+          />
+          <Route
+            path="change-history"
+            element={
+              <RequireAdmin>
+                <ChangeHistoryPage />
+              </RequireAdmin>
+            }
+          />
           <Route
             path="settings"
             element={
@@ -132,6 +171,7 @@ export default function App() {
           <Route path="*" element={<NotFound />} />
         </Route>
       </Routes>
+      </ErrorBoundary>
     </AuthProvider>
   );
 }

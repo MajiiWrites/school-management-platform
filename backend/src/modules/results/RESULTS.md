@@ -194,3 +194,34 @@ Returns `{published, drafts_created, skipped:[{student_name, reason}]}`.
   with a warning. The review table is the safety net (admin checks
   every row before saving); fixing the OCR merge heuristic belongs to
   the v1 OCR module, not results.
+
+## 9. Fix E (Phase 9, 2026-11-07) — exam filter, exports, manual-entry fields
+
+- **Exam filter was stale (root cause of all three inspection findings).**
+  `Results.tsx` fetched `/exams` only once on mount and never again, and
+  `saveManualResults`/`saveResultRows` returned no exam id — so an exam
+  auto-created by a manual save (e.g. "Midterm") never appeared in the
+  filter until a full page reload. With "All exams" stuck selected, the
+  per-exam report card could never be enabled and the exports (gated on
+  an exam being picked) looked permanently disabled. Fix: `SaveResult`
+  now returns `exam_id`/`exam_name`; the page re-fetches exams
+  (`/exams?limit=100`, was default page 20) after every manual/review
+  save and auto-selects the saved exam; `loadResults` also refreshes the
+  list if a result references an exam the filter has never seen.
+- **Exports.** Frontend enablement is now "results exist for the current
+  filter" instead of "an exam is picked", download failures now surface
+  a toast (previously a swallowed rejected promise), and the backend
+  export accepts a missing `exam_id` (exports the whole class — the
+  "All exams" case). Per-exam export is unchanged. Export columns now
+  include Remarks.
+- **Manual entry fields.** No schema change was needed — `Result` already
+  had `fatherName`/`remarks` and the backend already accepted them; only
+  the manual-entry form lacked the inputs. Added per-row Father's name +
+  Remarks (stored, shown in the review/main tables, editable in the Edit
+  form). Report card: father's name now falls back to the result's
+  `father_name` when the student profile has none, and remarks print on
+  the HTML + PDF card.
+- **Verification:** backend `tsc` 0 errors; results tests 28/28 (3 new);
+  scratch-API smoke 24/24 (create exam via manual entry → filter lists
+  it → report card + Excel/PDF + class-only exports download valid
+  files → father/remarks round-trip). See Fix E report to coordinator.

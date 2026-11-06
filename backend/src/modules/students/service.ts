@@ -2,7 +2,7 @@ import ExcelJS from 'exceljs';
 import { ApiError } from '../../lib/errors';
 import { normalizePhone, encryptPhone, decryptPhone, sha256Hex, maskPhone, normalizeName } from '../../lib/crypto';
 import { writeAudit } from '../../lib/audit';
-import { writeChangeLogs, softDeleteEntity } from '../hardening/helpers';
+import { writeChangeLogs, softDeleteEntity, isUniqueViolation } from '../hardening/helpers';
 import { paginatedResponse, parsePagination } from '../../lib/pagination';
 import type { Db } from '../../lib/db';
 
@@ -31,6 +31,21 @@ function toISODate(d: Date | string | null | undefined): string | null {
 }
 
 export function toPublicStudent(s: any): Record<string, unknown> {
+  // A row whose phone cannot be decrypted (e.g. the encryption key was
+  // rotated) used to throw and 500 the whole student list. Show it as
+  // unmasked instead — the phone_flag logic below still reports it.
+  let parentMasked: string | null = null;
+  let parent2Masked: string | null = null;
+  try {
+    parentMasked = s.parentPhoneEnc ? maskPhone(decryptPhone(s.parentPhoneEnc)) : null;
+  } catch {
+    parentMasked = null;
+  }
+  try {
+    parent2Masked = s.parent2PhoneEnc ? maskPhone(decryptPhone(s.parent2PhoneEnc)) : null;
+  } catch {
+    parent2Masked = null;
+  }
   return {
     id: s.id,
     school_id: s.schoolId,
@@ -39,7 +54,7 @@ export function toPublicStudent(s: any): Record<string, unknown> {
     name: s.name,
     name_ur: s.nameUr ?? null,
     parent_name: s.parentName ?? null,
-    parent_phone_masked: s.parentPhoneEnc ? maskPhone(decryptPhone(s.parentPhoneEnc)) : null,
+    parent_phone_masked: parentMasked,
     parent_has_phone: Boolean(s.parentPhoneEnc),
     parent_opt_out: s.parentOptOut,
     status: s.status,
@@ -50,7 +65,7 @@ export function toPublicStudent(s: any): Record<string, unknown> {
     address: s.address ?? null,
     admission_date: toISODate(s.admissionDate),
     parent2_name: s.parent2Name ?? null,
-    parent2_phone_masked: s.parent2PhoneEnc ? maskPhone(decryptPhone(s.parent2PhoneEnc)) : null,
+    parent2_phone_masked: parent2Masked,
     parent2_opt_out: s.parent2OptOut ?? false,
     id_card_issued_at: s.idCardIssuedAt ?? null,
     created_at: s.createdAt,
@@ -95,6 +110,39 @@ async function assertClassInSchool(db: Db, schoolId: string, classId: string): P
   const c = await db.class.findFirst({ where: { id: classId, schoolId: schoolId, deletedAt: null } });
   if (!c) throw ApiError.notFound('Class not found');
   return c;
+}
+
+/**
+ * D1: same trap as classes — the DB unique indexes (classId, rollNo) and
+ * (schoolId, admissionNo) do NOT exclude soft-deleted rows, while the
+ * app-layer checks do. A re-add that collides with a deleted student
+ * surfaced as a bare P2002 ("A record with these values already exists").
+ * Point at the Recycle Bin instead.
+ */
+async function throwStudentUniqueConflict(
+  db: Db,
+  schoolId: string,
+  classId: string,
+  rollNo: number | null | undefined,
+  admissionNo: string | null | undefined,
+): Promise<never> {
+  if (rollNo !== null && rollNo !== undefined) {
+    const deleted = await db.student.findFirst({ where: { schoolId: schoolId, classId: classId, rollNo: rollNo, deletedAt: { not: null } } });
+    if (deleted) {
+      throw ApiError.conflict(
+        `Roll number ${rollNo} belongs to a deleted student. Restore the student from the Recycle Bin, or permanently delete them there first, then add this student again.`,
+      );
+    }
+  }
+  if (admissionNo && admissionNo.trim()) {
+    const deleted = await db.student.findFirst({ where: { schoolId: schoolId, admissionNo: admissionNo.trim(), deletedAt: { not: null } } });
+    if (deleted) {
+      throw ApiError.conflict(
+        `Admission number ${admissionNo.trim()} belongs to a deleted student. Restore the student from the Recycle Bin, or permanently delete them there first, then add this student again.`,
+      );
+    }
+  }
+  throw ApiError.conflict('A student with these values already exists');
 }
 
 /** Duplicate rule (SCHEMA.md): same (class_id, name-normalized) OR same (school_id, phone_hash + name-normalized) is flagged, never silently merged. */
@@ -157,30 +205,38 @@ export async function createStudent(db: Db, schoolId: string, classId: string, i
   if (input.gender !== undefined && input.gender !== null && !['male', 'female', 'other'].includes(input.gender)) {
     throw ApiError.validation("gender must be 'male', 'female' or 'other'");
   }
-  const created = await db.student.create({
-    data: {
-      schoolId: schoolId,
-      classId: classId,
-      name: input.name.trim(),
-      nameUr: input.name_ur?.trim() || null,
-      rollNo: input.roll_no ?? null,
-      parentName: input.parent_name?.trim() || null,
-      parentPhoneEnc: phone.enc,
-      parentPhoneHash: phone.hash,
-      parentOptOut: input.parent_opt_out ?? false,
-      status: 'active',
-      fatherName: input.father_name?.trim() || null,
-      admissionNo: input.admission_no?.trim() || null,
-      dateOfBirth: input.date_of_birth ? new Date(input.date_of_birth) : null,
-      gender: input.gender ?? null,
-      address: input.address?.trim() || null,
-      admissionDate: input.admission_date ? new Date(input.admission_date) : null,
-      parent2Name: input.parent2_name?.trim() || null,
-      parent2PhoneEnc: phone2.enc,
-      parent2PhoneHash: phone2.hash,
-      parent2OptOut: input.parent2_opt_out ?? false,
-    },
-  });
+  let created: any;
+  try {
+    created = await db.student.create({
+      data: {
+        schoolId: schoolId,
+        classId: classId,
+        name: input.name.trim(),
+        nameUr: input.name_ur?.trim() || null,
+        rollNo: input.roll_no ?? null,
+        parentName: input.parent_name?.trim() || null,
+        parentPhoneEnc: phone.enc,
+        parentPhoneHash: phone.hash,
+        parentOptOut: input.parent_opt_out ?? false,
+        status: 'active',
+        fatherName: input.father_name?.trim() || null,
+        admissionNo: input.admission_no?.trim() || null,
+        dateOfBirth: input.date_of_birth ? new Date(input.date_of_birth) : null,
+        gender: input.gender ?? null,
+        address: input.address?.trim() || null,
+        admissionDate: input.admission_date ? new Date(input.admission_date) : null,
+        parent2Name: input.parent2_name?.trim() || null,
+        parent2PhoneEnc: phone2.enc,
+        parent2PhoneHash: phone2.hash,
+        parent2OptOut: input.parent2_opt_out ?? false,
+      },
+    });
+  } catch (err) {
+    // D1: P2002 here means a soft-deleted student still holds the
+    // (classId, rollNo) or (schoolId, admissionNo) key.
+    if (isUniqueViolation(err)) await throwStudentUniqueConflict(db, schoolId, classId, input.roll_no, input.admission_no);
+    throw err;
+  }
   await writeAudit(db, { schoolId, actorId: actorId ?? null, actorType: 'user', action: 'student.create', entity: 'student', entityId: created.id, details: { class_id: classId, name: created.name } });
   return created;
 }
@@ -274,7 +330,24 @@ export async function updateStudent(db: Db, schoolId: string, id: string, patch:
   // Snapshot the before-view BEFORE the update: some DB layers mutate the
   // fetched row object in place, which would erase the old values.
   const beforeView = changeView(existing);
-  const updated = await db.student.update({ where: { id }, data });
+  let updated: any;
+  try {
+    updated = await db.student.update({ where: { id }, data });
+  } catch (err) {
+    // D1: P2002 here means a soft-deleted student still holds the target
+    // roll number / admission number (e.g. moving a student onto a
+    // deleted student's roll number).
+    if (isUniqueViolation(err)) {
+      await throwStudentUniqueConflict(
+        db,
+        schoolId,
+        targetClassId,
+        patch.roll_no !== undefined ? patch.roll_no : existing.rollNo,
+        patch.admission_no !== undefined ? patch.admission_no : existing.admissionNo,
+      );
+    }
+    throw err;
+  }
   await writeChangeLogs(db, {
     schoolId,
     actorId: actorId ?? null,
@@ -563,6 +636,12 @@ export function rowsToImportRows(grid: string[][]): ImportRow[] {
 }
 
 export async function parseXlsxBuffer(buf: Buffer): Promise<ImportRow[]> {
+  return rowsToImportRows(await parseXlsxGrid(buf));
+}
+
+/** Raw string grid of the first worksheet — shared by the student and
+ * parent imports (each maps the grid to its own row shape). */
+export async function parseXlsxGrid(buf: Buffer): Promise<string[][]> {
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.load(buf as any);
   const ws = wb.worksheets[0];
@@ -575,7 +654,7 @@ export async function parseXlsxBuffer(buf: Buffer): Promise<ImportRow[]> {
     });
     grid.push(values);
   });
-  return rowsToImportRows(grid);
+  return grid;
 }
 
 /**
@@ -714,5 +793,165 @@ export async function importStudents(
     result.saved_ids.push(created.id);
   }
   await writeAudit(db, { schoolId, actorId: actorId ?? null, actorType: 'user', action: 'student.import', entity: 'class', entityId: classId, details: { imported: result.imported, duplicates: result.duplicates_flagged, invalid: result.invalid_rows.length } });
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Parents bulk import (CSV / Excel) — Phase 9 fix: the Parents page had no
+// bulk-import control at all. Same preview-first pattern as importStudents:
+// validate every row, show the preview, import only 'ok' rows.
+// Columns: admission_no (preferred — unique per school), student (name,
+// used only when admission_no is blank), parent_name, parent_phone.
+// Matching: admission_no wins; otherwise the student name must match
+// exactly one student in the school. The number is validated with
+// normalizePhone (Pakistani mobile) and stored encrypted, like the
+// single-student parent update. A row is a duplicate when the student
+// already has that exact number on file, or appears twice in the file.
+// ---------------------------------------------------------------------------
+
+export interface ParentImportRow {
+  admission_no?: string | null;
+  student_name: string;
+  parent_name?: string | null;
+  parent_phone?: string | null;
+}
+
+export interface ParentImportPreviewRow {
+  row: number;
+  status: 'ok' | 'duplicate' | 'invalid';
+  reason: string | null;
+  data: ParentImportRow;
+  student_id: string | null;
+  student_name: string | null;
+}
+
+export interface ParentImportPreview {
+  total: number;
+  valid: number;
+  duplicates_flagged: number;
+  invalid_rows: Array<{ row: number; reason: string }>;
+  preview: ParentImportPreviewRow[];
+}
+
+export interface ParentImportResult {
+  imported: number;
+  duplicates_flagged: number;
+  invalid_rows: Array<{ row: number; reason: string }>;
+  saved_ids: string[];
+}
+
+/** Map a parsed CSV/Excel grid to parent-import rows (header row first). */
+export function parentRowsFromGrid(grid: string[][]): ParentImportRow[] {
+  if (grid.length === 0) return [];
+  const headers = grid[0].map((h) => h.trim().toLowerCase().replace(/\s+/g, '_'));
+  const idx = (name: string): number => headers.indexOf(name);
+  const nameIdx = idx('student') >= 0 ? idx('student') : idx('student_name');
+  const out: ParentImportRow[] = [];
+  for (let i = 1; i < grid.length; i++) {
+    const r = grid[i];
+    const cell = (h: string): string | null => {
+      const v = (r[idx(h)] ?? '').trim();
+      return v || null;
+    };
+    const studentName = nameIdx >= 0 ? (r[nameIdx] ?? '').trim() : '';
+    const admissionNo = cell('admission_no');
+    if (!studentName && !admissionNo) continue;
+    out.push({
+      admission_no: admissionNo,
+      student_name: studentName,
+      parent_name: cell('parent_name'),
+      parent_phone: cell('parent_phone'),
+    });
+  }
+  return out;
+}
+
+export async function previewParentsImport(
+  db: Db,
+  schoolId: string,
+  rows: ParentImportRow[],
+): Promise<ParentImportPreview> {
+  const all: any[] = await db.student.findMany({ where: { schoolId: schoolId, deletedAt: null } });
+  const byAdmission = new Map<string, any>();
+  const byName = new Map<string, any[]>();
+  for (const s of all) {
+    if ((s.admissionNo ?? '').trim()) byAdmission.set((s.admissionNo as string).trim(), s);
+    const key = normalizeName(s.name);
+    if (!byName.has(key)) byName.set(key, []);
+    byName.get(key)!.push(s);
+  }
+  const preview: ParentImportPreviewRow[] = [];
+  const invalid_rows: Array<{ row: number; reason: string }> = [];
+  const seenStudents = new Set<string>();
+  let duplicates = 0;
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const rowNo = i + 2; // 1-based incl. header
+    const fail = (reason: string): ParentImportPreviewRow => {
+      invalid_rows.push({ row: rowNo, reason });
+      return { row: rowNo, status: 'invalid', reason, data: row, student_id: null, student_name: null };
+    };
+    const dupe = (reason: string, student: any): ParentImportPreviewRow => {
+      duplicates += 1;
+      return { row: rowNo, status: 'duplicate', reason, data: row, student_id: student.id, student_name: student.name };
+    };
+    let student: any = null;
+    const adm = (row.admission_no ?? '').trim();
+    if (adm) {
+      student = byAdmission.get(adm) ?? null;
+      if (!student) { preview.push(fail(`No student with admission number ${adm}`)); continue; }
+    } else {
+      const name = (row.student_name ?? '').trim();
+      if (!name) { preview.push(fail('Give an admission number or a student name')); continue; }
+      const matches = byName.get(normalizeName(name)) ?? [];
+      if (matches.length === 0) { preview.push(fail(`No student named "${name}"`)); continue; }
+      if (matches.length > 1) { preview.push(fail(`"${name}" matches ${matches.length} students — use the admission number instead`)); continue; }
+      student = matches[0];
+    }
+    if (!row.parent_phone || !row.parent_phone.trim()) {
+      preview.push(fail(`Missing parent phone for ${student.name}`));
+      continue;
+    }
+    const normalized = normalizePhone(row.parent_phone);
+    if (!normalized) {
+      preview.push(fail(`Invalid parent phone: ${row.parent_phone}`));
+      continue;
+    }
+    if (student.parentPhoneHash && student.parentPhoneHash === sha256Hex(normalized)) {
+      preview.push(dupe(`${student.name} already has this number on file`, student));
+      continue;
+    }
+    if (seenStudents.has(student.id)) {
+      preview.push(dupe(`${student.name} appears twice in this file`, student));
+      continue;
+    }
+    seenStudents.add(student.id);
+    preview.push({ row: rowNo, status: 'ok', reason: null, data: row, student_id: student.id, student_name: student.name });
+  }
+  const valid = preview.filter((p) => p.status === 'ok').length;
+  return { total: rows.length, valid, duplicates_flagged: duplicates, invalid_rows, preview };
+}
+
+export async function importParents(
+  db: Db,
+  schoolId: string,
+  rows: ParentImportRow[],
+  actorId?: string,
+): Promise<ParentImportResult> {
+  const preview = await previewParentsImport(db, schoolId, rows);
+  const result: ParentImportResult = { imported: 0, duplicates_flagged: preview.duplicates_flagged, invalid_rows: preview.invalid_rows, saved_ids: [] };
+  for (const item of preview.preview) {
+    if (item.status !== 'ok' || !item.student_id) continue;
+    const normalized = normalizePhone(item.data.parent_phone!)!;
+    const data: Record<string, unknown> = {
+      parentPhoneEnc: encryptPhone(normalized),
+      parentPhoneHash: sha256Hex(normalized),
+    };
+    if (item.data.parent_name?.trim()) data.parentName = item.data.parent_name.trim();
+    await db.student.update({ where: { id: item.student_id }, data });
+    result.imported += 1;
+    result.saved_ids.push(item.student_id);
+  }
+  await writeAudit(db, { schoolId, actorId: actorId ?? null, actorType: 'user', action: 'parent.import', entity: 'school', entityId: schoolId, details: { imported: result.imported, duplicates: result.duplicates_flagged, invalid: result.invalid_rows.length } });
   return result;
 }

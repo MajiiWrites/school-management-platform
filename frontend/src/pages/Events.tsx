@@ -37,6 +37,12 @@ export default function EventsPage() {
   const [date, setDate] = useState(todayISO());
   const [eTitle, setETitle] = useState('');
   const [description, setDescription] = useState('');
+  // Phase 9 fix: the form could only create events — a holiday could only
+  // be added from Settings. The type selector below creates a holiday
+  // (POST /holidays, the same endpoint Settings uses) so it lands in the
+  // holidays table: no attendance reminders or messages on that date, and
+  // it shows on this calendar as a Holiday.
+  const [kind, setKind] = useState<'event' | 'holiday'>('event');
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [deleting, setDeleting] = useState<EventItem | null>(null);
@@ -73,8 +79,15 @@ export default function EventsPage() {
     setBusy(true);
     setConfirming(false);
     try {
-      await api('/events', { method: 'POST', body: { date, title: eTitle.trim(), description: description.trim() || undefined } });
-      push('success', 'Event added.');
+      if (kind === 'holiday') {
+        const r = await api<{ status?: string }>('/holidays', { method: 'POST', body: { date, name: eTitle.trim() } });
+        if (r?.status === 'pending') push('success', 'Holiday submitted for admin approval — nothing was applied yet.');
+        else push('success', 'Holiday added — no attendance reminders or messages on that date.');
+      } else {
+        const r = await api<{ status?: string }>('/events', { method: 'POST', body: { date, title: eTitle.trim(), description: description.trim() || undefined } });
+        if ((r as { status?: string })?.status === 'pending') push('success', 'Submitted for admin approval — nothing was applied yet.');
+        else push('success', 'Event added.');
+      }
       setETitle('');
       setDescription('');
       load();
@@ -115,25 +128,31 @@ export default function EventsPage() {
       {error && <ErrorBanner message={error} onRetry={load} />}
 
       <Card className="p-5">
-        <h2 className="text-base font-semibold">Add an event</h2>
-        <form onSubmit={submit} className="mt-4 grid gap-3 sm:grid-cols-3" autoComplete="off">
+        <h2 className="text-base font-semibold">Add an event or holiday</h2>
+        <form onSubmit={submit} className="mt-4 grid gap-3 sm:grid-cols-4" autoComplete="off">
+          <Field label="Type">
+            <select className={inputCls} value={kind} onChange={(e) => setKind(e.target.value as 'event' | 'holiday')}>
+              <option value="event">Event</option>
+              <option value="holiday">Holiday (no school that day)</option>
+            </select>
+          </Field>
           <Field label="Date">
             <input className={inputCls} type="date" value={date} onChange={(e) => setDate(e.target.value || todayISO())} autoComplete="off" />
           </Field>
           <Field label="Title">
-            <input className={inputCls} value={eTitle} onChange={(e) => setETitle(e.target.value)} placeholder="e.g. Sports Day" autoComplete="off" />
+            <input className={inputCls} value={eTitle} onChange={(e) => setETitle(e.target.value)} placeholder={kind === 'holiday' ? 'e.g. Eid-ul-Fitr' : 'e.g. Sports Day'} autoComplete="off" />
           </Field>
           <Field label="Details">
-            <input className={inputCls} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Optional details" autoComplete="off" />
+            <input className={inputCls} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Optional details" autoComplete="off" disabled={kind === 'holiday'} />
           </Field>
-          <div className="flex items-end sm:col-span-3">
-            <Button type="submit" disabled={busy}>{busy ? 'Saving…' : 'Add event'}</Button>
+          <div className="flex items-end sm:col-span-4">
+            <Button type="submit" disabled={busy}>{busy ? 'Saving…' : kind === 'holiday' ? 'Add holiday' : 'Add event'}</Button>
           </div>
         </form>
       </Card>
 
       {days.length === 0 ? (
-        <EmptyState title="Nothing on the calendar this month" body="Add an event above, or add a holiday from Settings — both show up here." />
+        <EmptyState title="Nothing on the calendar this month" body="Add an event or a holiday with the form above — both show up here." />
       ) : (
         <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
           <table className="w-full min-w-[520px] text-sm">
@@ -172,9 +191,9 @@ export default function EventsPage() {
 
       <ConfirmDialog
         open={confirming}
-        title="Add this event?"
-        message={`Are you sure? This will add "${eTitle.trim()}" on ${date} to the school calendar.`}
-        confirmLabel="Add event"
+        title={kind === 'holiday' ? 'Add this holiday?' : 'Add this event?'}
+        message={`Are you sure? This will add "${eTitle.trim()}" on ${date} to the school calendar${kind === 'holiday' ? ' as a holiday — no attendance reminders or messages will be sent that day' : ''}.`}
+        confirmLabel={kind === 'holiday' ? 'Add holiday' : 'Add event'}
         tone="primary"
         busy={busy}
         onConfirm={doCreate}

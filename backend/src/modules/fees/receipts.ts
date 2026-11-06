@@ -1,4 +1,6 @@
-// Printable fee receipts: print-ready HTML (browser "Save as PDF" works)
+// Printable fee receipts: print-ready HTML
+// Phase 9: paid/issued dates render in Asia/Karachi (school timezone) —
+// the server runs in UTC, which showed them a day behind in PKT. (browser "Save as PDF" works)
 // and a real PDF via pdfkit when the dependency is installed.
 // pdfkit is loaded dynamically so the module works without it — the route
 // falls back to HTML in that case (see routes.ts).
@@ -61,7 +63,7 @@ export function renderReceiptHtml(r: ReceiptData): string {
     <tr><td>Amount paid${r.payment_method ? ` (${esc(r.payment_method)})` : ''}</td><td class="num">${formatPKR(r.amount_paid)}</td></tr>
     <tr class="total"><td>Balance due</td><td class="num">${formatPKR(r.balance)}</td></tr>
   </table>
-  <div class="row"><span>Paid on: ${r.paid_at ? esc(new Date(r.paid_at).toLocaleDateString('en-GB')) : '—'}</span><span>Issued: ${esc(new Date(r.issued_at).toLocaleDateString('en-GB'))}</span></div>
+  <div class="row"><span>Paid on: ${r.paid_at ? esc(new Date(r.paid_at).toLocaleDateString('en-GB', { timeZone: 'Asia/Karachi' })) : '—'}</span><span>Issued: ${esc(new Date(r.issued_at).toLocaleDateString('en-GB', { timeZone: 'Asia/Karachi' }))}</span></div>
   <div class="sig"><span>Received by</span><span>Parent / Guardian</span></div>
   <div class="foot">This is a computer-generated receipt from ${esc(r.school_name)}. Please keep it for your records.</div>
 </div>
@@ -115,8 +117,8 @@ export async function renderReceiptPdf(r: ReceiptData): Promise<Buffer> {
     doc.text(label, { continued: true }).text(value, { align: 'right' });
   }
   doc.moveDown();
-  doc.fontSize(10).fillColor('#666').text(`Paid on: ${r.paid_at ? new Date(r.paid_at).toLocaleDateString('en-GB') : '—'}`);
-  doc.text(`Issued: ${new Date(r.issued_at).toLocaleDateString('en-GB')}`);
+  doc.fontSize(10).fillColor('#666').text(`Paid on: ${r.paid_at ? new Date(r.paid_at).toLocaleDateString('en-GB', { timeZone: 'Asia/Karachi' }) : '—'}`);
+  doc.text(`Issued: ${new Date(r.issued_at).toLocaleDateString('en-GB', { timeZone: 'Asia/Karachi' })}`);
   doc.moveDown(2);
   doc.fontSize(11).fillColor('#333').text('Received by: ______________________        Parent / Guardian: ______________________');
   doc.moveDown();

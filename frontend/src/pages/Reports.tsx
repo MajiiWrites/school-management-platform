@@ -14,6 +14,33 @@ interface AttendanceRow {
   present: number;
   absent: number;
   total: number;
+  /** Attendance % from the API when present (present / (present + absent)). */
+  rate?: number | null;
+}
+
+/** Finite number or 0 — the API must never crash the page with a NaN/undefined amount. */
+function num(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) ? v : 0;
+}
+
+/** One backend attendance row (by_class / by_student) -> a table row. */
+function toAttendanceRow(r: Record<string, unknown>, studentName?: string): AttendanceRow {
+  const present = num(r.present);
+  const absent = num(r.absent);
+  const late = num(r.late);
+  const leave = num(r.leave);
+  return {
+    class: typeof r.display_name === 'string' ? r.display_name : undefined,
+    student: studentName,
+    present,
+    absent,
+    total: present + absent + late + leave,
+    rate: typeof r.attendance_rate === 'number' ? r.attendance_rate : null,
+  };
+}
+
+function asRows(v: unknown): Record<string, unknown>[] {
+  return Array.isArray(v) ? (v as Record<string, unknown>[]) : [];
 }
 
 export default function ReportsPage() {
@@ -33,7 +60,7 @@ export default function ReportsPage() {
 
   useEffect(() => {
     api<PageResult<ClassItem>>('/classes')
-      .then((d) => setClasses(d.items))
+      .then((d) => setClasses(Array.isArray(d?.items) ? d.items : []))
       .catch(() => undefined);
   }, []);
 
@@ -51,6 +78,7 @@ export default function ReportsPage() {
       };
       api<Record<string, unknown>>(paths[tab])
         .then((d) => {
+          const data = (d ?? {}) as Record<string, unknown>;
           if (tab === 'defaulters') {
             setGeneric({
               title: `Fee defaulters — ${month}`,
@@ -62,7 +90,7 @@ export default function ReportsPage() {
                 { key: 'balance', label: 'Balance' },
                 { key: 'status', label: 'Status' },
               ],
-              rows: (d.by_student as Record<string, unknown>[]) ?? [],
+              rows: asRows(data.by_student),
             });
           } else if (tab === 'strength') {
             setGeneric({
@@ -75,7 +103,7 @@ export default function ReportsPage() {
                 { key: 'graduated', label: 'Graduated' },
                 { key: 'total', label: 'Total' },
               ],
-              rows: (d.by_class as Record<string, unknown>[]) ?? [],
+              rows: asRows(data.by_class),
             });
           } else if (tab === 'income-expense') {
             setGeneric({
@@ -86,10 +114,10 @@ export default function ReportsPage() {
                 { key: 'count', label: 'Entries' },
               ],
               rows: [
-                { category: 'Fees collected (income)', total: d.income, count: '' },
-                { category: 'Expenses', total: d.expense, count: '' },
-                { category: 'Balance', total: d.balance, count: '' },
-                ...((d.by_category as Record<string, unknown>[]) ?? []),
+                { category: 'Fees collected (income)', total: num(data.income), count: '' },
+                { category: 'Expenses', total: num(data.expense), count: '' },
+                { category: 'Balance', total: num(data.balance), count: '' },
+                ...asRows(data.by_category),
               ],
             });
           } else {
@@ -102,23 +130,44 @@ export default function ReportsPage() {
                 { key: 'created_at', label: 'Created' },
                 { key: 'body', label: 'Message' },
               ],
-              rows: (d.items as Record<string, unknown>[]) ?? [],
+              rows: asRows(data.items),
             });
           }
           setRows([]);
           setFeeReport(null);
         })
-        .catch(() => setError('Could not load the report.'))
+        .catch(() => {
+          setGeneric(null);
+          setRows([]);
+          setFeeReport(null);
+          setError('Could not load the report.');
+        })
         .finally(() => setLoading(false));
       return;
     }
     if (tab === 'fees') {
-      api<{ collected: number; pending: number; by_class: { class: string; collected: number; pending: number }[] }>(`/reports/fees/monthly?month=${month}`)
+      // Backend shape: { collected, pending, by_class: [{ class_id,
+      // display_name, collected, pending, students }] } — there is no
+      // `class` field on the rows, and by_class may be absent/empty.
+      api<Record<string, unknown>>(`/reports/fees/monthly?month=${month}`)
         .then((d) => {
-          setFeeReport(d);
+          const data = (d ?? {}) as Record<string, unknown>;
+          setFeeReport({
+            collected: num(data.collected),
+            pending: num(data.pending),
+            by_class: asRows(data.by_class).map((b) => ({
+              class: typeof b.display_name === 'string' ? b.display_name : typeof b.class_id === 'string' ? b.class_id : '—',
+              collected: num(b.collected),
+              pending: num(b.pending),
+            })),
+          });
           setRows([]);
         })
-        .catch(() => setError('Could not load the fee report.'))
+        .catch(() => {
+          setFeeReport(null);
+          setRows([]);
+          setError('Could not load the fee report.');
+        })
         .finally(() => setLoading(false));
       return;
     }
@@ -135,12 +184,30 @@ export default function ReportsPage() {
       qs.set('month', month);
       path = `/reports/attendance/monthly?${qs}`;
     }
-    api<PageResult<AttendanceRow>>(path)
+    // Backend shape: { date|week_start|month, present, absent, ...,
+    // by_class: [{ class_id, display_name, present, absent, late, leave,
+    // attendance_rate }], by_student: [{ student_id, name, display_name,
+    // ... }] } — there is NO `items` array. Daily shows one row per class
+    // (by_class); weekly/monthly show one row per student (by_student).
+    api<Record<string, unknown>>(path)
       .then((d) => {
-        setRows(d.items);
+        const data = (d ?? {}) as Record<string, unknown>;
+        if (tab === 'daily') {
+          setRows(asRows(data.by_class).map((r) => toAttendanceRow(r)));
+        } else {
+          setRows(
+            asRows(data.by_student).map((r) =>
+              toAttendanceRow(r, typeof r.name === 'string' ? r.name : undefined),
+            ),
+          );
+        }
         setFeeReport(null);
       })
-      .catch(() => setError('Could not load the report.'))
+      .catch(() => {
+        setRows([]);
+        setFeeReport(null);
+        setError('Could not load the report.');
+      })
       .finally(() => setLoading(false));
   }, [tab, classId, date, month]);
 
@@ -313,8 +380,7 @@ export default function ReportsPage() {
                   <td className="px-4 py-2.5">{r.present}</td>
                   <td className="px-4 py-2.5">{r.absent}</td>
                   <td className="px-4 py-2.5">{r.total}</td>
-                  <td className="px-4 py-2.5">{r.total > 0 ? `${Math.round((r.present / r.total) * 100)}%` : '—'}</td>
-                </tr>
+                  <td className="px-4 py-2.5">{r.rate != null ? `${r.rate}%` : r.total > 0 ? `${Math.round((r.present / r.total) * 100)}%` : '—'}</td>                </tr>
               ))}
             </tbody>
           </table>

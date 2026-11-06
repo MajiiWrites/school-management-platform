@@ -251,8 +251,8 @@ export default function SessionsPage() {
         )}
       </Card>
 
-      <Modal title="Edit session" onClose={() => setEditing(null)}>
-        {editing && (
+      {editing && (
+        <Modal title="Edit session" onClose={() => setEditing(null)}>
           <form
             autoComplete="off"
             onSubmit={(e) => {
@@ -268,8 +268,8 @@ export default function SessionsPage() {
               <Button type="submit">Save</Button>
             </div>
           </form>
-        )}
-      </Modal>
+        </Modal>
+      )}
 
       <ConfirmDialog
         open={pendingAction !== null}

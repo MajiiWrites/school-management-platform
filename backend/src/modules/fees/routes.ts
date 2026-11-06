@@ -147,11 +147,22 @@ feesRouter.post(
   }),
 );
 
-// ---- Printable receipt (HTML by default; ?format=pdf for a real PDF) ----
+// ---- Printable receipt (HTML by default; ?format=pdf for a real PDF;
+// ?format=json for the receipt data — the Fees page reads the receipt
+// through the JSON API client, which cannot parse the HTML page). ----
 feesRouter.get(
   '/receipts/:receipt_no',
   asyncHandler(async (req, res) => {
     const receipt = await getReceiptByNo(getDb(), schoolIdOf(req), req.params.receipt_no);
+    if (queryStr(req, 'format') === 'json') {
+      res.json({ ok: true, data: receipt });
+      return;
+    }
+    // Fix C note (Phase 9): this block had a stray closing brace (line 172)
+    // that broke `tsc` for the whole backend, and the PDF attempt ran for
+    // every non-JSON request instead of only ?format=pdf (per the route
+    // comment above). Guarded to ?format=pdf; anything else falls through
+    // to the HTML receipt.
     if (queryStr(req, 'format') === 'pdf') {
       try {
         const pdf = await renderReceiptPdf(receipt);

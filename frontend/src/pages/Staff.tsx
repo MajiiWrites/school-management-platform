@@ -333,8 +333,8 @@ export default function StaffPage() {
         </>
       )}
 
-      <Modal title={payslip ? `Payslip — ${payslip.staff_name} (${monthName(payslip.month)})` : ''} onClose={() => setPayslip(null)}>
-        {payslip && (
+      {payslip && (
+        <Modal title={`Payslip — ${payslip.staff_name} (${monthName(payslip.month)})`} onClose={() => setPayslip(null)}>
           <div className="space-y-2 text-sm">
             <p><span className="text-slate-500">Payslip No:</span> <strong>{payslip.payslip_no}</strong></p>
             <p><span className="text-slate-500">Month:</span> {monthName(payslip.month)}</p>
@@ -351,8 +351,8 @@ export default function StaffPage() {
               <Button onClick={() => window.print()}>Print / Save as PDF</Button>
             </div>
           </div>
-        )}
-      </Modal>
+        </Modal>
+      )}
 
       <ConfirmDialog
         open={pendingDelete !== null}
