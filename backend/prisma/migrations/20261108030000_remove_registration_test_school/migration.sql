@@ -1,0 +1,26 @@
+-- One-time registration-test cleanup (ONE test school).
+-- Deletes ONLY the "Registration Test School Nov 2026" TEST school below.
+-- The WHERE clause is the safety guard, so no other school can ever be
+-- affected. All tenant tables cascade from schools (ON DELETE CASCADE), so
+-- the school's users, classes, students, attendance, fees, messages,
+-- results and every other record go with it in the same statement.
+-- Safe on a fresh/empty database: the DELETE simply affects 0 rows.
+--
+-- TIMING — CRITICAL: push this migration ONLY AFTER the registration live
+-- re-test has finished and the TEST school exists in the live DB. Prisma
+-- migrations run once, at deploy time: if this is pushed before the TEST
+-- school is created, it deletes 0 rows and will NOT clean it up later.
+-- The site must end clean-empty again after this migration is pushed.
+--
+-- SCHOOL:
+--   "Registration Test School Nov 2026" -> registration-test-school-nov-2026
+--     (VERIFIED slug, school id 6e03274c-1978-4a1c-b91a-1d5f14776237; admin
+--     registration-test-20261108@example.com).
+-- Email fallback (delete by school id via users.email): the admin is
+-- registration-test-20261108@example.com, a fake address used only by this
+-- TEST school, so the OR condition cannot match a real school. It is the
+-- safety net if the slug ever differs (e.g. signup appends a random
+-- suffix when a slug already exists).
+DELETE FROM schools
+WHERE slug IN ('registration-test-school-nov-2026')
+   OR id IN (SELECT "schoolId" FROM users WHERE email IN ('registration-test-20261108@example.com'));
