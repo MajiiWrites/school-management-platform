@@ -461,6 +461,12 @@ export class OcrService {
         await (fullPrep as PreprocessResult | null)?.cleanup();
       }
     } catch (err) {
+      // Log the real error server-side: the route swallows the rejection
+      // and the review page only sees status 'failed', so without this the
+      // cause is invisible (2026-11-07: a CHECK violation failed every
+      // upload and nothing in the logs said why).
+      // eslint-disable-next-line no-console
+      console.error('[ocr] upload failed', uploadId, err);
       await this.db.updateUpload(schoolId, uploadId, { status: 'failed' }).catch(() => undefined);
       throw err;
     }

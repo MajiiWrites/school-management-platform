@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { api, ApiClientError, API_BASE, getAccessToken } from '../lib/api';
+import { api, API_BASE, getAccessToken } from '../lib/api';
 import type { OcrRow, OcrUpload } from '../lib/types';
 import { Badge, Button, Card, EmptyState, ErrorBanner, Spinner, useToast } from '../components/ui';
 import ConfirmDialog from '../components/ConfirmDialog';
@@ -10,7 +10,10 @@ import ImageZoom from '../components/ImageZoom';
 export const OCR_LOW_CONFIDENCE_THRESHOLD = 0.7;
 
 function errText(e: unknown): string {
-  return e instanceof ApiClientError ? e.message : 'Something went wrong.';
+  // Plain Errors carry the real user-facing message (e.g. 'Reading failed
+  // on the server — try a clearer photo'); returning a generic string here
+  // hid the cause behind "Something went wrong." (2026-11-07 regression).
+  return e instanceof Error ? e.message : 'Something went wrong.';
 }
 
 /** Human-readable reason for a "Duplicate?" flag, so the badge explains
