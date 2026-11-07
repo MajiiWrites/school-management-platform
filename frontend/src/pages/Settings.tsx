@@ -693,7 +693,18 @@ function AuditTab() {
               {logs.map((l) => (
                 <tr key={l.id} className="align-top hover:bg-slate-50">
                   <td className="px-4 py-2.5 text-xs">{fmtDateTime(l.created_at)}</td>
-                  <td className="px-4 py-2.5">{l.actor_type}</td>
+                  <td className="px-4 py-2.5">
+                    {l.actor_email ? (
+                      <span className="break-all text-slate-800">{l.actor_email}</span>
+                    ) : (
+                      <>
+                        <Badge tone="slate">{l.actor_type}</Badge>
+                        {l.actor_id ? (
+                          <span className="ml-2 break-all text-xs text-slate-500">{l.actor_id.slice(0, 8)}</span>
+                        ) : null}
+                      </>
+                    )}
+                  </td>
                   <td className="px-4 py-2.5 font-mono text-xs">{l.action}</td>
                   <td className="px-4 py-2.5">{l.entity}</td>
                   <td className="px-4 py-2.5 text-xs text-slate-600">{JSON.stringify(l.details)}</td>

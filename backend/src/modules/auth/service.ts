@@ -96,7 +96,19 @@ export async function signup(
   });
 
   const mail = verificationEmailBody(input.school_name, token);
-  await sendMail({ to: email, ...mail });
+  // Round-4 fix (D1, launch blocker): a stalled/failed SMTP send used to
+  // throw here and 500 a signup that had already committed — the live
+  // re-test saw "Internal server error" after ~40 s on "Creating…" even
+  // though the account existed and login worked immediately after. Signup
+  // must succeed regardless of mail outcome: the verification email is
+  // best-effort, failures are logged server-side, and the stored token
+  // stays valid so the user can resend it once mail is back.
+  try {
+    await sendMail({ to: email, ...mail });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error(`[auth] signup verification mail failed for ${email}: ${(err as Error).message}`);
+  }
 
   // Phase 9 fix: the frontend's signup handler stores data.access /
   // data.refresh as the session (like login does), but signup used to

@@ -507,6 +507,19 @@ function DataTab() {
   const [exportPassword, setExportPassword] = useState('');
   const [deletePassword, setDeletePassword] = useState('');
   const [busy, setBusy] = useState(false);
+  // D5: the export gets its OWN busy/error state. It used to share the
+  // tab-wide `busy`, and doExport closed the confirm dialog the instant
+  // it started — so during the (slow, cold-server) export the only thing
+  // the user saw was the form's Download button silently disabled, with
+  // no spinner, no message and no way to tell a working export from a
+  // stuck one. Users reloaded, aborting the in-flight request, and the
+  // retry on the now-warm server worked — which made the first attempt
+  // look broken. The dialog now stays open showing Working… until the
+  // export resolves, the form button says Exporting…, and any failure
+  // leaves a persistent error here (a toast alone auto-dismisses in
+  // 4.5s) with the password kept so retry needs no re-typing.
+  const [exportBusy, setExportBusy] = useState(false);
+  const [exportError, setExportError] = useState('');
   const [confirmExport, setConfirmExport] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [statusTarget, setStatusTarget] = useState<DeletionRequest | null>(null);
@@ -530,8 +543,13 @@ function DataTab() {
   }, []);
 
   const doExport = async () => {
-    setConfirmExport(false);
-    setBusy(true);
+    // D5: do NOT close the confirm dialog here — it is the only visible
+    // progress indicator (its confirm button reads Working… while
+    // exportBusy). It closes below, once the export has resolved.
+    // The password is cleared only on success, so a failed first attempt
+    // can be retried immediately without re-typing it.
+    setExportError('');
+    setExportBusy(true);
     try {
       const data = await api<unknown>('/export/all', { method: 'POST', body: { password: exportPassword } });
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
@@ -544,11 +562,15 @@ function DataTab() {
       a.remove();
       URL.revokeObjectURL(url);
       setExportPassword('');
+      setConfirmExport(false);
       push('success', 'Full school export downloaded.');
     } catch (err) {
-      push('error', errText(err));
+      const message = errText(err);
+      setExportError(`Export failed: ${message} Your password was kept — check it and try again.`);
+      setConfirmExport(false);
+      push('error', message);
     } finally {
-      setBusy(false);
+      setExportBusy(false);
     }
   };
 
@@ -595,6 +617,7 @@ function DataTab() {
           phone numbers are included decrypted: this is your own data, so store the file somewhere safe and never share
           it. Your password is asked to confirm it is really you.
         </p>
+        {exportError && <ErrorBanner message={exportError} onRetry={() => setConfirmExport(true)} />}
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -606,9 +629,15 @@ function DataTab() {
           <Field label="Your password (to confirm the export)">
             <input className={inputCls} type="password" required value={exportPassword} onChange={(e) => setExportPassword(e.target.value)} placeholder="••••••••" autoComplete="current-password" />
           </Field>
-          <Button type="submit" disabled={busy || !exportPassword}>
-            Download full export
+          <Button type="submit" disabled={exportBusy || !exportPassword}>
+            {exportBusy ? 'Exporting…' : 'Download full export'}
           </Button>
+          {exportBusy && (
+            <p className="text-sm text-slate-500" role="status">
+              Preparing your full export — this can take a minute the first time while the server wakes up. Please
+              wait; do not reload the page.
+            </p>
+          )}
         </form>
       </Card>
 
@@ -676,7 +705,7 @@ function DataTab() {
         message="Are you sure? The file contains every record for this school, including parent phone numbers in full. Store it somewhere safe and never share it."
         confirmLabel="Download export"
         tone="primary"
-        busy={busy}
+        busy={exportBusy}
         onConfirm={() => void doExport()}
         onCancel={() => setConfirmExport(false)}
       />

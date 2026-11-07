@@ -32,10 +32,24 @@ interface ImportPreview {
   preview: ImportPreviewItem[];
 }
 
+/** D2: the list endpoint used to return neither `parent_phone` nor
+ * `phone_flag`, so the table read `parent_phone` (always undefined → "—")
+ * and the badge fell through to green OK. The backend now sends the
+ * masked `parent_phone` + `phone_flag`; derive the flag from
+ * `parent_has_phone` / the masked value as a fallback for stale payloads
+ * (e.g. mock data or a cached response without the new fields). */
+function phoneFlagOf(s: Student): 'missing' | 'invalid' | 'duplicate' | null {
+  if (s.phone_flag) return s.phone_flag;
+  if (s.parent_has_phone === false) return 'missing';
+  if (s.parent_has_phone === true && !(s.parent_phone_masked ?? s.parent_phone)) return 'invalid';
+  return null;
+}
+
 function phoneBadge(s: Student) {
-  if (s.phone_flag === 'missing') return <Badge tone="red">No number</Badge>;
-  if (s.phone_flag === 'invalid') return <Badge tone="amber">Invalid number</Badge>;
-  if (s.phone_flag === 'duplicate') return <Badge tone="amber">Duplicate number</Badge>;
+  const flag = phoneFlagOf(s);
+  if (flag === 'missing') return <Badge tone="red">No number</Badge>;
+  if (flag === 'invalid') return <Badge tone="amber">Invalid number</Badge>;
+  if (flag === 'duplicate') return <Badge tone="amber">Duplicate number</Badge>;
   return <Badge tone="green">OK</Badge>;
 }
 
@@ -88,7 +102,7 @@ export default function StudentsPanel({
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return students.filter((s) => {
-      if (flagFilter !== 'all' && s.phone_flag !== flagFilter) return false;
+      if (flagFilter !== 'all' && phoneFlagOf(s) !== flagFilter) return false;
       if (!q) return true;
       return (
         s.name.toLowerCase().includes(q) ||
@@ -253,7 +267,7 @@ export default function StudentsPanel({
                   </td>
                   <td className="px-4 py-2.5">{statusBadge(s) ?? <span className="text-xs text-slate-400">Active</span>}</td>
                   <td className="px-4 py-2.5">{s.parent_name ?? '—'}</td>
-                  <td className="px-4 py-2.5 font-mono text-xs">{s.parent_phone ?? '—'}</td>
+                  <td className="px-4 py-2.5 font-mono text-xs">{s.parent_phone_masked ?? s.parent_phone ?? '—'}</td>
                   <td className="px-4 py-2.5">{phoneBadge(s)}</td>
                   <td className="px-4 py-2.5 text-right">
                     <button

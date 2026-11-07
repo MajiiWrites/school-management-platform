@@ -761,6 +761,41 @@ describe('Fix E (Phase 9): manual entry fields, exam id on save, class-only expo
     expect(pdf.length).toBeGreaterThan(100);
     expect(pdf.subarray(0, 5).toString()).toBe('%PDF-');
   });
+
+  it('report card shows per-subject totals (round 4, D3): equal split of total_marks', async () => {
+    await seedClasses();
+    await seedStudent();
+    // 253/300 over 3 subjects (the live re-test example) -> 100 each.
+    const out = await resultsSvc.saveManualResults(db, SCHOOL_A, {
+      exam_name: 'Midterm',
+      class_id: classA.id,
+      rows: [{ roll_no: 1, student_name: 'Ahmed Raza', subject_marks: { Maths: 85, English: 90, Science: 78 }, obtained_marks: 253, total_marks: 300 }],
+    }, ADMIN);
+    const students = await studentsSvc.listStudentsSchoolWide(db, SCHOOL_A, { admission_no: 'ADM-001' });
+    const card = await resultsSvc.getReportCard(db, SCHOOL_A, students.items[0].id, out.exam_id);
+    const html = resultsSvc.renderReportCardHtml(card);
+    expect(html).toContain('<td>Maths</td><td>85</td><td>100</td>');
+    expect(html).toContain('<td>English</td><td>90</td><td>100</td>');
+    expect(html).toContain('<td>Science</td><td>78</td><td>100</td>');
+    const pdf = await resultsSvc.renderReportCardPdf(card);
+    expect(pdf.length).toBeGreaterThan(100);
+    expect(pdf.subarray(0, 5).toString()).toBe('%PDF-');
+  });
+
+  it('report card keeps "—" per-subject total when no total_marks is stored (round 4, D3)', async () => {
+    await seedClasses();
+    await seedStudent();
+    const out = await resultsSvc.saveManualResults(db, SCHOOL_A, {
+      exam_name: 'Midterm',
+      class_id: classA.id,
+      rows: [{ roll_no: 1, student_name: 'Ahmed Raza', subject_marks: { Maths: 85, English: 90 }, obtained_marks: 175 }],
+    }, ADMIN);
+    const students = await studentsSvc.listStudentsSchoolWide(db, SCHOOL_A, { admission_no: 'ADM-001' });
+    const card = await resultsSvc.getReportCard(db, SCHOOL_A, students.items[0].id, out.exam_id);
+    const html = resultsSvc.renderReportCardHtml(card);
+    expect(html).toContain('<td>Maths</td><td>85</td><td>—</td>');
+    expect(html).toContain('<td>English</td><td>90</td><td>—</td>');
+  });
 });
 
 describe('R2-B (Phase 9 re-test E1): save → filter/table/exports with no reload + report-card father name', () => {

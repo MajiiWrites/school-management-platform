@@ -739,6 +739,18 @@ export async function getReportCard(db: Db, schoolId: string, studentId: string,
   };
 }
 
+/** Round-4 (D3): per-subject max = the row's total_marks split equally
+ * over its subjects (the backend stores no per-subject max; the standard
+ * school case is equal maxima). Same formatting as the frontend helper
+ * (2-decimal rounding, e.g. 250/3 -> "83.33"). Returns null when no total
+ * is stored, so the cell keeps its "—" instead of inventing a number. */
+function perSubjectTotal(r: any): string | null {
+  const subjects = Object.keys(r.subject_marks ?? {});
+  const total = r.total_marks;
+  if (subjects.length === 0 || total === null || total === undefined || total <= 0) return null;
+  return String(Math.round((total / subjects.length) * 100) / 100);
+}
+
 export function renderReportCardHtml(card: ReportCardData): string {
   const subjectRows = card.results
     .map((r: any) => {
@@ -746,7 +758,8 @@ export function renderReportCardHtml(card: ReportCardData): string {
       if (subjects.length === 0) {
         return `<tr><td>All subjects</td><td>${r.obtained_marks ?? '—'}</td><td>${r.total_marks ?? '—'}</td></tr>`;
       }
-      return subjects.map(([subject, marks]) => `<tr><td>${subject}</td><td>${marks}</td><td>—</td></tr>`).join('');
+      const perSubject = perSubjectTotal(r) ?? '—';
+      return subjects.map(([subject, marks]) => `<tr><td>${subject}</td><td>${marks}</td><td>${perSubject}</td></tr>`).join('');
     })
     .join('');
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Report Card — ${card.student.name}</title>
@@ -777,7 +790,10 @@ export async function renderReportCardPdf(card: ReportCardData): Promise<Buffer>
     if (subjects.length === 0) {
       doc.text(`All subjects: ${r.obtained_marks ?? '—'} / ${r.total_marks ?? '—'}`);
     } else {
-      for (const [subject, marks] of subjects) doc.text(`${subject}: ${marks}`);
+      // Round-4 (D3): same per-subject total as the HTML card; "—" when
+      // no total is stored instead of inventing a number.
+      const perSubject = perSubjectTotal(r) ?? '—';
+      for (const [subject, marks] of subjects) doc.text(`${subject}: ${marks} / ${perSubject}`);
     }
   }
   doc.moveDown();

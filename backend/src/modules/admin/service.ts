@@ -67,13 +67,17 @@ export async function getDashboard(db: Db, schoolId: string): Promise<Record<str
 }
 
 /** Snake_case audit-log view (the contract the frontend uses) — see
- * listAuditLogs for why the raw Prisma row cannot be returned. */
-export function toAuditLogView(l: any): Record<string, unknown> {
+ * listAuditLogs for why the raw Prisma row cannot be returned.
+ * D6: `actorEmail` is resolved at read time by listAuditLogs (same pattern
+ * as listChangeHistory) — the raw row only carries actorId + actorType,
+ * so without it the frontend could only render the bare type ('user'). */
+export function toAuditLogView(l: any, actorEmail?: string | null): Record<string, unknown> {
   return {
     id: l.id,
     school_id: l.schoolId ?? null,
     actor_id: l.actorId ?? null,
     actor_type: l.actorType,
+    actor_email: actorEmail ?? null,
     action: l.action,
     entity: l.entity,
     entity_id: l.entityId ?? null,
@@ -602,7 +606,28 @@ export async function listAuditLogs(db: Db, schoolId: string, query: Record<stri
   // `l.created_at` was undefined and fmtDateTime rendered '—' in the WHEN
   // column for every row. Serialize to the contract, same pattern as
   // listNotifications / toNotificationView above.
-  const views = (items as any[]).map(toAuditLogView);
+  // D6 fix: mirror listChangeHistory — resolve 'user' actor ids to the
+  // admin/clerk email so the ACTOR column shows a person, not the bare
+  // actor_type ('user'). Only 'user' actors have a users row;
+  // system/device/teacher_link actors keep actor_email null and the
+  // frontend falls back to the actor-type label. Deleted actors (no
+  // matching user) resolve to null, not a crash.
+  const actorIds = [
+    ...new Set(
+      (items as any[])
+        .filter((l: any) => l.actorType === 'user')
+        .map((l: any) => l.actorId)
+        .filter((id: unknown): id is string => typeof id === 'string' && id.length > 0),
+    ),
+  ];
+  const actors =
+    actorIds.length > 0
+      ? await (db as any).user.findMany({ where: { schoolId, id: { in: actorIds } } })
+      : [];
+  const emailById = new Map<string, string>(actors.map((u: any) => [u.id, u.email] as [string, string]));
+  const views = (items as any[]).map((l: any) =>
+    toAuditLogView(l, l.actorType === 'user' ? (emailById.get(l.actorId) ?? null) : null),
+  );
   return paginatedResponse(views, total, { page, limit, skip });
 }
 

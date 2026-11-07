@@ -146,6 +146,29 @@ describe('auth service', () => {
     expect(reset.user.email).toBe('a@b.pk');
   });
 
+  it('signup still succeeds when the verification mail send fails (round 4, D1)', async () => {
+    // Live re-test: signup showed "Internal server error" after ~40 s on
+    // "Creating…" yet the account had been created and login worked right
+    // after. A stalled/failed SMTP send must never 500 a committed signup
+    // — the mail is best-effort, the failure is logged server-side, and
+    // the stored verification token stays valid so resend still works.
+    const db = fakeDb();
+    mockedSendMail.mockRejectedValueOnce(new Error('SMTP connection timed out'));
+    const result = await signup(db as any, { school_name: 'School', email: 'a@b.pk', password: 'Secret123' });
+    expect(result.user.email).toBe('a@b.pk');
+    expect(result.access).toBeTruthy();
+    expect(result.refresh).toBeTruthy();
+    expect(result.dev_token).toBeTruthy();
+    expect(db.__users).toHaveLength(1);
+    expect(db.__schools).toHaveLength(1);
+    // The stored verification token still works (resend path), and login
+    // works immediately — exactly what the live re-test observed post-500.
+    const verified = await verifyEmail(db as any, result.dev_token!);
+    expect(verified.user.email_verified).toBe(true);
+    const logged = await login(db as any, { email: 'a@b.pk', password: 'Secret123' });
+    expect('access' in logged && logged.access).toBeTruthy();
+  });
+
   it('verify-email rejects a bad token', async () => {
     const db = fakeDb();
     await expect(verifyEmail(db as any, 'not-a-real-token')).rejects.toBeInstanceOf(ApiError);

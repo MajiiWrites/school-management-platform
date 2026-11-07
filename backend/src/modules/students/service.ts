@@ -36,16 +36,31 @@ export function toPublicStudent(s: any): Record<string, unknown> {
   // unmasked instead — the phone_flag logic below still reports it.
   let parentMasked: string | null = null;
   let parent2Masked: string | null = null;
+  let parentDecryptFailed = false;
   try {
     parentMasked = s.parentPhoneEnc ? maskPhone(decryptPhone(s.parentPhoneEnc)) : null;
   } catch {
     parentMasked = null;
+    parentDecryptFailed = true;
   }
   try {
     parent2Masked = s.parent2PhoneEnc ? maskPhone(decryptPhone(s.parent2PhoneEnc)) : null;
   } catch {
     parent2Masked = null;
   }
+  // D2: the list used to return neither `parent_phone` nor `phone_flag`,
+  // so the Students table read `parent_phone` (always undefined → "—")
+  // while the badge fell through to green "OK" — phones were stored fine
+  // (encrypted) but never displayed. `parent_phone` here is the MASKED
+  // value (never the full number); it is the alias the frontend type
+  // (`parent_phone // masked in responses`) and mock data already expect.
+  // 'duplicate' is NOT set here — a per-row serializer cannot see
+  // siblings; the list functions upgrade it via withDuplicateFlags.
+  const phoneFlag: 'missing' | 'invalid' | null = !s.parentPhoneEnc
+    ? 'missing'
+    : !s.parentPhoneHash || parentDecryptFailed
+      ? 'invalid'
+      : null;
   return {
     id: s.id,
     school_id: s.schoolId,
@@ -54,8 +69,10 @@ export function toPublicStudent(s: any): Record<string, unknown> {
     name: s.name,
     name_ur: s.nameUr ?? null,
     parent_name: s.parentName ?? null,
+    parent_phone: parentMasked,
     parent_phone_masked: parentMasked,
     parent_has_phone: Boolean(s.parentPhoneEnc),
+    phone_flag: phoneFlag,
     parent_opt_out: s.parentOptOut,
     status: s.status,
     father_name: s.fatherName ?? null,
@@ -71,6 +88,29 @@ export function toPublicStudent(s: any): Record<string, unknown> {
     created_at: s.createdAt,
     updated_at: s.updatedAt,
   };
+}
+
+/**
+ * D2: duplicate rule (contracts/SCHEMA.md) — same phone hash + same
+ * normalized name. Only the list functions can see siblings, so they
+ * upgrade `phone_flag` to 'duplicate' for rows sharing (hash, name)
+ * within the returned set. (A page boundary can hide a cross-page
+ * duplicate; the Parents list fetches the whole school, the class list
+ * fetches the whole class at limit=200 in the UI.)
+ */
+function withDuplicateFlags(rows: any[], publics: Record<string, unknown>[]): Record<string, unknown>[] {
+  const counts = new Map<string, number>();
+  for (const r of rows) {
+    if (!r.parentPhoneHash) continue;
+    const key = `${r.parentPhoneHash}|${normalizeName(r.name)}`;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return publics.map((p, i) => {
+    const r = rows[i];
+    if (!r?.parentPhoneHash || p.phone_flag) return p;
+    const key = `${r.parentPhoneHash}|${normalizeName(r.name)}`;
+    return (counts.get(key) ?? 0) > 1 ? { ...p, phone_flag: 'duplicate' } : p;
+  });
 }
 
 /**
@@ -266,7 +306,7 @@ export async function listStudents(
     db.student.findMany({ where: whereWithSearch, orderBy: [{ rollNo: 'asc' }, { name: 'asc' }], skip, take: limit }),
     db.student.count({ where: whereWithSearch }),
   ]);
-  const pageOut = paginatedResponse(items.map(toPublicStudent), total, { page, limit, skip });
+  const pageOut = paginatedResponse(withDuplicateFlags(items, items.map(toPublicStudent)), total, { page, limit, skip });
   return pageOut;
 }
 
@@ -439,7 +479,7 @@ export async function listStudentsSchoolWide(
     db.student.findMany({ where: whereWithSearch, orderBy: [{ name: 'asc' }], skip, take: limit }),
     db.student.count({ where: whereWithSearch }),
   ]);
-  return paginatedResponse(items.map(toPublicStudent), total, { page, limit, skip });
+  return paginatedResponse(withDuplicateFlags(items, items.map(toPublicStudent)), total, { page, limit, skip });
 }
 
 /**
@@ -511,7 +551,8 @@ export async function listParents(
     });
   }
   const total = filtered.length;
-  const items = filtered.slice(skip, skip + limit).map(toPublicStudent);
+  const pageRows = filtered.slice(skip, skip + limit);
+  const items = withDuplicateFlags(pageRows, pageRows.map(toPublicStudent));
   return { items, total, page, pages: Math.max(1, Math.ceil(total / limit)) };
 }
 

@@ -123,6 +123,45 @@ function pickClassForList(list: ClassItem[]): ClassItem | undefined {
   return list[0];
 }
 
+/** D3: per-subject Total for the report card. The backend report-card HTML
+ * renders every per-subject Total as a literal "—": the backend stores no
+ * per-subject max — a result row carries `subject_marks` ({subject:
+ * obtained}) plus ONE overall `total_marks`. The only per-subject max the
+ * data supports is the equal split of that total over the row's subjects
+ * (the standard school case, e.g. 300 over Maths/English/Science = 100
+ * each). Fill each subject row's Total cell in the fetched HTML, in
+ * subject order, before it is rendered; a subject whose total cannot be
+ * computed (no total_marks) keeps its "—" rather than inventing a number.
+ * The "All subjects" fallback row (no subject_marks) already prints
+ * obtained/total, so it is untouched. Only the subject table is patched —
+ * other "—" text in the card (roll no, father, …) is left alone. */
+function formatPerSubjectTotal(value: number): string {
+  return String(Math.round(value * 100) / 100);
+}
+
+function fillReportCardSubjectTotals(html: string, rows: ResultRow[]): string {
+  const perSubjectTotals: Array<string | null> = [];
+  for (const r of rows) {
+    const subjectCount = Object.keys(r.subject_marks ?? {}).length;
+    const total = r.total_marks;
+    for (let i = 0; i < subjectCount; i++) {
+      perSubjectTotals.push(
+        total !== null && total !== undefined && total > 0
+          ? formatPerSubjectTotal(total / subjectCount)
+          : null,
+      );
+    }
+  }
+  if (perSubjectTotals.length === 0 || perSubjectTotals.every((t) => t === null)) return html;
+  let idx = 0;
+  return html.replace(/<table>[\s\S]*?<\/table>/, (table) =>
+    table.replace(/<td>—<\/td>/g, (cell) => {
+      const total = perSubjectTotals[idx++];
+      return total === null || total === undefined ? cell : `<td>${total}</td>`;
+    }),
+  );
+}
+
 export default function ResultsPage() {
   const [classes, setClasses] = useState<ClassItem[]>([]);
   const [exams, setExams] = useState<ExamItem[]>([]);
@@ -425,7 +464,19 @@ export default function ResultsPage() {
         { headers: token ? { Authorization: `Bearer ${token}` } : {} },
       );
       if (!res.ok) throw new Error('Could not load the report card.');
-      setReportHtml(await res.text());
+      // D3: the backend HTML leaves every per-subject Total as "—" — fill
+      // it from this student's already-loaded result row(s) for the exam
+      // (matched by student id, falling back to name for unlinked rows
+      // whose student_id is null). If no row is found the HTML is shown
+      // unchanged, so this can only add totals, never break the card.
+      const student = students.find((s) => s.id === reportStudent);
+      const cardRows = results.filter(
+        (r) =>
+          r.exam_id === examId &&
+          (r.student_id === reportStudent ||
+            (r.student_id == null && student !== undefined && r.student_name === student.name)),
+      );
+      setReportHtml(fillReportCardSubjectTotals(await res.text(), cardRows));
     } catch (e) {
       push('error', errText(e));
     } finally {

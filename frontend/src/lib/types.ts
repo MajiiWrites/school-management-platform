@@ -261,7 +261,12 @@ export interface SmsStatus {
 
 export interface AuditLog {
   id: string;
+  actor_id?: string | null;
   actor_type: string;
+  // D6: resolved at read time by listAuditLogs — the admin/clerk email for
+  // 'user' actors; null for system/device/teacher_link actors (no email
+  // exists) and for deleted users. The frontend falls back to actor_type.
+  actor_email?: string | null;
   action: string;
   entity: string;
   entity_id?: string | null;

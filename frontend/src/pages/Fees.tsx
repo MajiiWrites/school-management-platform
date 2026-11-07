@@ -163,15 +163,20 @@ export default function FeesPage() {
                     <tr key={`${f.student_id}-${f.month}`} className="hover:bg-slate-50">
                       <td className="px-4 py-2.5 font-medium text-slate-900">{f.student_name}</td>
                       <td className="px-4 py-2.5">{f.class_name}</td>
-                      <td className="px-4 py-2.5">{fmtPKR(f.amount_due ?? 0)}</td>
-                      <td className="px-4 py-2.5">{fmtPKR(f.amount_paid ?? 0)}</td>
+                      {/* D4: a no-structure student owes nothing because no
+                          structure exists — "Rs 0" in Due/Paid read as a
+                          real zero balance next to the "No fee structure"
+                          badge. Show "—" instead (the badge already says
+                          why); the hover title names the reason. */}
+                      <td className="px-4 py-2.5" title={f.no_structure ? 'No fee structure' : undefined}>{f.no_structure ? '—' : fmtPKR(f.amount_due ?? 0)}</td>
+                      <td className="px-4 py-2.5" title={f.no_structure ? 'No fee structure' : undefined}>{f.no_structure ? '—' : fmtPKR(f.amount_paid ?? 0)}</td>
                       <td className="px-4 py-2.5">{statusBadge(f.status, f.no_structure)}</td>
                       <td className="px-4 py-2.5 font-mono text-xs">{f.receipt_no ?? '—'}</td>
                       <td className="px-4 py-2.5 text-right">
                         <button
                           className="mr-3 font-medium text-brand-700 hover:underline disabled:opacity-40"
                           disabled={voucherBusy || !f.record_id}
-                          title={f.record_id ? 'Generate / print the fee voucher (challan)' : 'No fee record yet — record a payment or run the rollover first'}
+                          title={f.no_structure ? 'No fee structure for this student' : f.record_id ? 'Generate / print the fee voucher (challan)' : 'No fee record yet — record a payment or run the rollover first'}
                           onClick={async () => {
                             setVoucherBusy(true);
                             try {
@@ -198,15 +203,24 @@ export default function FeesPage() {
                             (nothing due at all). Receipt is enabled only once
                             a payment exists (receipt_no set); otherwise it is
                             disabled with the reason as its hint. */}
+                        {/* D4: no_structure rows carry the backend's
+                            GENERATED 'paid' status, so the old title chain
+                            told them "Already paid in full for this month"
+                            even though nothing was ever owed — check
+                            no_structure FIRST. Collect stays disabled for
+                            them (nothing to collect); only the wording
+                            changes. */}
                         <Button
                           variant="secondary"
-                          disabled={f.status === 'paid' || (!f.record_exists && (f.amount_due ?? 0) <= 0)}
+                          disabled={f.no_structure || f.status === 'paid' || (!f.record_exists && (f.amount_due ?? 0) <= 0)}
                           title={
-                            f.status === 'paid'
-                              ? 'Already paid in full for this month'
-                              : !f.record_exists && (f.amount_due ?? 0) <= 0
-                                ? 'No fee structure for this class yet — set one in Fee structures first'
-                                : 'Record a payment for this student'
+                            f.no_structure
+                              ? 'No fee structure for this student'
+                              : f.status === 'paid'
+                                ? 'Already paid in full for this month'
+                                : !f.record_exists && (f.amount_due ?? 0) <= 0
+                                  ? 'No fee structure for this class yet — set one in Fee structures first'
+                                  : 'Record a payment for this student'
                           }
                           onClick={() => setPaying(f)}
                         >
