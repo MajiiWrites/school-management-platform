@@ -172,6 +172,7 @@ export default function OcrReviewPage() {
           <p className="mt-2 font-medium text-slate-800">Choose a photo or scan of the student list</p>
           <p className="mt-1 text-sm text-slate-500">
             Clear, well-lit photos work best. Roll numbers and parent phone numbers are picked up when present.
+            Tables with Student / Parent / Number columns are read column by column.
             Names are kept exactly as written on the list — nothing is corrected or re-spelled.
           </p>
           <div className="mt-4 flex flex-wrap justify-center gap-2">
@@ -252,11 +253,12 @@ export default function OcrReviewPage() {
             />
           ) : (
             <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
-              <table className="w-full min-w-[680px] text-sm">
+              <table className="w-full min-w-[780px] text-sm">
                 <thead>
                   <tr className="border-b border-slate-200 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
                     <th className="px-3 py-3">#</th>
                     <th className="px-3 py-3">Name (English)</th>
+                    <th className="px-3 py-3">Parent name</th>
                     <th className="px-3 py-3">Name (Urdu)</th>
                     <th className="px-3 py-3">Roll</th>
                     <th className="px-3 py-3">Parent phone</th>
@@ -276,11 +278,15 @@ export default function OcrReviewPage() {
                           value={r.name}
                           onChange={(e) => updateRow(i, { name: e.target.value })}
                           placeholder="Student name" autoComplete="off" />
-                        {r.parent_name && (
-                          <div className="mt-0.5 text-xs text-slate-500" title="Father/guardian name as written on the list (s/o …) — saved as the parent name, not part of the student's name.">
-                            s/o {r.parent_name}
-                          </div>
-                        )}
+                      </td>
+                      <td className="px-3 py-2">
+                        <input
+                          className={`w-full rounded border px-2 py-1 text-sm ${lowConf ? 'border-red-400 bg-red-50' : 'border-slate-300'}`}
+                          value={r.parent_name ?? ''}
+                          onChange={(e) => updateRow(i, { parent_name: e.target.value || null })}
+                          placeholder="Parent name"
+                          title="Father/guardian name as written on the list (from an “s/o …” tail or the Parents Name column) — saved as the parent name, not part of the student's name."
+                          autoComplete="off" />
                       </td>
                       <td className="px-3 py-2">
                         <input

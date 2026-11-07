@@ -3,8 +3,14 @@
 // with a fake; prisma-adapter.ts maps the real Prisma client onto it.
 // Multi-tenancy: every call is scoped by schoolId (never trust client input).
 import { parseStudentList, type ParsedRow, type ExistingStudent } from './parser.js';
+import {
+  parseTableWords,
+  applyTableVerification,
+  tableRowsToText,
+  parseTableTextLines,
+} from './table.js';
 import { normalizePkPhone, hashPhone, normalizeName } from './phone.js';
-import { runOcr, inspectImage, runTesseract, OcrUnavailableError } from './ocr-engine.js';
+import { runOcr, inspectImage, runTesseract, runTesseractTsv, OcrUnavailableError } from './ocr-engine.js';
 import { encryptPhone } from './crypto.js';
 
 /**
@@ -112,6 +118,10 @@ export class OcrService {
       runOcr?: (filePath: string) => Promise<{ raw_text: string; engine: string; warnings: string[] }>;
       /** Override the SECOND verification pass (tests inject a stub). */
       runVerificationOcr?: (filePath: string) => Promise<{ raw_text: string }>;
+      /** Override the TABLE pass (TSV word boxes; tests inject a stub). */
+      runTableOcr?: (filePath: string) => Promise<import('./ocr-engine.js').OcrWord[]>;
+      /** Override the TABLE verification pass (tests inject a stub). */
+      runTableVerifyOcr?: (filePath: string) => Promise<import('./ocr-engine.js').OcrWord[]>;
       /** Override the pre-OCR image inspection (rotation warnings). */
       inspectImage?: (filePath: string) => Promise<string[]>;
     } = {},
@@ -155,21 +165,76 @@ export class OcrService {
       const imageWarnings = this.opts.inspectImage
         ? await this.opts.inspectImage(filePath)
         : await inspectImage(filePath);
-      const ocr = await this.ocr(filePath);
       const existing = await this.db.listStudents(schoolId, classId);
-      const parsed = parseStudentList(ocr.raw_text, existing);
-      const verificationText = await this.verify(filePath);
-      const rows = applyVerification(parsed, verificationText);
-      const warnings = [...imageWarnings, ...ocr.warnings];
-      if (verificationText === null) {
-        warnings.push('Second verification pass did not run — check low-confidence rows carefully.');
-      } else {
-        const mismatches = rows.filter((r) => r.verification === 'mismatch').length;
-        if (mismatches > 0) {
-          warnings.push(`${mismatches} name(s) were not confirmed by the second OCR pass — they are highlighted for review.`);
+      const warnings = [...imageWarnings];
+      let rows: ParsedRow[] = [];
+      let raw_text = '';
+      let engine = 'tesseract';
+
+      // 1. TABLE path first (bordered/column tables): the plain-text pass
+      // (psm 6) returns EMPTY text for grid tables, so the line parser saw
+      // 0 rows even on perfectly readable photos. TSV word boxes keep the
+      // geometry — rows by vertical overlap, columns by x position.
+      // Best-effort: any failure here falls through to the text path.
+      let tableUsed = false;
+      try {
+        const tableWords = this.opts.runTableOcr
+          ? await this.opts.runTableOcr(filePath)
+          : await runTesseractTsv(filePath, 'eng', '11', 180_000);
+        const table = parseTableWords(tableWords, existing);
+        if (table.detected && table.rows.length > 0) {
+          let verifiedNames: Set<string> | null = null;
+          try {
+            const verifyWords = this.opts.runTableVerifyOcr
+              ? await this.opts.runTableVerifyOcr(filePath)
+              : await runTesseractTsv(filePath, 'eng', '3', 180_000);
+            verifiedNames = new Set(parseTableWords(verifyWords).rows.map((r) => normalizeName(r.name)));
+          } catch {
+            verifiedNames = null;
+          }
+          rows = applyTableVerification(table.rows, verifiedNames);
+          raw_text = tableRowsToText(rows);
+          warnings.push(
+            `Table layout detected — ${rows.length} rows read from ${table.columns.length} columns (${table.columns.join(' / ')}).`,
+          );
+          if (verifiedNames === null) {
+            warnings.push('Second verification pass did not run — check low-confidence rows carefully.');
+          } else {
+            const mismatches = rows.filter((r) => r.verification === 'mismatch').length;
+            if (mismatches > 0) {
+              warnings.push(
+                `${mismatches} name(s) were not confirmed by the second OCR pass — they are highlighted for review.`,
+              );
+            }
+          }
+          tableUsed = true;
+        }
+      } catch {
+        tableUsed = false;
+      }
+
+      // 2. TEXT path (unchanged): dual-pass OCR + line parser + psm-4
+      // verification. Handles name-only / Urdu lists; also the fallback
+      // when the photo is not a table.
+      if (!tableUsed) {
+        const ocr = await this.ocr(filePath);
+        const parsed = parseStudentList(ocr.raw_text, existing);
+        const verificationText = await this.verify(filePath);
+        rows = applyVerification(parsed, verificationText);
+        raw_text = ocr.raw_text;
+        engine = ocr.engine;
+        warnings.push(...ocr.warnings);
+        if (verificationText === null) {
+          warnings.push('Second verification pass did not run — check low-confidence rows carefully.');
+        } else {
+          const mismatches = rows.filter((r) => r.verification === 'mismatch').length;
+          if (mismatches > 0) {
+            warnings.push(`${mismatches} name(s) were not confirmed by the second OCR pass — they are highlighted for review.`);
+          }
         }
       }
-      await this.db.updateUpload(schoolId, upload.id, { status: 'review', raw_text: ocr.raw_text });
+
+      await this.db.updateUpload(schoolId, upload.id, { status: 'review', raw_text });
       await this.db.createAuditLog({
         school_id: schoolId,
         actor_id: actorId,
@@ -177,9 +242,9 @@ export class OcrService {
         action: 'ocr.upload',
         entity: 'ocr_upload',
         entity_id: upload.id,
-        details: { class_id: classId, engine: ocr.engine, rows_found: rows.length },
+        details: { class_id: classId, engine, rows_found: rows.length },
       });
-      return { upload_id: upload.id, raw_text: ocr.raw_text, rows, engine: ocr.engine, warnings, image_url: `/ocr-uploads/${upload.id}/image` };
+      return { upload_id: upload.id, raw_text, rows, engine, warnings, image_url: `/ocr-uploads/${upload.id}/image` };
     } catch (err) {
       await this.db.updateUpload(schoolId, upload.id, { status: 'failed' }).catch(() => undefined);
       throw err;
@@ -205,7 +270,11 @@ export class OcrService {
       throw err;
     }
     const existing = await this.db.listStudents(schoolId, upload.class_id);
-    const rows = parseStudentList(upload.raw_text ?? '', existing);
+    // Table uploads store raw_text as `name | parent | phone` lines: re-parse
+    // that format first — the flat line parser would merge the parent name
+    // into the student name. Falls back to the line parser for text uploads.
+    const tableRows = parseTableTextLines(upload.raw_text ?? '', existing);
+    const rows = tableRows ?? parseStudentList(upload.raw_text ?? '', existing);
     return {
       upload_id: upload.id,
       class_id: upload.class_id,

@@ -156,7 +156,7 @@ export interface OcrRow {
   name: string;
   name_ur?: string;
   roll_no?: number | null;
-  /** Parent name when the list wrote "Ali s/o Ahmed" (father's name, not the student's). */
+  /** Parent name: from an "s/o ..." tail, or the Parents Name column of a table photo. */
   parent_name?: string | null;
   parent_phone?: string;
   confidence: number;

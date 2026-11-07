@@ -234,3 +234,110 @@ test('applyVerification leaves Urdu-only rows unverified (Latin pass cannot read
   assert.equal(rows[0].verification, 'unverified');
   assert.equal(rows[0].confidence, 0.9); // not capped
 });
+
+// ---- Table path (3-column student table photo) ----
+// The user's photo (Student Name | Parents Name | Parents Number) came
+// back with 0 rows from the old text path (psm 6 returns empty text for
+// bordered tables). The table path reads TSV word boxes instead.
+import type { OcrWord } from '../ocr-engine.js';
+
+function tw(text: string, left: number, top: number, width = 60, height = 24, conf = 96): OcrWord {
+  return { text, conf, left, top, width, height, line: 0 };
+}
+
+const TABLE_WORDS: OcrWord[] = [
+  tw('Student', 10, 10), tw('Name', 90, 10),
+  tw('Parents', 300, 10), tw('Name', 380, 10),
+  tw('Parents', 600, 10), tw('Number', 680, 10),
+  tw('Ahmed', 10, 50), tw('Khan', 80, 50),
+  tw('Imran', 300, 50), tw('Khan', 370, 50), tw('0300-1234501', 600, 50, 150),
+  tw('Ayesha', 10, 90), tw('Malik', 80, 90),
+  tw('Tariq', 300, 90), tw('Malik', 370, 90), tw('0301-2345602', 600, 90, 150),
+];
+
+test('uploadAndParse uses the table path for a 3-column table photo', async () => {
+  const { db, uploads } = makeFakeDb();
+  const svc = new OcrService(db, {
+    runTableOcr: async () => TABLE_WORDS,
+    runTableVerifyOcr: async () => TABLE_WORDS,
+    runOcr: async () => {
+      throw new Error('text path must not run when the table path succeeds');
+    },
+  });
+  const res = await svc.uploadAndParse('school-1', 'class-1', 'admin-1', '/tmp/x.png');
+  assert.equal(res.rows.length, 2);
+  assert.equal(res.rows[0].name, 'Ahmed Khan');
+  assert.equal(res.rows[0].parent_name, 'Imran Khan');
+  assert.equal(res.rows[0].parent_phone, '+923001234501');
+  assert.equal(res.rows[1].name, 'Ayesha Malik');
+  assert.equal(res.rows[1].parent_name, 'Tariq Malik');
+  assert.equal(res.rows[1].parent_phone, '+923012345602');
+  assert.equal(res.rows[0].verification, 'match');
+  assert.ok(res.warnings.some((w) => /Table layout detected/.test(w)));
+  // Stored raw_text is the pipe format so a re-opened review re-parses
+  // the same rows (parent name NOT merged into the student name).
+  assert.equal(
+    uploads.get(res.upload_id)?.raw_text,
+    'Ahmed Khan | Imran Khan | +923001234501\nAyesha Malik | Tariq Malik | +923012345602',
+  );
+  assert.equal(uploads.get(res.upload_id)?.status, 'review');
+});
+
+test('getUploadForReview re-parses stored pipe-format rows (parent kept separate)', async () => {
+  const { db } = makeFakeDb();
+  const svc = new OcrService(db, {
+    runTableOcr: async () => TABLE_WORDS,
+    runTableVerifyOcr: async () => TABLE_WORDS,
+  });
+  const res = await svc.uploadAndParse('school-1', 'class-1', 'admin-1', '/tmp/x.png');
+  const reopened = await svc.getUploadForReview('school-1', res.upload_id);
+  assert.equal(reopened.rows.length, 2);
+  assert.equal(reopened.rows[0].name, 'Ahmed Khan');
+  assert.equal(reopened.rows[0].parent_name, 'Imran Khan');
+  assert.equal(reopened.rows[0].parent_phone, '+923001234501');
+  assert.equal(reopened.rows[1].name, 'Ayesha Malik');
+});
+
+test('uploadAndParse falls back to the text path when the table pass throws', async () => {
+  const { db } = makeFakeDb();
+  const svc = new OcrService(db, {
+    runTableOcr: async () => {
+      throw new Error('tesseract tsv failed');
+    },
+    runOcr: async () => ({ raw_text: SAMPLE_TEXT, engine: 'tesseract', warnings: [] }),
+    runVerificationOcr: async () => ({ raw_text: SAMPLE_TEXT }),
+  });
+  const res = await svc.uploadAndParse('school-1', 'class-1', 'admin-1', '/tmp/x.png');
+  assert.equal(res.rows.length, 3);
+  assert.equal(res.rows[0].name, 'Ahmed Raza');
+  assert.ok(!res.warnings.some((w) => /Table layout detected/.test(w)));
+});
+
+test('uploadAndParse falls back to the text path when TSV words are not a table', async () => {
+  const { db } = makeFakeDb();
+  const svc = new OcrService(db, {
+    runTableOcr: async () => [
+      tw('Ahmed', 10, 50), tw('Raza', 80, 50),
+      tw('Fatima', 10, 90), tw('Khan', 80, 90),
+    ],
+    runOcr: async () => ({ raw_text: SAMPLE_TEXT, engine: 'tesseract', warnings: [] }),
+    runVerificationOcr: async () => ({ raw_text: SAMPLE_TEXT }),
+  });
+  const res = await svc.uploadAndParse('school-1', 'class-1', 'admin-1', '/tmp/x.png');
+  assert.equal(res.rows.length, 3);
+  assert.equal(res.rows[0].name, 'Ahmed Raza');
+});
+
+test('uploadAndParse marks table rows unverified when the table verification pass fails', async () => {
+  const { db } = makeFakeDb();
+  const svc = new OcrService(db, {
+    runTableOcr: async () => TABLE_WORDS,
+    runTableVerifyOcr: async () => {
+      throw new Error('second pass failed');
+    },
+  });
+  const res = await svc.uploadAndParse('school-1', 'class-1', 'admin-1', '/tmp/x.png');
+  assert.equal(res.rows.length, 2);
+  assert.ok(res.rows.every((r) => r.verification === 'unverified'));
+  assert.ok(res.warnings.some((w) => /Second verification pass did not run/.test(w)));
+});
