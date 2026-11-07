@@ -1,0 +1,37 @@
+-- One-time Phase 9 cleanup (TEST schools only).
+-- Deletes ONLY the TEST schools below. The WHERE clause is the safety
+-- guard, so no other school can ever be affected.
+-- All tenant tables cascade from schools (ON DELETE CASCADE), so each
+-- school's users, classes, students, attendance, fees, messages, results
+-- and every other record go with it in the same statement.
+-- Safe on a fresh/empty database: the DELETE simply affects 0 rows.
+--
+-- TIMING — CRITICAL: push this migration ONLY AFTER all re-testing has
+-- finished and the TEST schools exist in the live DB. Prisma migrations
+-- run once, at deploy time: if this is pushed before the TEST schools are
+-- created, it deletes 0 rows and will NOT clean them up later.
+--
+-- SCHOOLS (7 slugs):
+--   "TEST School – Inspection" -> test-school-inspection (verified via cert no.)
+--   "TEST School – Isolation"  -> test-school-isolation  (verified via cert no.)
+--   "TEST School – Retest"     -> test-school-retest     (DERIVED, not read from
+--     the UI — no slug is displayed anywhere on the site. Code-deterministic
+--     slugify with no possible collision, very high confidence, but unverified.
+--     The email fallback below covers it even if the slug differs: the Retest
+--     school's admin is test-retest@example.com, a fake address used only by
+--     this TEST school, so the OR condition cannot match a real school.)
+--   "TEST Retest2 School"      -> test-retest2-school    (VERIFIED from export JSON)
+--   "TEST Retest3 School"      -> test-retest3-school    (VERIFIED from export JSON)
+--   "TEST Retest4 School"      -> test-retest4-school    (VERIFIED from export JSON)
+--   "TEST Retest5 School"      -> test-retest5-school    (PATTERN-based, unconfirmed;
+--     the email fallback below covers it even if the slug differs: the Retest5
+--     school's admin is test-retest5@example.com, a fake address used only by
+--     this TEST school.)
+-- Email fallbacks (delete by school id via users.email; same pattern as the
+-- Retest fallback): test-retest@example.com, test-retest4@example.com,
+-- test-retest5@example.com. The retest2/retest3 admins are covered by their
+-- verified slugs, so no fallback is needed for them; the retest4 fallback is
+-- belt-and-braces alongside its verified slug.
+DELETE FROM schools
+WHERE slug IN ('test-school-inspection', 'test-school-isolation', 'test-school-retest', 'test-retest2-school', 'test-retest3-school', 'test-retest4-school', 'test-retest5-school')
+   OR id IN (SELECT "schoolId" FROM users WHERE email IN ('test-retest@example.com', 'test-retest4@example.com', 'test-retest5@example.com'));
