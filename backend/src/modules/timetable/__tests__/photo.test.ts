@@ -104,6 +104,56 @@ describe('parseTimetableWords (days as columns)', () => {
   });
 });
 
+describe('parseTimetableWords (days as rows)', () => {
+  /** Layout B grid: days down the first column, header row = period times. */
+  function gridBWords(): TimetableWord[] {
+    return [
+      // header row (times only)
+      w('08:00-08:45', 150, 10), w('09:00-09:45', 400, 10),
+      // Monday row
+      w('Monday', 10, 40), w('Math', 150, 40), w('-', 200, 40), w('Ayesha', 215, 40), w('Khan', 260, 40),
+      w('English', 400, 40), w('-', 455, 40), w('Bilal', 470, 40), w('Ahmed', 510, 40),
+      // Tuesday row
+      w('Tuesday', 10, 70), w('Science', 150, 70), w('-', 215, 70), w('Ayesha', 230, 70), w('Khan', 270, 70),
+      w('Urdu', 400, 70), w('(Bilal', 445, 70), w('Ahmed)', 485, 70),
+    ];
+  }
+
+  it('builds one cell per period (not one merged cell per day) with times', () => {
+    const cells = parseTimetableWords(gridBWords(), '5-A');
+    expect(cells).toHaveLength(4);
+    const mon1 = cells.find((c) => c.day_of_week === 1 && c.period_no === 1)!;
+    expect(mon1.subject).toBe('Math');
+    expect(mon1.teacher_name).toBe('Ayesha Khan');
+    expect(mon1.start_time).toBe('08:00');
+    expect(mon1.end_time).toBe('08:45');
+    expect(mon1.flags).not.toContain('missing_time');
+    // Times-only header: period numbers come from column order, so the
+    // flag correctly stays (times themselves are read, not inferred).
+    expect(mon1.flags).toContain('period_inferred');
+    const mon2 = cells.find((c) => c.day_of_week === 1 && c.period_no === 2)!;
+    expect(mon2.subject).toBe('English');
+    expect(mon2.teacher_name).toBe('Bilal Ahmed');
+    expect(mon2.start_time).toBe('09:00');
+    const tue1 = cells.find((c) => c.day_of_week === 2 && c.period_no === 1)!;
+    expect(tue1.subject).toBe('Science');
+    expect(tue1.teacher_name).toBe('Ayesha Khan');
+  });
+
+  it('REGRESSION (live re-test 2026-11-07): the header is the times row, never the first day row', () => {
+    // A day row's own line top sits ABOVE its day token's centre (cy) by
+    // half the word height, so `top < cy - 5` used to match the Monday row
+    // itself as the "header" — every day collapsed to one merged cell with
+    // no times. With the header fixed to the times row, Monday period 1
+    // carries its real time.
+    const cells = parseTimetableWords(gridBWords(), '5-A');
+    const mon1 = cells.find((c) => c.day_of_week === 1 && c.period_no === 1)!;
+    expect(mon1.start_time).toBe('08:00');
+    expect(mon1.subject).toBe('Math');
+    expect(cells.filter((c) => c.day_of_week === 1)).toHaveLength(2);
+  });
+});
+
 describe('parseTimetableText fallback', () => {
   it('parses one line per period and skips lines without a day (never guesses)', () => {
     const cells = parseTimetableText(

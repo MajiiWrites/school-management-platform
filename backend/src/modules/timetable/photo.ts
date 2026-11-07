@@ -338,7 +338,15 @@ function parseDaysAsRows(lines: Line[], dayTokens: DayToken[], sheetClass: strin
   const dayColX = Math.min(...days.map((d) => d.cx));
   // Period header: the line above the first day row that holds times/periods.
   const firstDayTop = Math.min(...days.map((d) => d.cy));
-  const headerLine = lines.filter((l) => l.top < firstDayTop - 5).pop();
+  // BUG FIX (live re-test 2026-11-07): the filter below used to be
+  // `l.top < firstDayTop - 5`, but a day row's own line top sits ABOVE its
+  // day token's centre (cy) by half the word height (~13-18px), so the
+  // first day's row itself always qualified and .pop() picked it as the
+  // "header". Its clusters ("Monday" + the whole merged row) parse to no
+  // period labels, so every day collapsed to ONE cell with all subjects
+  // merged and no times. Exclude any line holding a day token: the header
+  // (times/periods row) never holds one.
+  const headerLine = lines.filter((l) => l.top < firstDayTop - 5 && !l.words.some((w) => dayOf(w.text) !== null)).pop();
   const periodLabels: { cx: number; label: ReturnType<typeof parsePeriodLabel> }[] = [];
   if (headerLine) {
     // Split the header line into column clusters by x-gaps.
