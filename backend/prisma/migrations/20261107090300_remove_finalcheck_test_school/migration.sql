@@ -1,0 +1,110 @@
+-- One-time Phase 10 + FINAL REBUILD cleanup (all TEST schools).
+-- Deletes ONLY the nine TEST schools below. The WHERE clause is the
+-- safety guard, so no other school can ever be affected.
+-- All tenant tables cascade from schools (ON DELETE CASCADE), so the
+-- schools' users, classes, students, attendance, fees, messages, results
+-- and every other record go with them in the same statement.
+-- Safe on a fresh/empty database: the DELETE simply affects 0 rows.
+--
+-- TIMING — CRITICAL: push this migration ONLY AFTER all re-testing
+-- has finished and the TEST schools exist in the live DB. Prisma migrations
+-- run once, at deploy time: if this is pushed before a TEST school is
+-- created, it deletes 0 rows and will NOT clean it up later. It must also
+-- be pushed AFTER the fix code has been deployed and re-tested
+-- live, since re-testing creates new data in the same schools.
+-- UPDATE 2026-11-07 23:55 PKT: the user explicitly ordered "Clean up" —
+-- the earlier hold (do not push while he inspects as
+-- test-round5@example.com) is SUPERSEDED. All 9 TEST schools below exist
+-- in the live DB, so the push is safe now.
+--
+-- UPDATE 2026-11-07 ~17:30 PKT (final rebuild): a fourth TEST school was
+-- created by the rebuild live re-test — "TEST Rebuild School" ->
+-- test-rebuild-school (VERIFIED from the data-export JSON, 40 tables;
+-- admin test-rebuild@example.com; 1,101 students, promotion batches,
+-- payroll, certificates, OCR + timetable uploads). The D1 live re-test
+-- uploads into this same school (transient), so it creates no further
+-- school. The old cleanup manifest smp-paths-cleanup-p10.txt remains
+-- SUPERSEDED — this updated migration is the final cleanup.
+--
+-- UPDATE 2026-11-07 ~18:20 PKT (search-reload fix live re-test): a fifth
+-- TEST school was created by the search-fix live re-test — "TEST Searchfix
+-- School" -> test-searchfix-school (VERIFIED from the data-export JSON,
+-- 40 tables, school id b3f5ef1d-5829-46f4-9f06-eeeb7131581b; admin
+-- test-searchfix@example.com; 5 students, fee Rs 2,500; created 18:13 PKT).
+--
+-- UPDATE 2026-11-07 ~22:30 PKT (OCR table-fix live re-test, PASS): a sixth
+-- TEST school was created — "OCR Live Retest School Nov 2026" (admin
+-- ocr-retest-20261107@example.com; Class 5, 20 students from the user's
+-- table photo, review + confirm PASS). The app never displays a school
+-- slug anywhere in the UI, so the slug is NOT known — the school is
+-- deleted via the email fallback below.
+--
+-- UPDATE 2026-11-07 ~23:23 PKT (speed+Urdu live re-test, FAILED): a
+-- seventh TEST school was created — "OCR Live Retest School Nov 7 2026 B"
+-- (admin ocr-retest-20261107b@example.com; Class 5, 0 students — the
+-- upload failed before any save). Slug unknown — email fallback.
+--
+-- UPDATE 2026-11-07 ~23:38 PKT (OCR regression repro, live API): an
+-- eighth TEST school was created — "OCR Regression Repro School Nov 2026"
+-- -> ocr-regression-repro-school-nov-2026 (VERIFIED slug, school id
+-- 8ce6ec26-0e7c-4dcc-8f69-08aa2e022205; admin
+-- ocr-repro-20261107c@example.com; 2 failed uploads).
+--
+-- UPDATE 2026-11-07 ~23:53 PKT (speed+Urdu live re-test, PASS): a ninth
+-- TEST school was created — "OCR Live Retest School Nov 7 2026 C"
+-- (admin ocr-retest-20261107c@example.com; Class 5, 20 students,
+-- upload-to-review ~80s, Urdu names correct). Slug unknown — email
+-- fallback.
+-- NOTE: school 8's email is ocr-REPRO-20261107c@example.com and school
+-- 9's is ocr-RETEST-20261107c@example.com — distinct addresses, do not
+-- confuse them.
+--
+-- SCHOOLS (6 known slugs + 3 via email fallback only):
+--   "TEST Finalcheck School" -> test-finalcheck-school (VERIFIED from the
+--     signup response 201 and from the data-export JSONs during the Phase 10
+--     sweep; the school is the only TEST school created in Phase 10 — all
+--     five area agents worked inside it, including the 1,100-student bulk
+--     class 10-Z and all other Phase 10 test records).
+--   "TEST Round5 School" -> test-round5-school (VERIFIED from the signup
+--     response 201 and from the data-export JSON during the round-5 live
+--     re-test; created 2026-11-07 ~14:35 PKT for the focused round-5
+--     re-test — 220 students in class 5-A, fee structure, exam + results,
+--     custom templates).
+--   "TEST Round5b School" -> test-round5b-school (INFERRED from the naming
+--     convention, NOT directly observed; created 2026-11-07 14:40 PKT by
+--     the round-5 UI re-test browser task for the signup-landing check —
+--     auth.signup in its audit log. The email fallback below is the safety
+--     net: even if the inferred slug is wrong, the school is still deleted
+--     via its admin's email.)
+--   "TEST Rebuild School" -> test-rebuild-school (VERIFIED from the
+--     data-export JSON; created 2026-11-07 ~16:37 PKT by the final-rebuild
+--     live re-test — 1,101 students, promotion batches, payroll,
+--     certificates, OCR + timetable uploads).
+--   "TEST Searchfix School" -> test-searchfix-school (VERIFIED from the
+--     data-export JSON, 40 tables; created 2026-11-07 18:13 PKT by the
+--     search-reload-fix live re-test — 5 students, fee Rs 2,500).
+--   "OCR Live Retest School Nov 2026" -> slug NOT KNOWN (app never shows
+--     a slug in the UI; created 2026-11-07 ~22:24 PKT by the OCR table-fix
+--     live re-test — Class 5, 20 students, review + confirm PASS).
+--     Deleted via the email fallback below.
+--   "OCR Live Retest School Nov 7 2026 B" -> slug NOT KNOWN (created
+--     2026-11-07 ~23:20 PKT by the speed+Urdu live re-test — Class 5,
+--     0 students, upload failed). Deleted via the email fallback below.
+--   "OCR Regression Repro School Nov 2026" ->
+--     ocr-regression-repro-school-nov-2026 (VERIFIED slug, school id
+--     8ce6ec26-0e7c-4dcc-8f69-08aa2e022205; created 2026-11-07 ~23:38 PKT
+--     by the OCR regression repro — 2 failed uploads).
+--   "OCR Live Retest School Nov 7 2026 C" -> slug NOT KNOWN (created
+--     2026-11-07 ~23:49 PKT by the speed+Urdu live re-test — Class 5,
+--     20 students, upload-to-review ~80s, Urdu names correct). Deleted
+--     via the email fallback below.
+-- Email fallbacks (delete by school id via users.email): the admins are
+-- test-finalcheck@example.com, test-round5@example.com,
+-- test-round5b@example.com, test-rebuild@example.com,
+-- test-searchfix@example.com, ocr-retest-20261107@example.com,
+-- ocr-retest-20261107b@example.com, ocr-repro-20261107c@example.com and
+-- ocr-retest-20261107c@example.com, fake addresses used only by these
+-- TEST schools, so the OR condition cannot match a real school.
+DELETE FROM schools
+WHERE slug IN ('test-finalcheck-school', 'test-round5-school', 'test-round5b-school', 'test-rebuild-school', 'test-searchfix-school', 'ocr-regression-repro-school-nov-2026')
+   OR id IN (SELECT "schoolId" FROM users WHERE email IN ('test-finalcheck@example.com', 'test-round5@example.com', 'test-round5b@example.com', 'test-rebuild@example.com', 'test-searchfix@example.com', 'ocr-retest-20261107@example.com', 'ocr-retest-20261107b@example.com', 'ocr-repro-20261107c@example.com', 'ocr-retest-20261107c@example.com'));
