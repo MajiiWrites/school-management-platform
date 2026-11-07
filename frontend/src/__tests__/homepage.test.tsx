@@ -63,7 +63,7 @@ describe('homepage (logged out)', () => {
     renderHome();
 
     // Navbar: brand big on the left, Login + Sign Up on the right.
-    expect(screen.getByRole('link', { name: /School Manager/ })).toHaveProperty('href');
+    expect(screen.getByRole('link', { name: /Student Manager/ })).toHaveProperty('href');
     const logins = screen.getAllByRole('link', { name: 'Log in' });
     expect(logins.length).toBe(2); // navbar + hero CTA
     logins.forEach((l) => expect(l.getAttribute('href')).toBe('/login'));
@@ -136,13 +136,22 @@ describe('homepage (logged out)', () => {
     expect(document.body.textContent).not.toMatch(/freelanc|web designer/i);
   });
 
-  it('gives every section a hover lift and shows the hero mockup', () => {
+  it('shows the new brand and no trace of the old one anywhere', () => {
+    renderHome();
+    expect(screen.getByRole('link', { name: /Student Manager/ })).toBeTruthy();
+    expect(document.body.textContent).not.toMatch(/School Manager/);
+  });
+
+  it('gives every section a hover lift and shows a data-free hero preview', () => {
     renderHome();
 
-    // Hero mockup: an illustration of the product, no real data/numbers.
+    // Hero preview: abstract placeholder shapes only — no numbers, no
+    // counts, no attendance/fees data of any kind on the homepage.
     const mockup = screen.getByTestId('hero-mockup');
     expect(mockup.className).toContain('hover:-translate-y-1.5');
-    expect(screen.getByText(/A peek inside the dashboard/)).toBeTruthy();
+    expect(mockup.textContent).not.toMatch(/\d/);
+    expect(mockup.textContent).not.toMatch(/present|absent|leave|paid|due|fees|attendance/i);
+    expect(screen.getByText('One simple app for the whole school day.')).toBeTruthy();
 
     // All eight feature cards rise on hover.
     const cards = document.querySelectorAll('article');

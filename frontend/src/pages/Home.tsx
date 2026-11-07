@@ -22,10 +22,11 @@ import DeveloperFooter from '../components/DeveloperFooter';
  * Engagement: every section has a hover lift — cards rise a little and
  * deepen their shadow when the cursor comes over them (transform +
  * shadow only, so the page layout never jumps). The hero shows a
- * div-built dashboard mockup — an illustration of the product, not
- * real school data (no numbers anywhere in it). Entrance animation is
- * CSS-only (`home-fade-up` in index.css) and disabled entirely for
- * `prefers-reduced-motion`.
+ * div-built abstract preview of the app — placeholder shapes only, no
+ * text, no numbers, no data of any kind (the homepage shows nothing
+ * entered by any admin — no counts, no attendance, no fees, no live
+ * data at all). Entrance animation is CSS-only (`home-fade-up` in
+ * index.css) and disabled entirely for `prefers-reduced-motion`.
  */
 
 // Hover lift shared by every card/panel on the page: rises ~6px and
@@ -93,17 +94,6 @@ const STEPS: { title: string; body: string }[] = [
   },
 ];
 
-/** A status chip inside the hero mockup (illustration only, no numbers). */
-function MockChip({ children, tone }: { children: string; tone: 'green' | 'amber' }) {
-  const cls =
-    tone === 'green'
-      ? 'bg-brand-100 text-brand-900'
-      : 'bg-amber-100 text-amber-800';
-  return (
-    <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${cls}`}>{children}</span>
-  );
-}
-
 export default function HomePage() {
   const { user } = useAuth();
   // Logged-in visitors belong on the dashboard, not the landing page.
@@ -122,7 +112,7 @@ export default function HomePage() {
             to="/"
             className="shrink-0 whitespace-nowrap text-lg font-extrabold text-brand-900 transition-colors hover:text-brand-700 sm:text-2xl"
           >
-            🏫 School Manager
+            🏫 Student Manager
           </Link>
           <nav className="ml-auto flex shrink-0 items-center gap-1.5 sm:gap-2" aria-label="Account">
             <Link
@@ -163,7 +153,7 @@ export default function HomePage() {
                 className="home-fade-up mt-4 max-w-2xl text-base leading-relaxed text-slate-600 sm:text-lg"
                 style={{ animationDelay: '90ms' }}
               >
-                School Manager keeps attendance, fees, parent messages, results and timetables together — so a
+                Student Manager keeps attendance, fees, parent messages, results and timetables together — so a
                 school can run on one simple app, without paper registers.
               </p>
               <div
@@ -185,62 +175,47 @@ export default function HomePage() {
               </div>
             </div>
 
-            {/* Dashboard mockup — divs only, an illustration of the
-                product. No real data and no numbers anywhere in it. */}
+            {/* App preview — abstract placeholder shapes only. No text,
+                no numbers, no counts, no attendance/fees data of any
+                kind: the homepage shows nothing entered by any admin. */}
             <div
               data-testid="hero-mockup"
               className="home-fade-up relative rounded-2xl border border-slate-200 bg-white p-4 shadow-lg transition-all duration-300 ease-out hover:-translate-y-1.5 hover:shadow-2xl sm:p-5"
               style={{ animationDelay: '270ms' }}
+              role="img"
+              aria-label="Illustration of the Student Manager app"
             >
               <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
                 <span className="h-2.5 w-2.5 rounded-full bg-brand-500" />
                 <span className="h-2.5 w-2.5 rounded-full bg-amber-400" />
                 <span className="h-2.5 w-2.5 rounded-full bg-slate-300" />
-                <p className="ml-2 text-xs font-semibold text-slate-500">School Manager · Dashboard</p>
+                <p className="ml-2 text-xs font-semibold text-slate-500">Student Manager · Dashboard</p>
               </div>
-              <div className="mt-4 space-y-4">
-                <div>
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="text-sm font-semibold text-slate-800">Class 5 · Attendance today</p>
-                    <div className="flex gap-1.5">
-                      <MockChip tone="green">Present</MockChip>
-                      <MockChip tone="amber">Absent</MockChip>
-                    </div>
-                  </div>
-                  <div className="mt-2 h-2.5 overflow-hidden rounded-full bg-brand-100">
-                    <div className="h-full w-4/5 rounded-full bg-brand-600" />
-                  </div>
+              <div className="mt-4 flex gap-3" aria-hidden="true">
+                {/* Sidebar silhouette */}
+                <div className="w-16 shrink-0 space-y-2.5 rounded-xl bg-brand-50 p-2.5 sm:w-20">
+                  <div className="h-2.5 w-4/5 rounded-full bg-brand-300" />
+                  <div className="h-2.5 w-full rounded-full bg-brand-200" />
+                  <div className="h-2.5 w-3/5 rounded-full bg-brand-200" />
+                  <div className="h-2.5 w-4/5 rounded-full bg-slate-200" />
+                  <div className="h-2.5 w-2/3 rounded-full bg-slate-200" />
                 </div>
-                <div>
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="text-sm font-semibold text-slate-800">Fees · This month</p>
-                    <div className="flex gap-1.5">
-                      <MockChip tone="green">Paid</MockChip>
-                      <MockChip tone="amber">Due</MockChip>
-                    </div>
+                {/* Content silhouette */}
+                <div className="flex-1 space-y-3">
+                  <div className="h-16 rounded-xl bg-gradient-to-r from-brand-100 via-brand-50 to-amber-100/70 sm:h-20" />
+                  <div className="flex gap-3">
+                    <div className="h-12 flex-1 rounded-xl bg-brand-100" />
+                    <div className="h-12 flex-1 rounded-xl bg-amber-100/80" />
                   </div>
-                  <div className="mt-2 h-2.5 overflow-hidden rounded-full bg-brand-100">
-                    <div className="h-full w-3/5 rounded-full bg-brand-600" />
+                  <div className="flex gap-3">
+                    <div className="h-8 flex-1 rounded-lg bg-slate-100" />
+                    <div className="h-8 flex-1 rounded-lg bg-brand-50" />
+                    <div className="h-8 flex-1 rounded-lg bg-slate-100" />
                   </div>
-                </div>
-                <div className="space-y-2 rounded-xl bg-[#f8fafc] p-3">
-                  {['Class 5', 'Class 6', 'Class 7'].map((c, i) => (
-                    <div key={c} className="flex items-center gap-2.5">
-                      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand-700 text-[11px] font-bold text-white">
-                        {c.slice(-1)}
-                      </span>
-                      <p className="w-16 shrink-0 text-xs font-medium text-slate-700">{c}</p>
-                      <div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-200">
-                        <div
-                          className={`h-full rounded-full bg-brand-500 ${i === 0 ? 'w-4/5' : i === 1 ? 'w-2/3' : 'w-3/4'}`}
-                        />
-                      </div>
-                    </div>
-                  ))}
                 </div>
               </div>
               <p className="mt-4 text-center text-xs text-slate-400">
-                A peek inside the dashboard — an illustration, not real school data.
+                One simple app for the whole school day.
               </p>
             </div>
           </div>

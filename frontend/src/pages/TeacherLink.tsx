@@ -162,7 +162,7 @@ export default function TeacherLinkPage() {
   return (
     <div className="mx-auto min-h-screen w-full max-w-2xl bg-slate-50 px-4 py-6">
       <div className="mb-4 text-center">
-        <p className="text-xl font-bold text-brand-900">🏫 School Manager</p>
+        <p className="text-xl font-bold text-brand-900">🏫 Student Manager</p>
         <p className="text-sm text-slate-500">Teacher attendance — no login needed</p>
       </div>
 

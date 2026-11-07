@@ -65,7 +65,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   return (
     <div className="flex h-full flex-col">
       <div className="border-b border-slate-200 px-4 py-4">
-        <p className="text-lg font-bold text-brand-900">🏫 School Manager</p>
+        <p className="text-lg font-bold text-brand-900">🏫 Student Manager</p>
         <p className="truncate text-xs text-slate-500">{user?.school_name ?? 'Your school'}</p>
       </div>
       <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-3">
@@ -190,7 +190,7 @@ export default function Layout() {
           >
             ☰
           </button>
-          <p className="flex-1 text-sm font-semibold text-slate-800 lg:hidden">School Manager</p>
+          <p className="flex-1 text-sm font-semibold text-slate-800 lg:hidden">Student Manager</p>
           {/* P8-TOUR: relaunch the guided tour anytime. */}
           <button
             onClick={startGuidedTour}
