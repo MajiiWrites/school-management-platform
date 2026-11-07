@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://school-management-platform-majiicrafts.vercel.app/sitemap.xml

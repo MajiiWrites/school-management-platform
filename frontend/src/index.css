@@ -41,3 +41,28 @@ body {
     inset: 0;
   }
 }
+
+/* Homepage entrance animation (CSS-only, subtle fade + rise).
+   Tailwind v4 hover-lift utilities use the native `translate` property,
+   so they compose with this `transform` animation instead of fighting it.
+   Motion-sensitive users get no animation at all. */
+@keyframes home-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.home-fade-up {
+  animation: home-fade-up 0.6s ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .home-fade-up {
+    animation: none;
+  }
+}

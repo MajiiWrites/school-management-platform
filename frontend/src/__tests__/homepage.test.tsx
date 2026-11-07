@@ -135,6 +135,33 @@ describe('homepage (logged out)', () => {
     // it guards the removal done in src/config/developer.ts.
     expect(document.body.textContent).not.toMatch(/freelanc|web designer/i);
   });
+
+  it('gives every section a hover lift and shows the hero mockup', () => {
+    renderHome();
+
+    // Hero mockup: an illustration of the product, no real data/numbers.
+    const mockup = screen.getByTestId('hero-mockup');
+    expect(mockup.className).toContain('hover:-translate-y-1.5');
+    expect(screen.getByText(/A peek inside the dashboard/)).toBeTruthy();
+
+    // All eight feature cards rise on hover.
+    const cards = document.querySelectorAll('article');
+    expect(cards.length).toBe(8);
+    cards.forEach((c) => expect(c.className).toContain('hover:-translate-y-1.5'));
+
+    // All three how-it-works step cards rise on hover.
+    const steps = document.querySelectorAll('ol li');
+    expect(steps.length).toBe(3);
+    steps.forEach((s) => expect(s.className).toContain('hover:-translate-y-1.5'));
+
+    // The developer-details panel (LAST section) rises on hover.
+    const panel = document.querySelector('section[aria-labelledby="developer-heading"] > div');
+    expect(panel?.className).toContain('hover:-translate-y-1.5');
+
+    // Buttons rise on hover too (navbar + hero CTAs).
+    const signup = screen.getByRole('link', { name: 'Sign Up' });
+    expect(signup.className).toContain('hover:-translate-y-0.5');
+  });
 });
 
 describe('homepage (logged in)', () => {
