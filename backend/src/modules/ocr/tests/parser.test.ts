@@ -116,12 +116,34 @@ test('parseStudentList flags duplicates vs existing students (name + phone + rol
   assert.equal(rows[1].duplicate, false);
   assert.equal(rows[2].duplicate, true); // same name as existing
   assert.equal(rows[3].duplicate, true); // same name within the list
-  assert.equal(rows[4].duplicate, true); // same phone as row 1
-  assert.equal(rows[4].duplicate_reason, 'duplicate_phone');
+  // R2-D (b): same parent phone with a DIFFERENT name is a sibling, not a
+  // duplicate — phone alone never flags (matches findDuplicate + CSV import).
+  assert.equal(rows[4].duplicate, false);
+  assert.equal(rows[4].duplicate_reason, null);
 });
 
 test('parseStudentList flags duplicate roll numbers', () => {
   const rows = parseStudentList('1. Ahmed Raza\n1. Fatima Khan', []);
   assert.equal(rows[1].duplicate, true);
   assert.equal(rows[1].duplicate_reason, 'duplicate_roll_no');
+});
+
+// R2-D (b): siblings sharing one parent number — in the same upload and
+// against already-enrolled students — are NOT duplicates. True duplicates
+// (same name, same roll) still flag.
+test('parseStudentList does not flag siblings sharing a parent phone', () => {
+  const existing = [{ name: 'Ahmed Raza', roll_no: 1, parent_phone_hash: 'deadbeef' }];
+  const rows = parseStudentList(
+    '1. Ahmed Raza 0301-2345678\n2. Sara Raza 0301-2345678\n3. Omar Raza 0301-2345678',
+    existing,
+  );
+  assert.equal(rows[0].duplicate, true); // same name as existing
+  assert.equal(rows[1].duplicate, false); // sibling: same phone, different name/roll
+  assert.equal(rows[2].duplicate, false);
+});
+
+test('parseStudentList still flags a true duplicate: same name + same phone', () => {
+  const rows = parseStudentList('1. Ahmed Raza 0301-2345678\n2. Ahmed Raza 0301-2345678', []);
+  assert.equal(rows[1].duplicate, true);
+  assert.equal(rows[1].duplicate_reason, 'duplicate_name');
 });

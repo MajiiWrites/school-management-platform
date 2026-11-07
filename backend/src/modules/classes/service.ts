@@ -3,7 +3,7 @@ import { ApiError } from '../../lib/errors';
 import { normalizePhone, encryptPhone, decryptPhone, encryptToken, decryptToken, sha256Hex, maskPhone, randomToken, hashToken } from '../../lib/crypto';
 import { todayInTz, dateOnly } from '../../lib/dates';
 import { writeAudit } from '../../lib/audit';
-import { writeChangeLogs, softDeleteEntity, isUniqueViolation } from '../hardening/helpers';
+import { writeChangeLogs, logCreate, softDeleteEntity, isUniqueViolation } from '../hardening/helpers';
 import type { Db } from '../../lib/db';
 
 export interface ClassInput {
@@ -150,6 +150,13 @@ export async function createClass(db: Db, schoolId: string, input: ClassInput, a
     if (isUniqueViolation(err)) await throwClassUniqueConflict(db, schoolId, input.name.trim(), input.section.trim());
     throw err;
   }
+  await logCreate(db, {
+    schoolId,
+    actorId: actorId ?? null,
+    entity: 'class',
+    entityId: created.id,
+    after: { name: created.name, section: created.section, teacher_name: created.teacherName },
+  });
   await writeAudit(db, { schoolId, actorId: actorId ?? null, actorType: 'user', action: 'class.create', entity: 'class', entityId: created.id, details: { name: created.name, section: created.section } });
   return created;
 }
@@ -230,6 +237,14 @@ export async function regenerateLink(
     where: { id },
     data: { attendanceTokenHash: hashToken(token), attendanceTokenEnc: encryptToken(token), tokenExpiresAt: expiresAt, tokenRevoked: false },
   });
+  await writeChangeLogs(db, {
+    schoolId,
+    actorId,
+    entity: 'class',
+    entityId: id,
+    before: {},
+    after: { attendance_link: 'regenerated' },
+  });
   await writeAudit(db, { schoolId, actorId, actorType: 'user', action: 'class.link_regenerate', entity: 'class', entityId: id });
   return { link: `${config.frontendUrl}/t/${token}`, token, expires_at: expiresAt };
 }
@@ -238,6 +253,14 @@ export async function revokeLink(db: Db, schoolId: string, id: string, actorId: 
   const existing = await db.class.findFirst({ where: { id, schoolId: schoolId, deletedAt: null } });
   if (!existing) throw ApiError.notFound('Class not found');
   await db.class.update({ where: { id }, data: { tokenRevoked: true, attendanceTokenEnc: null } });
+  await writeChangeLogs(db, {
+    schoolId,
+    actorId,
+    entity: 'class',
+    entityId: id,
+    before: {},
+    after: { token_revoked: true },
+  });
   await writeAudit(db, { schoolId, actorId, actorType: 'user', action: 'class.link_revoke', entity: 'class', entityId: id });
 }
 

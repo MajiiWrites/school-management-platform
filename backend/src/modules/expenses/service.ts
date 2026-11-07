@@ -15,7 +15,7 @@ import { ApiError } from '../../lib/errors';
 import { isValidDateString, monthRange, dateOnly } from '../../lib/dates';
 import { isValidMonthKey } from '../../jobs/date-utils';
 import { writeAudit } from '../../lib/audit';
-import { writeChangeLogs } from '../hardening/helpers';
+import { writeChangeLogs, logCreate, logDelete } from '../hardening/helpers';
 import type { Db } from '../../lib/db';
 
 export interface ExpenseView {
@@ -108,6 +108,13 @@ export async function createExpense(
       createdBy: actorId,
     },
   });
+  await logCreate(db, {
+    schoolId,
+    actorId,
+    entity: 'expense',
+    entityId: created.id,
+    after: { date: input.date, category: input.category.trim(), description: created.description ?? null, amount },
+  });
   await writeAudit(db, {
     schoolId,
     actorId,
@@ -174,6 +181,13 @@ export async function deleteExpense(db: Db, schoolId: string, id: string, actorI
   const existing: any = await db.expense.findFirst({ where: { id, schoolId } });
   if (!existing) throw ApiError.notFound('Expense not found');
   await db.expense.delete({ where: { id } });
+  await logDelete(db, {
+    schoolId,
+    actorId,
+    entity: 'expense',
+    entityId: id,
+    before: { date: toView(existing).date, category: existing.category, description: existing.description ?? null, amount: existing.amount },
+  });
   await writeAudit(db, {
     schoolId,
     actorId,

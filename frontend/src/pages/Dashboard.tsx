@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
+import { useAuth } from '../auth/AuthContext';
 import { api } from '../lib/api';
 import type { DashboardData, SmsStatus } from '../lib/types';
 import { fmtDateTime, fmtPKR } from '../lib/utils';
@@ -10,6 +11,33 @@ export default function DashboardPage() {
   const [sms, setSms] = useState<SmsStatus | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
+  // R2-C: verification reminder. Signup now lands here instead of the
+  // /verify-email interstitial, so the reminder lives on the dashboard:
+  // shown when this landing follows a fresh signup (location state) or
+  // while the account's email is still unverified. Dismissing records it
+  // per user for this tab session, so it does not nag again until the
+  // next session — but it returns after a refresh until the email is
+  // actually verified, unless dismissed. "Unknown" (undefined, e.g. mock
+  // payloads) never triggers it.
+  const { user } = useAuth();
+  const location = useLocation();
+  const justSignedUp = (location.state as { justSignedUp?: boolean } | null)?.justSignedUp === true;
+  const [verifyDismissed, setVerifyDismissed] = useState<boolean>(() => {
+    try {
+      return !!user && sessionStorage.getItem(`smp_verify_dismissed_${user.id}`) === '1';
+    } catch {
+      return false;
+    }
+  });
+  const showVerifyReminder = !verifyDismissed && (justSignedUp || user?.email_verified === false);
+  const dismissVerifyReminder = () => {
+    try {
+      if (user) sessionStorage.setItem(`smp_verify_dismissed_${user.id}`, '1');
+    } catch {
+      /* Private mode / storage blocked: banner may show again. Harmless. */
+    }
+    setVerifyDismissed(true);
+  };
 
   // Phase 9 fix: /sms/status used to block the whole dashboard (Promise.all
   // with /dashboard) — a slow SIM-status call held the first paint for
@@ -38,6 +66,17 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-5">
+      {showVerifyReminder && (
+        <div className="flex items-start justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          <span>
+            <strong>Verify your email.</strong> We sent a verification link to {user?.email ?? 'your inbox'} — please
+            check your inbox (and spam folder). Your school is ready to use meanwhile.
+          </span>
+          <button onClick={dismissVerifyReminder} className="shrink-0 font-medium underline" aria-label="Dismiss verification reminder">
+            Dismiss
+          </button>
+        </div>
+      )}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Today&apos;s overview</h1>

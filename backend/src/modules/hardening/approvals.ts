@@ -189,13 +189,13 @@ export async function applyApproval(db: Db, schoolId: string, req: any, adminId:
 
   if (entity === 'class') {
     if (actionType === 'create') {
-      const created = await classesSvc.createClass(db, schoolId, payload as any);
+      const created = await classesSvc.createClass(db, schoolId, payload as any, adminId);
       return { class_id: created.id };
     }
     if (actionType === 'update') {
       const id = (payload.id as string) ?? req.entityId;
       if (!id) throw ApiError.validation('payload.id is required for class.update');
-      const updated = await classesSvc.updateClass(db, schoolId, id, (payload.patch ?? {}) as any);
+      const updated = await classesSvc.updateClass(db, schoolId, id, (payload.patch ?? {}) as any, adminId);
       return { class_id: updated.id };
     }
     if (actionType === 'delete') {
@@ -217,19 +217,19 @@ export async function applyApproval(db: Db, schoolId: string, req: any, adminId:
 
   if (entity === 'fee_structure') {
     if (actionType === 'create') {
-      const created = await feesSvc.createFeeStructure(db, schoolId, payload as any);
+      const created = await feesSvc.createFeeStructure(db, schoolId, payload as any, undefined, adminId);
       return { fee_structure_id: created.id };
     }
     if (actionType === 'update') {
       const id = (payload.id as string) ?? req.entityId;
       if (!id) throw ApiError.validation('payload.id is required for fee_structure.update');
-      const updated = await feesSvc.updateFeeStructure(db, schoolId, id, (payload.patch ?? {}) as any);
+      const updated = await feesSvc.updateFeeStructure(db, schoolId, id, (payload.patch ?? {}) as any, adminId);
       return { fee_structure_id: updated.id };
     }
     if (actionType === 'delete') {
       const id = (payload.id as string) ?? req.entityId;
       if (!id) throw ApiError.validation('payload.id is required for fee_structure.delete');
-      await feesSvc.deleteFeeStructure(db, schoolId, id);
+      await feesSvc.deleteFeeStructure(db, schoolId, id, adminId);
       return { fee_structure_id: id, deleted: true };
     }
   }

@@ -14,7 +14,7 @@ import { ApiError } from '../../lib/errors';
 import { writeAudit } from '../../lib/audit';
 import { paginatedResponse, parsePagination } from '../../lib/pagination';
 import type { Db } from '../../lib/db';
-import { ENTITY_DELEGATES, isUniqueViolation } from './helpers';
+import { ENTITY_DELEGATES, isUniqueViolation, writeChangeLogs } from './helpers';
 
 /** Public (snake_case) view of a deleted_records row (snapshot kept as-is). */
 export function toPublicDeletedRecord(r: any): Record<string, unknown> {
@@ -72,6 +72,15 @@ export async function restoreDeletedRecord(db: Db, schoolId: string, id: string,
     throw err;
   }
   await (db as any).deletedRecord.delete({ where: { id } });
+  // Round 2: a restore IS a change — log deleted_at <ts> -> null.
+  await writeChangeLogs(db, {
+    schoolId,
+    actorId,
+    entity: record.entity,
+    entityId: record.entityId,
+    before: { deleted_at: record.deletedAt ? new Date(record.deletedAt).toISOString() : null },
+    after: { deleted_at: null },
+  });
   await writeAudit(db, {
     schoolId,
     actorId,
@@ -106,6 +115,15 @@ export async function permanentDeleteRecord(
   }
   // Remove the row AND its snapshot.
   await (db as any).deletedRecord.delete({ where: { id } });
+  // Round 2: a permanent delete IS a change — log status deleted -> permanently_deleted.
+  await writeChangeLogs(db, {
+    schoolId,
+    actorId,
+    entity: record.entity,
+    entityId: record.entityId,
+    before: { status: 'deleted' },
+    after: { status: 'permanently_deleted' },
+  });
   await writeAudit(db, {
     schoolId,
     actorId,

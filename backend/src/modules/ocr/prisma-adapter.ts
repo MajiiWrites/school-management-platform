@@ -16,7 +16,7 @@ export interface PrismaLike {
   };
   student: {
     findMany(args: {
-      where: { schoolId: string; classId: string };
+      where: { schoolId: string; classId: string; deletedAt: null };
       select: { name: true; rollNo: true; parentPhoneHash: true };
     }): Promise<{ name: string; rollNo: number | null; parentPhoneHash: string | null }[]>;
     createMany(args: {
@@ -73,8 +73,13 @@ export function prismaOcrDb(prisma: PrismaLike): OcrDb {
       return prisma.class.findFirst({ where: { id: classId, schoolId } });
     },
     async listStudents(schoolId, classId) {
+      // R2-D (b): exclude soft-deleted students — the old query had no
+      // deletedAt filter, so a student sitting in the Recycle Bin still
+      // flagged every re-uploaded row with their name/roll as "Duplicate?",
+      // and the only escape was permanent deletion. Every other student
+      // list query filters deletedAt: null (schema comment on Student).
       const rows = await prisma.student.findMany({
-        where: { schoolId, classId },
+        where: { schoolId, classId, deletedAt: null },
         select: { name: true, rollNo: true, parentPhoneHash: true },
       });
       return rows.map((r) => ({ name: r.name, roll_no: r.rollNo, parent_phone_hash: r.parentPhoneHash }));

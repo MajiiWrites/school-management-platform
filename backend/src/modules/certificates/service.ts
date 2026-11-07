@@ -19,7 +19,7 @@
 
 import { ApiError } from '../../lib/errors';
 import { writeAudit } from '../../lib/audit';
-import { writeChangeLogs } from '../hardening/helpers';
+import { writeChangeLogs, logCreate } from '../hardening/helpers';
 import type { Db } from '../../lib/db';
 
 export type CertificateType = 'leaving' | 'character' | 'bonafide';
@@ -135,6 +135,13 @@ export async function issueCertificate(
   const student = await loadStudent(db, schoolId, studentId);
   const created: any = await db.certificate.create({
     data: { schoolId, studentId: student.id, type, issuedBy: actorId },
+  });
+  await logCreate(db, {
+    schoolId,
+    actorId,
+    entity: 'certificate',
+    entityId: created.id,
+    after: { student_id: student.id, type, certificate_no: certificateNo(school.slug, type as CertificateType, created.id) },
   });
   await writeAudit(db, {
     schoolId,

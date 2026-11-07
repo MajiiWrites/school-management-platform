@@ -74,9 +74,15 @@ function CrashScreen({ onRetry }: { onRetry: () => void }) {
 
 export default function ErrorBoundary({ children }: { children: ReactNode }) {
   const location = useLocation();
+  // R2-C fix (F3): ErrorBoundaryInner used to ALSO get key={location.pathname}
+  // here. That remounted the entire app — every page, Layout, and the
+  // GuidedTour's open/step state — on EVERY navigation, so the tour could
+  // never survive its own Next click (step 2 never rendered) and any
+  // in-progress page state was lost on each route change. The reset on
+  // route change is already handled without a remount by
+  // componentDidUpdate above (onResetKeyChange), so the key is dropped
+  // and the tree now stays mounted across navigations.
   return (
-    <ErrorBoundaryInner key={location.pathname} onResetKeyChange={location.pathname}>
-      {children}
-    </ErrorBoundaryInner>
+    <ErrorBoundaryInner onResetKeyChange={location.pathname}>{children}</ErrorBoundaryInner>
   );
 }

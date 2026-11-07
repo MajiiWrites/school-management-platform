@@ -105,6 +105,14 @@ export function monthStartDate(monthKey: string): string {
   return `${monthKey}-01`;
 }
 
+/** Last day of a month key, as YYYY-MM-DD. */
+export function monthEndDate(monthKey: string): string {
+  const next = addMonths(monthKey, 1);
+  const d = new Date(Date.UTC(Number(next.slice(0, 4)), Number(next.slice(5, 7)) - 1, 1));
+  d.setUTCDate(d.getUTCDate() - 1);
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+}
+
 /** Month key n months after the given one (n may be negative). */
 export function addMonths(monthKey: string, n: number): string {
   const [y, m] = monthKey.split('-').map(Number);

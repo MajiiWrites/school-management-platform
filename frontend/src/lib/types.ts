@@ -14,6 +14,10 @@ export interface User {
   role: Role;
   school_id: string;
   school_name?: string;
+  /** R2-C: whether the admin's email is verified (from GET /auth/me and
+   * the signup/login responses). Undefined for older/mock payloads that
+   * do not carry it — treated as "unknown", never as unverified. */
+  email_verified?: boolean;
   /** 6D: whether TOTP 2FA is enabled (from GET /auth/me). */
   totp_enabled?: boolean;
 }
@@ -155,6 +159,8 @@ export interface OcrRow {
   parent_phone?: string;
   confidence: number;
   duplicate?: boolean;
+  /** Why the row was flagged: 'duplicate_name' | 'duplicate_roll_no' (R2-D: 'duplicate_phone' no longer occurs). */
+  duplicate_reason?: string | null;
 }
 
 export interface OcrUpload {
@@ -310,6 +316,7 @@ export interface ChangeLogEntry {
   id: string;
   school_id: string;
   actor_id: string | null;
+  actor_email: string | null;
   actor_type: string;
   entity: string;
   entity_id: string | null;

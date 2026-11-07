@@ -16,9 +16,11 @@ const SCHOOL = 'school-1';
 function fakeDb(students: any[]) {
   const updated: Array<{ id: string; data: any }> = [];
   const audits: any[] = [];
+  const changeLogs: any[] = [];
   const db: any = {
     student: {
       findMany: async () => students,
+      findFirst: async ({ where }: any) => students.find((x) => x.id === where.id) ?? null,
       update: async ({ where, data }: any) => {
         updated.push({ id: where.id, data });
         const s = students.find((x) => x.id === where.id);
@@ -31,8 +33,9 @@ function fakeDb(students: any[]) {
       },
     },
     auditLog: { create: async ({ data }: any) => { audits.push(data); } },
+    changeLog: { create: async ({ data }: any) => { changeLogs.push(data); return data; } },
   };
-  return { db, updated, audits };
+  return { db, updated, audits, changeLogs };
 }
 
 const AHMED = {
@@ -97,7 +100,7 @@ describe('previewParentsImport', () => {
 
 describe('importParents', () => {
   it('updates only ok rows and encrypts the number', async () => {
-    const { db, updated } = fakeDb([{ ...AHMED }, { ...BILAL }]);
+    const { db, updated, changeLogs } = fakeDb([{ ...AHMED }, { ...BILAL }]);
     const result = await importParents(db, SCHOOL, [
       { admission_no: 'ADM-001', student_name: '', parent_name: 'Raza Sr', parent_phone: '03007654321' },
       { admission_no: null, student_name: 'Nobody Here', parent_name: null, parent_phone: '03001111111' },
@@ -107,5 +110,8 @@ describe('importParents', () => {
     expect(updated).toHaveLength(1);
     expect(updated[0].data.parentPhoneHash).toBe(sha256Hex('+923007654321'));
     expect(updated[0].data.parentName).toBe('Raza Sr');
+    // Round 2: the parent update is logged in change history with the actor.
+    expect(changeLogs.some((c: any) => c.entity === 'student' && c.entityId === 'stu-ahmed' && c.field === 'parent_name' && c.newValue === 'Raza Sr')).toBe(true);
+    expect(changeLogs.every((c: any) => c.actorId === 'admin-1')).toBe(true);
   });
 });

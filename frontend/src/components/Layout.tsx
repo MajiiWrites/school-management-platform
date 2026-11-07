@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from 'react';
+import { Suspense, useCallback, useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { api } from '../lib/api';
 import type { NotificationItem, Role } from '../lib/types';
 import { cx } from '../lib/utils';
+import { Spinner } from './ui';
 import { useLanguage } from '../lib/i18n';
 import DeveloperFooter from './DeveloperFooter';
 import IdleTimeout from './IdleTimeout'; // 6D component (added by its agent; import was missing)
@@ -49,6 +50,19 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   const navigate = useNavigate();
   const { nav } = useLanguage();
 
+  // R2-E (round 2) empty-sidebar fix: the nav must never render empty
+  // inside the portal. While the session re-verifies the role can be
+  // transiently unknown (or a stale cache holds an unexpected shape),
+  // so fall back to the common nav shared by admin/clerk/principal;
+  // admin-only items stay gated on role === 'admin'. If the role filter
+  // ever yields nothing, the common nav is the last resort — an empty
+  // sidebar is never a valid state.
+  const commonNav = NAV.filter(
+    (n) => n.roles.includes('admin') && n.roles.includes('clerk') && n.roles.includes('principal'),
+  );
+  const roleFiltered = user ? NAV.filter((n) => n.roles.includes(user.role)) : commonNav;
+  const visibleNav = roleFiltered.length > 0 ? roleFiltered : commonNav;
+
   return (
     <div className="flex h-full flex-col">
       <div className="border-b border-slate-200 px-4 py-4">
@@ -56,7 +70,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
         <p className="truncate text-xs text-slate-500">{user?.school_name ?? 'Your school'}</p>
       </div>
       <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-3">
-        {NAV.filter((n) => user && n.roles.includes(user.role)).map((n) => (
+        {visibleNav.map((n) => (
           <NavLink
             key={n.to}
             to={n.to}
@@ -113,6 +127,21 @@ export default function Layout() {
   useEffect(() => {
     if (bellOpen) loadNotifications();
   }, [bellOpen, loadNotifications]);
+
+  // R2-D (i): the Notification Center marks items read on view, but the
+  // header only re-fetched on navigation — and that refetch raced the
+  // center's fire-and-forget mark-read calls, so the badge kept the old
+  // count until the NEXT navigation/reload. The center now dispatches
+  // 'notifications-read' once its mark-read calls land; clear the badge
+  // immediately here (optimistic + server refetch to confirm).
+  useEffect(() => {
+    const onRead = () => {
+      setNotifications((ns) => ns.map((n) => ({ ...n, is_read: true })));
+      loadNotifications();
+    };
+    window.addEventListener('notifications-read', onRead);
+    return () => window.removeEventListener('notifications-read', onRead);
+  }, [loadNotifications]);
 
   const unread = notifications.filter((n) => !n.is_read).length;
 
@@ -210,7 +239,11 @@ export default function Layout() {
         </header>
 
         <main className="mx-auto w-full max-w-6xl px-4 py-5 sm:px-6">
-          <Outlet />
+          {/* R2-E: pages are lazy chunks — the sidebar + header stay
+              visible while a page chunk loads, never a bare white page. */}
+          <Suspense fallback={<Spinner label="Loading page…" />}>
+            <Outlet />
+          </Suspense>
         </main>
         <DeveloperFooter variant="compact" />
       </div>

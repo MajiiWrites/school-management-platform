@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api';
 import type { NotificationItem } from '../lib/types';
-import { fmtPKR } from '../lib/utils';
+import { fmtDateTz, fmtPKR } from '../lib/utils';
 import { Card, EmptyState, ErrorBanner, Spinner } from '../components/ui';
 import { useLanguage } from '../lib/i18n';
 
@@ -44,11 +44,17 @@ export default function NotificationsPage() {
     // counts as viewing the notifications, so mark the unread ones read
     // — the header badge (refetched on navigation) then clears instead
     // of staying stuck at the old count.
+    // R2-D (i): the old fire-and-forget loop raced the header's refetch
+    // on navigation, so the badge only cleared after a reload. Await all
+    // mark-read calls, then tell the header (Layout listens for
+    // 'notifications-read') so it clears the badge immediately, no reload.
     api<{ items: NotificationItem[] }>('/notifications?limit=100')
-      .then((d) => {
-        for (const n of d.items.filter((x) => !x.is_read)) {
-          api(`/notifications/${n.id}/read`, { method: 'POST' }).catch(() => undefined);
-        }
+      .then(async (d) => {
+        const unread = d.items.filter((x) => !x.is_read);
+        await Promise.allSettled(
+          unread.map((n) => api(`/notifications/${n.id}/read`, { method: 'POST' })),
+        );
+        if (unread.length > 0) window.dispatchEvent(new Event('notifications-read'));
       })
       .catch(() => undefined);
   }, []);
@@ -99,7 +105,7 @@ export default function NotificationsPage() {
                 {center.items.pending_approvals.map((a) => (
                   <li key={a.id} className="flex justify-between gap-3">
                     <span>{a.action_type} {a.entity}</span>
-                    <span className="text-slate-500">{a.created_at.slice(0, 10)}</span>
+                    <span className="text-slate-500">{fmtDateTz(a.created_at)}</span>
                   </li>
                 ))}
               </ul>
@@ -112,7 +118,7 @@ export default function NotificationsPage() {
                 {center.items.failed_messages.map((m) => (
                   <li key={m.id} className="flex justify-between gap-3">
                     <span>{m.type}{m.error ? ` — ${m.error}` : ''}</span>
-                    <span className="text-slate-500">{m.created_at.slice(0, 10)}</span>
+                    <span className="text-slate-500">{fmtDateTz(m.created_at)}</span>
                   </li>
                 ))}
               </ul>
@@ -125,7 +131,7 @@ export default function NotificationsPage() {
                 {center.items.ocr_needing_review.map((o) => (
                   <li key={o.id} className="flex justify-between gap-3">
                     <span>{o.kind === 'result_sheet' ? 'Result sheet' : 'Student list'} — needs review</span>
-                    <span className="text-slate-500">{o.created_at.slice(0, 10)}</span>
+                    <span className="text-slate-500">{fmtDateTz(o.created_at)}</span>
                   </li>
                 ))}
               </ul>

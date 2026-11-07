@@ -11,7 +11,7 @@
 import { ApiError } from '../../lib/errors';
 import { isValidDateString, dateOnly } from '../../lib/dates';
 import { writeAudit } from '../../lib/audit';
-import { writeChangeLogs, softDeleteEntity } from '../hardening/helpers';
+import { writeChangeLogs, logCreate, logDelete, softDeleteEntity } from '../hardening/helpers';
 import { paginatedResponse, parsePagination } from '../../lib/pagination';
 import type { Db } from '../../lib/db';
 import { getArchivedSessionIds } from '../sessions/service';
@@ -104,6 +104,13 @@ export async function createExam(
       endDate: input.end_date ? dateOnly(input.end_date) : null,
     },
   });
+  await logCreate(db, {
+    schoolId,
+    actorId,
+    entity: 'exam',
+    entityId: created.id,
+    after: { name: created.name, session_id: created.sessionId, start_date: created.startDate, end_date: created.endDate },
+  });
   await writeAudit(db, { schoolId, actorId, actorType: 'user', action: 'exam.create', entity: 'exam', entityId: created.id, details: { name } });
   return toPublicExam(created);
 }
@@ -191,6 +198,13 @@ export async function createDatesheet(
   const created = await db.examDatesheet.create({
     data: { schoolId, examId, classId: input.class_id, subject, date: dateOnly(input.date), startTime: input.start_time, endTime: input.end_time },
   });
+  await logCreate(db, {
+    schoolId,
+    actorId,
+    entity: 'exam_datesheet',
+    entityId: created.id,
+    after: { exam_id: examId, class_id: input.class_id, subject, date: input.date, start_time: input.start_time, end_time: input.end_time },
+  });
   await writeAudit(db, { schoolId, actorId, actorType: 'user', action: 'exam_datesheet.create', entity: 'exam_datesheet', entityId: created.id, details: { exam_id: examId, class_id: input.class_id, subject, date: input.date } });
   return toPublicDatesheet(created);
 }
@@ -243,6 +257,13 @@ export async function deleteDatesheet(db: Db, schoolId: string, id: string, acto
   await db.examDatesheet.delete({ where: { id } });
   await (db as any).deletedRecord.create({
     data: { schoolId, entity: 'exam_datesheet', entityId: id, snapshot, deletedBy: actorId, deletedAt: new Date(), restoreBy: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) },
+  });
+  await logDelete(db, {
+    schoolId,
+    actorId,
+    entity: 'exam_datesheet',
+    entityId: id,
+    before: { exam_id: row.examId, class_id: row.classId, subject: row.subject, date: row.date, start_time: row.startTime, end_time: row.endTime },
   });
   await writeAudit(db, { schoolId, actorId, actorType: 'user', action: 'exam_datesheet.delete', entity: 'exam_datesheet', entityId: id, details: { subject: row.subject } });
 }
@@ -299,6 +320,13 @@ export async function createGradingScale(
   const created = await db.gradingScale.create({
     data: { schoolId, classId, minMarks: input.min_marks, maxMarks: input.max_marks, grade, gpaPoints: input.gpa_points, isPassing: input.is_passing ?? true },
   });
+  await logCreate(db, {
+    schoolId,
+    actorId,
+    entity: 'grading_scale',
+    entityId: created.id,
+    after: { class_id: classId, min_marks: created.minMarks, max_marks: created.maxMarks, grade, gpa_points: created.gpaPoints, is_passing: created.isPassing },
+  });
   await writeAudit(db, { schoolId, actorId, actorType: 'user', action: 'grading_scale.create', entity: 'grading_scale', entityId: created.id, details: { grade, class_id: classId } });
   return toPublicGradingScale(created);
 }
@@ -333,6 +361,13 @@ export async function deleteGradingScale(db: Db, schoolId: string, id: string, a
   const row = await db.gradingScale.findFirst({ where: { id, schoolId } });
   if (!row) throw ApiError.notFound('Grading scale not found');
   await db.gradingScale.delete({ where: { id } });
+  await logDelete(db, {
+    schoolId,
+    actorId,
+    entity: 'grading_scale',
+    entityId: id,
+    before: { class_id: row.classId, min_marks: row.minMarks, max_marks: row.maxMarks, grade: row.grade },
+  });
   await writeAudit(db, { schoolId, actorId, actorType: 'user', action: 'grading_scale.delete', entity: 'grading_scale', entityId: id, details: { grade: row.grade } });
 }
 
@@ -344,6 +379,15 @@ export async function seedDefaultGradingScales(db: Db, schoolId: string, actorId
     created.push(await db.gradingScale.create({
       data: { schoolId, classId: null, minMarks: band.min_marks, maxMarks: band.max_marks, grade: band.grade, gpaPoints: band.gpa_points, isPassing: band.is_passing },
     }));
+  }
+  for (const band of created) {
+    await logCreate(db, {
+      schoolId,
+      actorId,
+      entity: 'grading_scale',
+      entityId: band.id,
+      after: { class_id: null, min_marks: band.minMarks, max_marks: band.maxMarks, grade: band.grade, gpa_points: band.gpaPoints, is_passing: band.isPassing },
+    });
   }
   await writeAudit(db, { schoolId, actorId, actorType: 'user', action: 'grading_scale.seed_defaults', entity: 'grading_scale', entityId: null, details: { bands: created.length } });
   return created.map(toPublicGradingScale);

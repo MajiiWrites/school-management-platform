@@ -398,12 +398,15 @@ describe('change history', () => {
     const student = await studentsSvc.createStudent(db, SCHOOL, klass.id, { name: 'Old Name', roll_no: 1 }, admin.id);
     await studentsSvc.updateStudent(db, SCHOOL, student.id, { name: 'New Name', status: 'left' }, admin.id);
     const logs = await hardeningSvc.listChangeHistory(db, SCHOOL, { entity: 'student', entity_id: student.id });
-    expect(logs.total).toBe(2);
-    const byField = new Map(logs.items.map((l: any) => [l.field, l]));
-    expect(byField.get('name')).toMatchObject({ old_value: 'Old Name', new_value: 'New Name' });
-    expect(byField.get('status')).toMatchObject({ old_value: 'active', new_value: 'left' });
-    // Unchanged fields produce no rows.
-    expect(byField.has('roll_no')).toBe(false);
+    // Round 2: the create itself now logs (old null -> values) plus the 2 update rows.
+    expect(logs.total).toBeGreaterThanOrEqual(3);
+    const nameRows = logs.items.filter((l: any) => l.field === 'name');
+    expect(nameRows).toContainEqual(expect.objectContaining({ old_value: 'Old Name', new_value: 'New Name' }));
+    expect(nameRows).toContainEqual(expect.objectContaining({ old_value: null, new_value: 'Old Name' }));
+    const statusRows = logs.items.filter((l: any) => l.field === 'status');
+    expect(statusRows).toContainEqual(expect.objectContaining({ old_value: 'active', new_value: 'left' }));
+    // Unchanged fields produce no UPDATE row (the create row is old null).
+    expect(logs.items.some((l: any) => l.field === 'roll_no' && l.old_value === '1')).toBe(false);
   });
 
   it('records settings changes per key', async () => {

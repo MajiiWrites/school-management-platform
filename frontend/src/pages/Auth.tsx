@@ -105,7 +105,11 @@ export function SignupPage() {
     setBusy(true);
     try {
       await signup(schoolName.trim(), email.trim(), password);
-      navigate('/verify-email?sent=1');
+      // R2-C fix: signup now issues access+refresh tokens (round-1 fix), so
+      // the session is live immediately — land straight on the dashboard.
+      // The dashboard shows a dismissible verification reminder instead
+      // of parking the new admin on the /verify-email interstitial.
+      navigate('/', { state: { justSignedUp: true } });
     } catch (err) {
       setError(errText(err));
     } finally {
@@ -164,7 +168,7 @@ export function VerifyEmailPage() {
     <AuthShell title="Verify your email" sub="We sent a verification link to your inbox.">
       {!token && sent && (
         <div className="rounded-lg bg-brand-50 px-4 py-3 text-sm text-brand-700">
-          Check your inbox for the verification link. In development the link is logged by the server instead of emailed.
+          Check your inbox for the verification link. It is valid for 24 hours — if you can't find it, check your spam folder.
         </div>
       )}
       {!token && !sent && <p className="text-sm text-slate-500">No verification token in this link.</p>}
@@ -205,7 +209,7 @@ export function ForgotPasswordPage() {
       {error && <ErrorBanner message={error} />}
       {done ? (
         <div className="rounded-lg bg-brand-50 px-4 py-3 text-sm text-brand-700">
-          If that email is registered, a reset link is on its way. In development the token is logged by the server.
+          If that email is registered, a reset link is on its way to your inbox. It is valid for 1 hour — if you can't find it, check your spam folder.
         </div>
       ) : (
         <form onSubmit={submit} className="space-y-4">

@@ -13,7 +13,7 @@
 //     for different period numbers.
 import { ApiError } from '../../lib/errors';
 import { writeAudit } from '../../lib/audit';
-import { writeChangeLogs } from '../hardening/helpers';
+import { writeChangeLogs, logCreate, logDelete } from '../hardening/helpers';
 import { paginatedResponse, parsePagination } from '../../lib/pagination';
 import type { Db } from '../../lib/db';
 
@@ -141,6 +141,13 @@ export async function createTimetableEntry(
   const created = await db.timetableEntry.create({
     data: { schoolId, classId: input.class_id, teacherId, dayOfWeek: input.day_of_week, periodNo: input.period_no, subject, startTime: input.start_time, endTime: input.end_time, room: input.room?.trim() || null },
   });
+  await logCreate(db, {
+    schoolId,
+    actorId,
+    entity: 'timetable_entry',
+    entityId: created.id,
+    after: { class_id: input.class_id, teacher_id: teacherId, day_of_week: input.day_of_week, period_no: input.period_no, subject, start_time: input.start_time, end_time: input.end_time, room: created.room ?? null },
+  });
   await writeAudit(db, { schoolId, actorId, actorType: 'user', action: 'timetable.create', entity: 'timetable_entry', entityId: created.id, details: { class_id: input.class_id, subject, day_of_week: input.day_of_week, period_no: input.period_no } });
   return (await enrich(db, schoolId, [created]))[0];
 }
@@ -196,6 +203,13 @@ export async function deleteTimetableEntry(db: Db, schoolId: string, id: string,
   await db.timetableEntry.delete({ where: { id } });
   await (db as any).deletedRecord.create({
     data: { schoolId, entity: 'timetable_entry', entityId: id, snapshot, deletedBy: actorId, deletedAt: new Date(), restoreBy: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) },
+  });
+  await logDelete(db, {
+    schoolId,
+    actorId,
+    entity: 'timetable_entry',
+    entityId: id,
+    before: { class_id: row.classId, teacher_id: row.teacherId, day_of_week: row.dayOfWeek, period_no: row.periodNo, subject: row.subject, start_time: row.startTime, end_time: row.endTime, room: row.room },
   });
   await writeAudit(db, { schoolId, actorId, actorType: 'user', action: 'timetable.delete', entity: 'timetable_entry', entityId: id, details: { subject: row.subject } });
 }

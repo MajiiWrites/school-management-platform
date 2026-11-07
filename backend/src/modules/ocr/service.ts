@@ -160,11 +160,9 @@ export class OcrService {
 
     const existing = await this.db.listStudents(schoolId, classId);
     const existingNames = new Set(existing.map((s) => normalizeName(s.name)));
-    const existingPhones = new Set(existing.map((s) => s.parent_phone_hash).filter((h): h is string => !!h));
     const existingRolls = new Set(existing.map((s) => s.roll_no).filter((r): r is number => r != null));
 
     const seenNames = new Set<string>();
-    const seenPhones = new Set<string>();
     const seenRolls = new Set<number>();
     const toCreate: { name: string; name_ur: string | null; roll_no: number | null; parent_phone_enc: string | null; parent_phone_hash: string | null }[] = [];
     const skipped: { row: NewStudentInput; reason: string }[] = [];
@@ -187,9 +185,13 @@ export class OcrService {
       const nameNorm = normalizeName(name);
       const roll = row.roll_no ?? null;
 
+      // R2-D (b): same rule as parseStudentList — a shared parent phone
+      // alone is NOT a duplicate (siblings share a number); only the same
+      // normalized name or the same roll number in the class counts. The
+      // old phone-alone branch silently skipped every sibling after the
+      // first at save time even when review showed no flag.
       let reason: string | null = null;
       if (existingNames.has(nameNorm) || seenNames.has(nameNorm)) reason = 'duplicate_name';
-      else if (phoneHash && (existingPhones.has(phoneHash) || seenPhones.has(phoneHash))) reason = 'duplicate_phone';
       else if (roll !== null && (existingRolls.has(roll) || seenRolls.has(roll))) reason = 'duplicate_roll_no';
       if (reason) {
         skipped.push({ row, reason });
@@ -197,7 +199,6 @@ export class OcrService {
       }
 
       seenNames.add(nameNorm);
-      if (phoneHash) seenPhones.add(phoneHash);
       if (roll !== null) seenRolls.add(roll);
       toCreate.push({
         name,

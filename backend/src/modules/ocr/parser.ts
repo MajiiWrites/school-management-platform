@@ -7,7 +7,7 @@
 //   "2. Fatima Khan"
 //   "3. احمد رضا 0322-7654321"
 //   "Roll No 4, Bilal Ahmed, 0333 1112223"
-import { normalizePkPhone, hashPhone, normalizeName } from './phone.js';
+import { normalizePkPhone, normalizeName } from './phone.js';
 
 export interface ExistingStudent {
   id?: string;
@@ -140,18 +140,16 @@ function maskOf(normalized: string): string {
 /**
  * Parse full OCR text into rows, flagging duplicates against the class's
  * existing students AND within the parsed list itself.
- * Duplicate rule (SCHEMA.md): same (class, normalized name) OR same phone hash.
+ * Duplicate rule (SCHEMA.md, as implemented by findDuplicate): same
+ * (class, normalized name) OR same roll number in the class. A shared
+ * parent phone alone is NOT a duplicate — siblings share a number.
  */
 export function parseStudentList(rawText: string, existing: ExistingStudent[] = []): ParsedRow[] {
   const rows: ParsedRow[] = [];
   const seenNames = new Set<string>();
-  const seenPhones = new Set<string>();
   const seenRolls = new Set<number>();
 
   const existingNames = new Set(existing.map((s) => normalizeName(s.name)));
-  const existingPhones = new Set(
-    existing.map((s) => s.parent_phone_hash).filter((h): h is string => !!h),
-  );
   const existingRolls = new Set(
     existing.map((s) => s.roll_no).filter((r): r is number => r !== null && r !== undefined),
   );
@@ -161,16 +159,18 @@ export function parseStudentList(rawText: string, existing: ExistingStudent[] = 
     if (!parsed) continue;
 
     const nameNorm = normalizeName(parsed.name);
-    const phoneHash = parsed.parent_phone ? hashPhone(parsed.parent_phone) : null;
-
+    // R2-D (b): a shared parent phone is NOT a duplicate on its own —
+    // siblings legitimately share a parent number (the CSV import already
+    // treats phone-alone this way, and the canonical rule in SCHEMA.md /
+    // students/service.ts findDuplicate is name, or name+phone, never
+    // phone alone). Flagging phone-alone marked every sibling after the
+    // first "Duplicate?". Phone is still used for hashing/identity, just
+    // not as a standalone duplicate signal.
     let duplicate = false;
     let duplicate_reason: string | null = null;
     if (existingNames.has(nameNorm) || seenNames.has(nameNorm)) {
       duplicate = true;
       duplicate_reason = 'duplicate_name';
-    } else if (phoneHash && (existingPhones.has(phoneHash) || seenPhones.has(phoneHash))) {
-      duplicate = true;
-      duplicate_reason = 'duplicate_phone';
     } else if (
       parsed.roll_no !== null &&
       (existingRolls.has(parsed.roll_no) || seenRolls.has(parsed.roll_no))
@@ -180,7 +180,6 @@ export function parseStudentList(rawText: string, existing: ExistingStudent[] = 
     }
 
     seenNames.add(nameNorm);
-    if (phoneHash) seenPhones.add(phoneHash);
     if (parsed.roll_no !== null) seenRolls.add(parsed.roll_no);
 
     rows.push({ ...parsed, duplicate, duplicate_reason });

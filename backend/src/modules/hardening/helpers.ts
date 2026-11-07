@@ -83,6 +83,44 @@ export async function writeChangeLogs(
   return written;
 }
 
+/**
+ * Log a CREATE as change history: one row per field, old value null.
+ * (Round 2: creates previously wrote only an audit_logs row, so the
+ * Change History page showed nothing for them.)
+ */
+export async function logCreate(
+  db: Db,
+  entry: {
+    schoolId: string;
+    actorId?: string | null;
+    actorType?: 'user' | 'teacher_link' | 'system' | 'device';
+    entity: string;
+    entityId?: string | null;
+    after: Record<string, unknown>;
+  },
+): Promise<number> {
+  return writeChangeLogs(db, { ...entry, before: {} });
+}
+
+/**
+ * Log a DELETE as change history: one row per field, new value null.
+ * (Round 2: deletes previously wrote only an audit_logs row / recycle-bin
+ * snapshot, so the Change History page showed nothing for them.)
+ */
+export async function logDelete(
+  db: Db,
+  entry: {
+    schoolId: string;
+    actorId?: string | null;
+    actorType?: 'user' | 'teacher_link' | 'system' | 'device';
+    entity: string;
+    entityId?: string | null;
+    before: Record<string, unknown>;
+  },
+): Promise<number> {
+  return writeChangeLogs(db, { ...entry, after: {} });
+}
+
 /** True when the error is a Prisma unique-constraint violation (P2002). */
 export function isUniqueViolation(err: unknown): boolean {
   return (err as { code?: unknown } | null)?.code === 'P2002';
@@ -118,6 +156,16 @@ export async function softDeleteEntity(
       deletedAt,
       restoreBy,
     },
+  });
+  // Round 2: a soft delete IS a change — log deleted_at null -> timestamp
+  // so the Change History page shows deletes (previously audit-only).
+  await writeChangeLogs(db, {
+    schoolId: input.schoolId,
+    actorId: input.deletedBy ?? null,
+    entity: input.entity,
+    entityId: input.entityId,
+    before: { deleted_at: null },
+    after: { deleted_at: deletedAt.toISOString() },
   });
   await writeAudit(db, {
     schoolId: input.schoolId,

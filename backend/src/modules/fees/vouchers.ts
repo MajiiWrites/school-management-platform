@@ -12,6 +12,7 @@ import { ApiError } from '../../lib/errors';
 import { isValidDateString, isValidMonthKey } from '../../jobs/date-utils';
 import { monthRange } from '../../lib/dates';
 import { writeAudit } from '../../lib/audit';
+import { logCreate } from '../hardening/helpers';
 import { balanceOf, computeFeeStatus } from './service';
 import type { Db } from '../../lib/db';
 
@@ -93,6 +94,13 @@ export async function generateVoucher(
       dueDate: new Date(`${dueDate}T00:00:00Z`),
       status: computeFeeStatus(record.amountDue, record.amountPaid, record.discount),
     },
+  });
+  await logCreate(db, {
+    schoolId,
+    actorId,
+    entity: 'fee_voucher',
+    entityId: created.id,
+    after: { voucher_no: voucherNo, amount_due: balance, status: created.status, due_date: dueDate },
   });
   await writeAudit(db, {
     schoolId,

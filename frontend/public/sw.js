@@ -1,7 +1,17 @@
 /* Service worker — offline support for the teacher attendance page.
-   Strategy: cache-first for app shell + teacher pages, network-first for API.
-   Version bump CACHE_NAME when the shell changes. */
-const CACHE_NAME = 'smp-shell-v1';
+   Strategy: network-first for navigations + app shell, stale-while-
+   revalidate for static assets, network-first for API.
+
+   R2-E (round 2) root cause of the blank-white reloads: v1 served `/`
+   and `/index.html` CACHE-FIRST and never bumped its cache name, so a
+   browser that installed the worker before a deploy kept serving a stale
+   index.html whose #root was EMPTY (no inline loading fallback) — and
+   the stale-while-revalidate JS chunks could 404 once the deploy pruned
+   the old hashed assets. React then never mounted: a bare white page
+   that only recovered after a second load refreshed the cache. The shell
+   must therefore always come from the network when reachable; the cache
+   is only an offline fallback. Bump CACHE_NAME on every shell change. */
+const CACHE_NAME = 'smp-shell-v2';
 const SHELL = ['/', '/index.html', '/manifest.webmanifest', '/icon.svg'];
 
 self.addEventListener('install', (event) => {
@@ -38,29 +48,33 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Teacher link pages + app shell: cache first, refresh in background
-  if (url.pathname.startsWith('/t/') || SHELL.includes(url.pathname)) {
+  // Navigations + app shell: NETWORK FIRST. A stale cached index.html
+  // is what blanked the app after deploys, so the cache is only an
+  // offline fallback here — never the first thing served.
+  if (request.mode === 'navigate' || SHELL.includes(url.pathname)) {
     event.respondWith(
-      caches.match(request).then((cached) => {
-        const network = fetch(request)
-          .then((response) => {
+      fetch(request)
+        .then((response) => {
+          if (response.ok) {
             const copy = response.clone();
             caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
-            return response;
-          })
-          .catch(() => cached);
-        return cached || network;
-      }),
+          }
+          return response;
+        })
+        .catch(() => caches.match(request)),
     );
     return;
   }
 
-  // Other static assets: stale-while-revalidate
+  // Other static assets: stale-while-revalidate, caching only
+  // successful same-origin responses.
   event.respondWith(
     caches.match(request).then((cached) => {
       const network = fetch(request).then((response) => {
-        const copy = response.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+        if (response.ok && url.origin === self.location.origin) {
+          const copy = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+        }
         return response;
       });
       return cached || network;

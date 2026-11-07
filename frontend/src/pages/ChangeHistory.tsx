@@ -27,6 +27,9 @@ const ENTITY_FILTERS = [
   { key: 'result', label: 'Results' },
   { key: 'exam', label: 'Exams' },
   { key: 'school_settings', label: 'Settings' },
+  { key: 'academic_session', label: 'Sessions' },
+  { key: 'staff', label: 'Staff' },
+  { key: 'fee_structure', label: 'Fee structures' },
 ] as const;
 
 function showValue(v: string | null): string {
@@ -151,10 +154,16 @@ export default function ChangeHistoryPage() {
                   <tr key={r.id} className="border-b border-slate-100 last:border-0">
                     <td className="whitespace-nowrap px-4 py-3 text-slate-600">{fmtDateTime(r.changed_at)}</td>
                     <td className="px-4 py-3">
-                      <Badge tone="slate">{r.actor_type}</Badge>
-                      <span className="ml-2 break-all text-xs text-slate-500">
-                        {r.actor_id ? r.actor_id.slice(0, 8) : '—'}
-                      </span>
+                      {r.actor_email ? (
+                        <span className="break-all text-slate-800">{r.actor_email}</span>
+                      ) : (
+                        <>
+                          <Badge tone="slate">{r.actor_type}</Badge>
+                          <span className="ml-2 break-all text-xs text-slate-500">
+                            {r.actor_id ? r.actor_id.slice(0, 8) : '—'}
+                          </span>
+                        </>
+                      )}
                     </td>
                     <td className="px-4 py-3">
                       <span className="font-medium text-slate-800">{r.entity}</span>

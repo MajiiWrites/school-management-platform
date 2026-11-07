@@ -5,7 +5,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import { api, ApiClientError } from '../lib/api';
 import type { AcademicSession, ClassItem, DatesheetItem, ExamItem, GradingScaleItem, PageResult } from '../lib/types';
-import { fmtDate } from '../lib/utils';
+import { fmtDate, todayISO } from '../lib/utils';
 import { Badge, Button, Card, EmptyState, ErrorBanner, Field, inputCls, Spinner, Tabs, useToast } from '../components/ui';
 import ConfirmDialog from '../components/ConfirmDialog';
 
@@ -267,7 +267,12 @@ export default function ExamsPage() {
                           <input className={inputCls} value={dsSubject} onChange={(e) => setDsSubject(e.target.value)} placeholder="Math" autoComplete="off" required />
                         </Field>
                         <Field label="Date">
-                          <input type="date" lang="en-GB" className={inputCls} value={dsDate} onChange={(e) => setDsDate(e.target.value)} autoComplete="off" required />
+                          {/* R2-D (h): same as Sessions — the native date
+                              input has no Today control, so add one (PKT). */}
+                          <div className="flex gap-2">
+                            <input type="date" lang="en-GB" className={inputCls} value={dsDate} onChange={(e) => setDsDate(e.target.value)} autoComplete="off" required />
+                            <Button type="button" variant="secondary" onClick={() => setDsDate(todayISO())}>Today</Button>
+                          </div>
                         </Field>
                         <Field label="Start">
                           <input type="time" className={inputCls} value={dsStart} onChange={(e) => setDsStart(e.target.value)} autoComplete="off" required />

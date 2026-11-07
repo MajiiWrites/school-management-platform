@@ -42,6 +42,56 @@ interface ReviewData {
   rows: ResultSheetReviewRow[];
 }
 
+/**
+ * What a result save returns for an admin (direct apply) AND for a clerk
+ * (202 approval-queue response: approval_request_id + status, NO saved /
+ * exam_id — nothing was applied yet). Round 1 typed only the admin shape,
+ * so a clerk save was misread as a completed save: "Saved undefined
+ * results", no exam selected, table left empty until the request was
+ * approved and the page reloaded. Every save handler must check
+ * approval_request_id first (see refreshAfterSave).
+ */
+interface SaveResultsResponse {
+  saved?: number;
+  linked?: number;
+  unlinked?: number;
+  skipped?: Array<{ row: number; reason: string }>;
+  exam_id?: string;
+  exam_name?: string;
+  approval_request_id?: string;
+  status?: string;
+}
+
+/** Selected exam per class, kept in sessionStorage so a reload right after
+ * a save does not drop the selection (the live re-test showed the exam
+ * listed but not selected after reload). Best-effort: private mode just
+ * means no persistence. */
+const examStorageKey = (classId: string): string => `smp:results:exam:${classId}`;
+function readStoredExam(classId: string): string {
+  try {
+    return sessionStorage.getItem(examStorageKey(classId)) ?? '';
+  } catch {
+    return '';
+  }
+}
+function storeExam(classId: string, examId: string): void {
+  try {
+    if (examId) sessionStorage.setItem(examStorageKey(classId), examId);
+    else sessionStorage.removeItem(examStorageKey(classId));
+  } catch {
+    /* storage unavailable — selection just won't survive a reload */
+  }
+}
+/** Exam to select for a class: the stored one if it still exists, else the
+ * only exam when there is exactly one (the common just-saved case), else
+ * "All exams". */
+function pickExamForClass(classId: string, list: ExamItem[]): string {
+  const stored = readStoredExam(classId);
+  if (stored && list.some((e) => e.id === stored)) return stored;
+  if (list.length === 1) return list[0]!.id;
+  return '';
+}
+
 export default function ResultsPage() {
   const [classes, setClasses] = useState<ClassItem[]>([]);
   const [exams, setExams] = useState<ExamItem[]>([]);
@@ -99,9 +149,17 @@ export default function ResultsPage() {
 
   useEffect(() => {
     Promise.all([api<PageResult<ClassItem>>('/classes'), loadExams()])
-      .then(([c]) => {
+      .then(([c, e]) => {
         setClasses(c.items);
-        if (c.items.length > 0) setClassId(c.items[0].id);
+        if (c.items.length > 0) {
+          const first = c.items[0]!;
+          // Set class + exam together (one batched render) so the results
+          // effect runs once, already filtered — and so a reload restores
+          // the previously selected exam (or the only exam) instead of
+          // dropping back to "All exams".
+          setClassId(first.id);
+          setExamId(pickExamForClass(first.id, e));
+        }
       })
       .catch(() => setError('Could not load classes or exams.'))
       .finally(() => setLoading(false));
@@ -115,12 +173,18 @@ export default function ResultsPage() {
       .catch(() => undefined);
   }, [classId]);
 
-  const loadResults = async () => {
-    if (!classId) return;
+  // Takes explicit ids: the save handlers call loadResults(classId,
+  // justSavedExamId) right after setExamId, and a closure over the OLD
+  // examId state ('') would fetch unfiltered and race the effect's
+  // filtered fetch — round 1 did exactly that, so the table/toppers/
+  // summary could land for the wrong (unfiltered) view and the exports
+  // stayed disabled until a manual reload.
+  const loadResults = async (clsId: string = classId, exId: string = examId) => {
+    if (!clsId) return;
     setListLoading(true);
     try {
-      const q = new URLSearchParams({ class_id: classId, limit: '200' });
-      if (examId) q.set('exam_id', examId);
+      const q = new URLSearchParams({ class_id: clsId, limit: '200' });
+      if (exId) q.set('exam_id', exId);
       const d = await api<PageResult<ResultRow>>(`/results?${q.toString()}`);
       setResults(d.items);
       setTotal(d.total);
@@ -130,10 +194,10 @@ export default function ResultsPage() {
       if (d.items.some((r) => !exams.some((e) => e.id === r.exam_id))) {
         await loadExams().catch(() => undefined);
       }
-      if (examId) {
+      if (exId) {
         const [t, s] = await Promise.all([
-          api<{ items: ResultRow[] }>(`/results/toppers?exam_id=${examId}&class_id=${classId}`),
-          api<Record<string, unknown>>(`/results/summary?exam_id=${examId}&class_id=${classId}`),
+          api<{ items: ResultRow[] }>(`/results/toppers?exam_id=${exId}&class_id=${clsId}`),
+          api<Record<string, unknown>>(`/results/summary?exam_id=${exId}&class_id=${clsId}`),
         ]);
         setToppers(t.items);
         setSummary(s);
@@ -149,9 +213,44 @@ export default function ResultsPage() {
   };
 
   useEffect(() => {
-    void loadResults();
+    void loadResults(classId, examId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [classId, examId]);
+
+  /**
+   * Shared post-save refresh for manual entry + OCR-review confirm.
+   * Returns false when the save was queued for approval (clerk 202):
+   * nothing was applied yet, so there is nothing to select or list — the
+   * caller keeps its form open and shows the queued message instead of a
+   * fake "Saved N results". On a direct save it refreshes the filter,
+   * selects the saved exam (falling back to a name match when the response
+   * carries no id), and reloads table + toppers + summary for that exam —
+   * all with no page reload, so Export Excel/PDF enable immediately.
+   */
+  const refreshAfterSave = async (out: SaveResultsResponse, examName: string): Promise<boolean> => {
+    if (out.approval_request_id) {
+      push('success', 'Submitted for admin approval — nothing was saved yet. The results will appear once an admin approves.');
+      return false;
+    }
+    const fresh = await loadExams().catch(() => exams);
+    let target = out.exam_id ?? '';
+    if (!target && examName) target = fresh.find((e) => e.name === examName)?.id ?? '';
+    if (target) {
+      // Guarantee the option exists even if the list refresh raced the
+      // save or failed: the response carries the id + name.
+      setExams((prev) =>
+        prev.some((e) => e.id === target)
+          ? prev
+          : [...prev, { id: target, name: out.exam_name ?? examName, session_id: null, start_date: null, end_date: null, created_at: new Date().toISOString() }],
+      );
+      setExamId(target);
+      storeExam(classId, target);
+      await loadResults(classId, target);
+    } else {
+      await loadResults(classId, '');
+    }
+    return true;
+  };
 
   const downloadExport = async (format: 'xlsx' | 'pdf') => {
     try {
@@ -204,16 +303,15 @@ export default function ResultsPage() {
           remarks: r.remarks || undefined,
           confidence: r.confidence,
         }));
-      const out = await api<{ saved: number; linked: number; unlinked: number; skipped: Array<{ row: number; reason: string }>; flagged: Array<{ roll_no: number; flags: string[] }>; exam_id: string; exam_name: string }>(
+      const out = await api<SaveResultsResponse>(
         `/result-sheets/${review.result_sheet_id}/confirm`,
         { method: 'POST', body: { rows } },
       );
-      push('success', `Saved ${out.saved} results (${out.linked} linked to students, ${out.unlinked} unlinked).${out.skipped.length > 0 ? ` ${out.skipped.length} rows skipped.` : ''}`);
+      const applied = await refreshAfterSave(out, review.exam.name);
+      if (!applied) return;
+      push('success', `Saved ${out.saved} results (${out.linked} linked to students, ${out.unlinked} unlinked).${out.skipped && out.skipped.length > 0 ? ` ${out.skipped.length} rows skipped.` : ''}`);
       setReview(null);
       setReviewRows([]);
-      await loadExams().catch(() => undefined);
-      if (out.exam_id) setExamId(out.exam_id);
-      await loadResults();
     } catch (e) {
       push('error', errText(e));
     } finally {
@@ -226,10 +324,14 @@ export default function ResultsPage() {
     if (!review) return;
     setPublishing(true);
     try {
-      const out = await api<{ drafts_created: number; skipped: Array<{ student_name: string; reason: string }> }>(
+      const out = await api<{ drafts_created: number; skipped: Array<{ student_name: string; reason: string }>; approval_request_id?: string }>(
         `/result-sheets/${review.result_sheet_id}/publish`,
         { method: 'POST' },
       );
+      if (out.approval_request_id) {
+        push('success', 'Submitted for admin approval — no SMS drafts were created yet. Drafts appear once an admin approves.');
+        return;
+      }
       push('success', `Published. ${out.drafts_created} SMS drafts created for admin approval (${out.skipped.length} skipped).`);
       setReview(null);
       setReviewRows([]);
@@ -263,18 +365,15 @@ export default function ResultsPage() {
     }
     setManualSaving(true);
     try {
-      const out = await api<{ saved: number; linked: number; unlinked: number; exam_id: string; exam_name: string }>(`/results/manual`, {
+      const out = await api<SaveResultsResponse>(`/results/manual`, {
         method: 'POST',
         body: { exam_id: examId || undefined, exam_name: examId ? undefined : name, class_id: classId, rows },
       });
+      const applied = await refreshAfterSave(out, name);
+      if (!applied) return;
       push('success', `Saved ${out.saved} results (${out.linked} linked, ${out.unlinked} unlinked).`);
       setShowManual(false);
       setManualRows([{ roll_no: '', student_name: '', father_name: '', obtained_marks: '', total_marks: '', remarks: '' }]);
-      // Refresh the filter so the (possibly just auto-created) exam shows
-      // up, and select it so toppers / report cards / exports unlock.
-      await loadExams().catch(() => undefined);
-      if (out.exam_id) setExamId(out.exam_id);
-      await loadResults();
     } catch (e) {
       push('error', errText(e));
     } finally {
@@ -319,13 +418,13 @@ export default function ResultsPage() {
         <>
           <div className="flex flex-wrap items-center gap-2">
             <label className="text-sm font-medium text-slate-700" htmlFor="class-select">Class:</label>
-            <select id="class-select" className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" value={classId} onChange={(e) => { setClassId(e.target.value); setExamId(''); }}>
+            <select id="class-select" className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" value={classId} onChange={(e) => { const id = e.target.value; setClassId(id); setExamId(pickExamForClass(id, exams)); }}>
               {classes.map((c) => (
                 <option key={c.id} value={c.id}>Class {displayClass(c)} — {c.teacher_name}</option>
               ))}
             </select>
             <label className="text-sm font-medium text-slate-700" htmlFor="exam-select">Exam:</label>
-            <select id="exam-select" className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" value={examId} onChange={(e) => setExamId(e.target.value)}>
+            <select id="exam-select" className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" value={examId} onChange={(e) => { setExamId(e.target.value); storeExam(classId, e.target.value); }}>
               <option value="">All exams</option>
               {exams.map((e) => (
                 <option key={e.id} value={e.id}>{e.name}</option>

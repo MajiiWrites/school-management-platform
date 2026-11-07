@@ -54,7 +54,7 @@ Rules: PKR 0. Never wipe the live DB — schema changes only via new Prisma migr
 - NEXT: §5 browser click-through, Phase 9 inspection, Phase 10 final check (parent's browser tasks).
 
 ## §9 inspection findings (2026-11-07 01:35–02:53 PKT) — ranked critical bugs
-1. No SMTP — email verification + password reset can never complete on live (signup promises an email that never arrives). BLOCKED on user decision/credentials.
+1. No SMTP — email verification + password reset can never complete on live (signup promises an email that never arrives). DECISION MADE 2026-11-07 ~03:36 PKT: user approved Gmail SMTP (sender majidalioffical0@gmail.com; SMTP_HOST=smtp.gmail.com, SMTP_PORT=587, MAIL_FROM="School Management <majidalioffical0@gmail.com>"). App password still being created by the user — parent sets the Render env vars via browser task (password never passes through chat/files); coordinator must NOT set them. Copy stays as-is (becomes true once SMTP is live). After env vars are set, Render needs a restart/redeploy; then verify live: signup → verification email arrives; forgot-password → reset email arrives.
 2. Reports page blank-crashes (renders once, then blank white / redirects to dashboard); Fee structures tab blank-crashes the Fees page (reproduced twice).
 3. Stuck empty "Edit session" modal blocks Staff & payroll and Sessions entirely (× and Escape do not dismiss).
 4. Classes page forgets generated teacher links + submitted status after navigation — unlock/edit, revoke/regenerate unreachable from UI.

@@ -12,6 +12,7 @@ import crypto from 'node:crypto';
 import { ApiError } from '../../../lib/errors';
 import * as studentsSvc from '../../students/service';
 import * as classesSvc from '../../classes/service';
+import * as examsSvc from '../../exams/service';
 import * as resultsSvc from '../service';
 import { parseResultSheet, rowConfidence } from '../../ocr/resultSheets';
 import { restoreDeletedRecord, listRecycleBin } from '../../hardening/recycleBin';
@@ -759,5 +760,105 @@ describe('Fix E (Phase 9): manual entry fields, exam id on save, class-only expo
     const pdf = await resultsSvc.renderReportCardPdf(card);
     expect(pdf.length).toBeGreaterThan(100);
     expect(pdf.subarray(0, 5).toString()).toBe('%PDF-');
+  });
+});
+
+describe('R2-B (Phase 9 re-test E1): save → filter/table/exports with no reload + report-card father name', () => {
+  /**
+   * The live re-test saved a result and the exam filter stayed "All exams",
+   * the table said "No results yet", and Export Excel/PDF stayed disabled
+   * until a manual reload. The frontend fix drives the whole post-save
+   * sequence off the returned exam_id (refresh filter → select exam →
+   * reload table/toppers/summary for it). These tests prove the API
+   * contract that sequence relies on: one save response id is enough to
+   * fill the filter, the table, toppers, summary and both exports — no
+   * reload, no second save, no extra lookup.
+   */
+  it('manual save: returned exam_id drives filter + table + toppers + summary + exports', async () => {
+    await seedClasses();
+    await seedStudent();
+    const out = await resultsSvc.saveManualResults(db, SCHOOL_A, {
+      exam_name: 'Monthly Test',
+      class_id: classA.id,
+      rows: [{ roll_no: 1, student_name: 'Ahmed Raza', father_name: 'Muhammad Raza', obtained_marks: 85, total_marks: 100 }],
+    }, ADMIN);
+    expect(out.saved).toBe(1);
+    expect(out.exam_id).toBeTruthy();
+    // 1. Filter: the exam list reloaded after the save contains the exam.
+    const exams = await examsSvc.listExams(db, SCHOOL_A, { limit: 100 });
+    expect(exams.items.some((e: any) => e.id === out.exam_id && e.name === 'Monthly Test')).toBe(true);
+    // 2. Table: selecting the returned id shows the saved result at once.
+    const list = await resultsSvc.listResults(db, SCHOOL_A, { exam_id: out.exam_id, class_id: classA.id });
+    expect(list.total).toBe(1);
+    expect(list.items[0].student_name).toBe('Ahmed Raza');
+    expect(list.items[0].father_name).toBe('Muhammad Raza');
+    // 3. Toppers / summary load for the selected exam.
+    const toppers = await resultsSvc.getToppers(db, SCHOOL_A, { exam_id: out.exam_id, class_id: classA.id });
+    expect(toppers[0].student_name).toBe('Ahmed Raza');
+    const summary = await resultsSvc.getSummary(db, SCHOOL_A, { exam_id: out.exam_id, class_id: classA.id });
+    expect(summary.total).toBe(1);
+    expect(summary.passed).toBe(1);
+    // 4. Exports enable: both formats return real files for the exam.
+    const xlsx = await resultsSvc.exportResults(db, SCHOOL_A, { format: 'xlsx', exam_id: out.exam_id, class_id: classA.id });
+    expect(xlsx.buffer.length).toBeGreaterThan(100);
+    expect(xlsx.contentType).toContain('spreadsheet');
+    const pdf = await resultsSvc.exportResults(db, SCHOOL_A, { format: 'pdf', exam_id: out.exam_id, class_id: classA.id });
+    expect(pdf.buffer.length).toBeGreaterThan(100);
+    expect(pdf.contentType).toContain('pdf');
+  });
+
+  it('OCR-review save: returned exam_id drives filter + table + exports', async () => {
+    await seedClasses();
+    await seedStudent();
+    const exam = await resultsSvc.upsertExam(db, SCHOOL_A, { name: 'Final' });
+    const out = await resultsSvc.saveResultRows(db, SCHOOL_A, {
+      exam_id: exam.id,
+      class_id: classA.id,
+      rows: [{ roll_no: 1, student_name: 'Ahmed Raza', father_name: 'Muhammad Raza', obtained_marks: 150, total_marks: 200 }],
+    }, ADMIN);
+    expect(out.saved).toBe(1);
+    expect(out.exam_id).toBe(exam.id);
+    const exams = await examsSvc.listExams(db, SCHOOL_A, { limit: 100 });
+    expect(exams.items.some((e: any) => e.id === exam.id && e.name === 'Final')).toBe(true);
+    const list = await resultsSvc.listResults(db, SCHOOL_A, { exam_id: out.exam_id, class_id: classA.id });
+    expect(list.total).toBe(1);
+    const xlsx = await resultsSvc.exportResults(db, SCHOOL_A, { format: 'xlsx', exam_id: out.exam_id, class_id: classA.id });
+    expect(xlsx.buffer.length).toBeGreaterThan(100);
+  });
+
+  it('report card uses the father name saved on the result when it differs from the profile', async () => {
+    await seedClasses();
+    // Live re-test mismatch: profile says "Imran Test", the saved result
+    // row says "Test Father" — the card must show the result's name.
+    await seedStudent({ name: 'Test Student', roll_no: 7, admission_no: 'ADM-007', father_name: 'Imran Test', parent_name: 'Imran Test' });
+    const out = await resultsSvc.saveManualResults(db, SCHOOL_A, {
+      exam_name: 'Midterm',
+      class_id: classA.id,
+      rows: [{ roll_no: 7, student_name: 'Test Student', father_name: 'Test Father', obtained_marks: 80, total_marks: 100 }],
+    }, ADMIN);
+    expect(out.linked).toBe(1);
+    const row = (await resultsSvc.listResults(db, SCHOOL_A, { exam_id: out.exam_id, class_id: classA.id })).items[0] as any;
+    expect(row.father_name).toBe('Test Father');
+    const students = await studentsSvc.listStudentsSchoolWide(db, SCHOOL_A, { admission_no: 'ADM-007' });
+    const card = await resultsSvc.getReportCard(db, SCHOOL_A, students.items[0].id, out.exam_id);
+    expect(card.student.father_name).toBe('Test Father');
+    const html = resultsSvc.renderReportCardHtml(card);
+    expect(html).toContain('Test Father');
+    expect(html).not.toContain('Imran Test');
+    const pdf = await resultsSvc.renderReportCardPdf(card);
+    expect(pdf.length).toBeGreaterThan(100);
+  });
+
+  it('report card falls back to the profile father name when the result has none', async () => {
+    await seedClasses();
+    await seedStudent({ name: 'Test Student', roll_no: 7, admission_no: 'ADM-007', father_name: 'Imran Test', parent_name: 'Imran Test' });
+    const out = await resultsSvc.saveManualResults(db, SCHOOL_A, {
+      exam_name: 'Midterm',
+      class_id: classA.id,
+      rows: [{ roll_no: 7, student_name: 'Test Student', obtained_marks: 80, total_marks: 100 }],
+    }, ADMIN);
+    const students = await studentsSvc.listStudentsSchoolWide(db, SCHOOL_A, { admission_no: 'ADM-007' });
+    const card = await resultsSvc.getReportCard(db, SCHOOL_A, students.items[0].id, out.exam_id);
+    expect(card.student.father_name).toBe('Imran Test');
   });
 });

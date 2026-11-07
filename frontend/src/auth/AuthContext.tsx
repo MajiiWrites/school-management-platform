@@ -34,8 +34,15 @@ function cachedUser(): User | null {
   try {
     const raw = localStorage.getItem(USER_CACHE_KEY);
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as User;
-    return parsed && typeof parsed.email === 'string' && typeof parsed.role === 'string' ? parsed : null;
+    const parsed = JSON.parse(raw) as unknown;
+    // R2-E: tolerate a legacy cache entry stored as the `{ user: {...} }`
+    // wrapper (pre-round-1 shape) — unwrapping it here means a stale
+    // cache can never again leave `user.role` undefined and the sidebar
+    // empty while /auth/me is still in flight.
+    const candidate = ((parsed as { user?: User } | null)?.user ?? parsed) as User;
+    return candidate && typeof candidate.email === 'string' && typeof candidate.role === 'string'
+      ? candidate
+      : null;
   } catch {
     return null;
   }

@@ -94,6 +94,8 @@ export interface FeeStructureView {
   sibling_discount_pct: number;
   effective_from: string; // YYYY-MM-DD
   created_at: string;
+  /** Current-month records created by the creation backfill (create only). */
+  backfilled_records?: number;
 }
 
 export interface MonthlyFeeReport {

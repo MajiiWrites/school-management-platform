@@ -2,7 +2,7 @@ import ExcelJS from 'exceljs';
 import { ApiError } from '../../lib/errors';
 import { normalizePhone, encryptPhone, decryptPhone, sha256Hex, maskPhone, normalizeName } from '../../lib/crypto';
 import { writeAudit } from '../../lib/audit';
-import { writeChangeLogs, softDeleteEntity, isUniqueViolation } from '../hardening/helpers';
+import { writeChangeLogs, logCreate, softDeleteEntity, isUniqueViolation } from '../hardening/helpers';
 import { paginatedResponse, parsePagination } from '../../lib/pagination';
 import type { Db } from '../../lib/db';
 
@@ -237,6 +237,7 @@ export async function createStudent(db: Db, schoolId: string, classId: string, i
     if (isUniqueViolation(err)) await throwStudentUniqueConflict(db, schoolId, classId, input.roll_no, input.admission_no);
     throw err;
   }
+  await logCreate(db, { schoolId, actorId: actorId ?? null, entity: 'student', entityId: created.id, after: changeView(created) });
   await writeAudit(db, { schoolId, actorId: actorId ?? null, actorType: 'user', action: 'student.create', entity: 'student', entityId: created.id, details: { class_id: classId, name: created.name } });
   return created;
 }
@@ -791,6 +792,7 @@ export async function importStudents(
     });
     result.imported += 1;
     result.saved_ids.push(created.id);
+    await logCreate(db, { schoolId, actorId: actorId ?? null, entity: 'student', entityId: created.id, after: changeView(created) });
   }
   await writeAudit(db, { schoolId, actorId: actorId ?? null, actorType: 'user', action: 'student.import', entity: 'class', entityId: classId, details: { imported: result.imported, duplicates: result.duplicates_flagged, invalid: result.invalid_rows.length } });
   return result;
@@ -948,7 +950,26 @@ export async function importParents(
       parentPhoneHash: sha256Hex(normalized),
     };
     if (item.data.parent_name?.trim()) data.parentName = item.data.parent_name.trim();
+    const beforeStudent = await db.student.findFirst({ where: { id: item.student_id, schoolId } });
+    // Snapshot the scalar before-values BEFORE the update: some stores
+    // mutate the fetched row in place, which would erase the old values.
+    const beforeParent = beforeStudent
+      ? {
+          parent_name: beforeStudent.parentName ?? null,
+          parent_phone: beforeStudent.parentPhoneEnc ? maskPhone(decryptPhone(beforeStudent.parentPhoneEnc)) : null,
+        }
+      : null;
     await db.student.update({ where: { id: item.student_id }, data });
+    if (beforeParent) {
+      await writeChangeLogs(db, {
+        schoolId,
+        actorId: actorId ?? null,
+        entity: 'student',
+        entityId: item.student_id,
+        before: beforeParent,
+        after: { parent_name: data.parentName ?? beforeParent.parent_name, parent_phone: maskPhone(normalized) },
+      });
+    }
     result.imported += 1;
     result.saved_ids.push(item.student_id);
   }

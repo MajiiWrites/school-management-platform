@@ -208,3 +208,162 @@ describe('fee structures', () => {
     await expect(deleteFeeStructure(db, 'school-demo', s5a.id)).rejects.toThrow('Cannot delete');
   });
 });
+
+describe('mid-month fee structure backfill (R2-F)', () => {
+  // 2026-11-07 10:00 PKT — mid-month in the school's timezone.
+  const MID_NOV = new Date('2026-11-07T05:00:00Z');
+
+  function addClass(db: Db, classId = 'class-7c', studentIds = ['stu-7a', 'stu-7b']) {
+    (db as any).class.create({ data: { id: classId, schoolId: 'school-demo', name: '7', section: 'C' } });
+    studentIds.forEach((id, i) =>
+      (db as any).student.create({
+        data: {
+          id, schoolId: 'school-demo', classId, rollNo: i + 1, name: `Student ${id}`,
+          parentName: `Parent of ${id}`, parentPhoneEnc: null, parentPhoneHash: null,
+          parentOptOut: false, status: 'active',
+        },
+      }),
+    );
+    return { classId, studentIds };
+  }
+
+  function novRecords(db: Db, studentIds: string[]) {
+    return (db as any).feeRecord.findMany({ where: { month: '2026-11', studentId: { in: studentIds } } });
+  }
+
+  it('structure created mid-month backfills current-month records; Collect works and a receipt is issued', async () => {
+    const { db } = freshDb();
+    const { studentIds } = addClass(db);
+    const created = await createFeeStructure(
+      db, 'school-demo',
+      { class_id: 'class-7c', monthly_amount: 2000, admission_fee: 500, effective_from: '2026-11-07' },
+      { now: MID_NOV },
+    );
+    expect(created.backfilled_records).toBe(2);
+
+    const list = await listFees(db, 'school-demo', { month: '2026-11', class_id: 'class-7c' }, 'Asia/Karachi');
+    expect(list.total).toBe(2);
+    for (const item of list.items) {
+      expect(item.record_exists).toBe(true);
+      expect(item.record_id).not.toBeNull();
+      // First record: monthly 2000 + one-time admission 500.
+      expect(item.amount_due).toBe(2500);
+      expect(item.status).toBe('unpaid');
+    }
+
+    const receipt = await payFee(db, 'school-demo', studentIds[0], { month: '2026-11', amount_paid: 2500, payment_method: 'cash' }, 'admin-1');
+    expect(receipt.receipt_no).toBe('demo-public-202611-001');
+    expect(receipt.status).toBe('paid');
+    expect(receipt.amount_due).toBe(2500);
+    expect(receipt.balance).toBe(0);
+    const fetched = await getReceiptByNo(db, 'school-demo', receipt.receipt_no);
+    expect(fetched.student_id).toBe(studentIds[0]);
+  });
+
+  it('re-running rollover after the backfill creates no duplicates and never resets a paid record', async () => {
+    const { db } = freshDb();
+    const { studentIds } = addClass(db);
+    await createFeeStructure(
+      db, 'school-demo',
+      { class_id: 'class-7c', monthly_amount: 2000, admission_fee: 500, effective_from: '2026-11-07' },
+      { now: MID_NOV },
+    );
+    await payFee(db, 'school-demo', studentIds[0], { month: '2026-11', amount_paid: 2500 }, 'admin-1');
+
+    // First rollover creates only the 5 seeded students' records (the new
+    // class was already backfilled); a second rollover creates nothing.
+    const first = await rolloverMonth(db, 'school-demo', '2026-11');
+    expect(first.created).toBe(5);
+    expect(first.classes_without_structure).not.toContain('class-7c');
+    const second = await rolloverMonth(db, 'school-demo', '2026-11');
+    expect(second.created).toBe(0);
+    expect(second.already_existed).toBe(7);
+
+    expect(novRecords(db, studentIds)).toHaveLength(2);
+    const list = await listFees(db, 'school-demo', { month: '2026-11', class_id: 'class-7c' }, 'Asia/Karachi');
+    const paid = list.items.find((i) => i.student_id === studentIds[0])!;
+    expect(paid.status).toBe('paid');
+    expect(paid.amount_paid).toBe(2500);
+  });
+
+  it('a student admitted after the structure was created is still collectable (projection + on-the-fly payFee)', async () => {
+    const { db } = freshDb();
+    const { studentIds } = addClass(db, 'class-7c', ['stu-7a']);
+    await createFeeStructure(
+      db, 'school-demo',
+      { class_id: 'class-7c', monthly_amount: 2000, admission_fee: 500, effective_from: '2026-11-07' },
+      { now: MID_NOV },
+    );
+    // New admission after the backfill ran — no record yet.
+    (db as any).student.create({
+      data: {
+        id: 'stu-7b', schoolId: 'school-demo', classId: 'class-7c', rollNo: 2, name: 'Student stu-7b',
+        parentName: 'Parent of stu-7b', parentPhoneEnc: null, parentPhoneHash: null,
+        parentOptOut: false, status: 'active',
+      },
+    });
+
+    const list = await listFees(db, 'school-demo', { month: '2026-11', class_id: 'class-7c' }, 'Asia/Karachi');
+    const late = list.items.find((i) => i.student_id === 'stu-7b')!;
+    expect(late.record_exists).toBe(false);
+    expect(late.no_structure).toBe(false);
+    expect(late.amount_due).toBe(2500); // projected from the mid-month structure
+
+    const receipt = await payFee(db, 'school-demo', 'stu-7b', { month: '2026-11', amount_paid: 2500 }, 'admin-1');
+    expect(receipt.status).toBe('paid');
+    expect(receipt.amount_due).toBe(2500);
+    expect(novRecords(db, [...studentIds, 'stu-7b'])).toHaveLength(2);
+  });
+
+  it('creating a second structure for the same class mid-month creates no duplicate records', async () => {
+    const { db } = freshDb();
+    const { studentIds } = addClass(db);
+    await createFeeStructure(
+      db, 'school-demo',
+      { class_id: 'class-7c', monthly_amount: 2000, admission_fee: 500, effective_from: '2026-11-07' },
+      { now: MID_NOV },
+    );
+    const second = await createFeeStructure(
+      db, 'school-demo',
+      { class_id: 'class-7c', monthly_amount: 3000, effective_from: '2026-11-10' },
+      { now: new Date('2026-11-10T05:00:00Z') },
+    );
+    expect(second.backfilled_records).toBe(0);
+    expect(novRecords(db, studentIds)).toHaveLength(2);
+    // Stored records keep the first structure's amounts (history is never rewritten).
+    const list = await listFees(db, 'school-demo', { month: '2026-11', class_id: 'class-7c' }, 'Asia/Karachi');
+    for (const item of list.items) expect(item.amount_due).toBe(2500);
+  });
+
+  it('a future-dated structure backfills nothing for the current month', async () => {
+    const { db } = freshDb();
+    const { studentIds } = addClass(db);
+    const created = await createFeeStructure(
+      db, 'school-demo',
+      { class_id: 'class-7c', monthly_amount: 2000, effective_from: '2026-12-01' },
+      { now: MID_NOV },
+    );
+    expect(created.backfilled_records).toBe(0);
+    const nov = await listFees(db, 'school-demo', { month: '2026-11', class_id: 'class-7c' }, 'Asia/Karachi');
+    expect(nov.items.every((i) => i.no_structure && i.amount_due === 0 && !i.record_exists)).toBe(true);
+    // Its first month is created by that month's rollover.
+    await rolloverMonth(db, 'school-demo', '2026-12');
+    const dec = await listFees(db, 'school-demo', { month: '2026-12', class_id: 'class-7c' }, 'Asia/Karachi');
+    expect(dec.items.every((i) => i.record_exists && i.amount_due === 2000)).toBe(true);
+    expect(novRecords(db, studentIds)).toHaveLength(0);
+  });
+
+  it('rolloverMonth itself covers a mid-month structure (month-end cutoff)', async () => {
+    const { db } = freshDb();
+    const { studentIds } = addClass(db);
+    // Seed the structure directly (bypassing createFeeStructure's backfill).
+    (db as any).feeStructure.create({
+      data: { schoolId: 'school-demo', classId: 'class-7c', monthlyAmount: 2000, effectiveFrom: new Date('2026-11-15T00:00:00Z') },
+    });
+    const res = await rolloverMonth(db, 'school-demo', '2026-11');
+    expect(res.classes_without_structure).not.toContain('class-7c');
+    expect(novRecords(db, studentIds)).toHaveLength(2);
+    const again = await rolloverMonth(db, 'school-demo', '2026-11');
+    expect(again.created).toBe(0);
+  });
+});

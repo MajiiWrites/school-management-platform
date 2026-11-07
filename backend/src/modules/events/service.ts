@@ -10,7 +10,7 @@ import { ApiError } from '../../lib/errors';
 import { isValidDateString, monthRange, dateOnly } from '../../lib/dates';
 import { isValidMonthKey } from '../../jobs/date-utils';
 import { writeAudit } from '../../lib/audit';
-import { writeChangeLogs } from '../hardening/helpers';
+import { writeChangeLogs, logCreate, logDelete } from '../hardening/helpers';
 import type { Db } from '../../lib/db';
 
 export interface EventView {
@@ -72,6 +72,13 @@ export async function createEvent(
   const created: any = await db.event.create({
     data: { schoolId, date: dateOnly(input.date), title: input.title.trim(), description: input.description?.trim() || null },
   });
+  await logCreate(db, {
+    schoolId,
+    actorId,
+    entity: 'event',
+    entityId: created.id,
+    after: { date: input.date, title: created.title, description: created.description ?? null },
+  });
   await writeAudit(db, {
     schoolId,
     actorId,
@@ -121,6 +128,13 @@ export async function deleteEvent(db: Db, schoolId: string, id: string, actorId:
   const existing: any = await db.event.findFirst({ where: { id, schoolId } });
   if (!existing) throw ApiError.notFound('Event not found');
   await db.event.delete({ where: { id } });
+  await logDelete(db, {
+    schoolId,
+    actorId,
+    entity: 'event',
+    entityId: id,
+    before: { date: toView(existing).date, title: existing.title, description: existing.description ?? null },
+  });
   await writeAudit(db, {
     schoolId,
     actorId,

@@ -28,7 +28,7 @@
 
 import { ApiError } from '../../lib/errors';
 import { writeAudit } from '../../lib/audit';
-import { writeChangeLogs } from '../hardening/helpers';
+import { writeChangeLogs, logCreate, logDelete } from '../hardening/helpers';
 import type { Db } from '../../lib/db';
 import type { SendResult } from '../messaging/custom-messages';
 
@@ -131,6 +131,13 @@ export async function createAnnouncement(
       createdBy: actorId,
     },
   });
+  await logCreate(db, {
+    schoolId,
+    actorId,
+    entity: 'announcement',
+    entityId: created.id,
+    after: { title: created.title, body: created.body, target_type: targetType, target_class_id: created.targetClassId ?? null, sms_send: created.smsSend ?? false, status: 'draft' },
+  });
   await writeAudit(db, {
     schoolId,
     actorId,
@@ -211,6 +218,13 @@ export async function deleteAnnouncement(db: Db, schoolId: string, id: string, a
   const existing: any = await db.announcement.findFirst({ where: { id, schoolId } });
   if (!existing) throw ApiError.notFound('Announcement not found');
   await db.announcement.delete({ where: { id } });
+  await logDelete(db, {
+    schoolId,
+    actorId,
+    entity: 'announcement',
+    entityId: id,
+    before: { title: existing.title, status: existing.status },
+  });
   await writeAudit(db, {
     schoolId,
     actorId,

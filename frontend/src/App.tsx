@@ -1,3 +1,4 @@
+import { lazy } from 'react';
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import type { ReactNode } from 'react';
 import { AuthProvider, useAuth } from './auth/AuthContext';
@@ -5,49 +6,68 @@ import Layout from './components/Layout';
 import ErrorBoundary from './components/ErrorBoundary';
 import { Spinner } from './components/ui';
 import { ForgotPasswordPage, LoginPage, ResetPasswordPage, SignupPage, VerifyEmailPage } from './pages/Auth';
-import DashboardPage from './pages/Dashboard';
-import ClassesPage, { ClassDetailPage } from './pages/Classes';
-import StudentsPage from './pages/Students';
-import OcrReviewPage from './pages/OcrReview';
 import TeacherLinkPage from './pages/TeacherLink';
-import FeesPage from './pages/Fees';
-import MessagesPage from './pages/Messages';
-import ParentsPage from './pages/Parents';
-import SettingsPage from './pages/Settings';
-import ReportsPage from './pages/Reports';
-// 6C-2 pages: expenses, announcements, events, certificates, leave/late, notifications.
-import ExpensesPage from './pages/Expenses';
-import AnnouncementsPage from './pages/Announcements';
-import EventsPage from './pages/Events';
-import CertificatesPage from './pages/Certificates';
-import LeavesPage from './pages/Leaves';
-import NotificationsPage from './pages/Notifications';
 import { LanguageProvider } from './lib/i18n';
-import SecurityPage from './pages/Security'; // 6D: 2FA, roles & permissions, data export, login alerts, backups
-import ApprovalsPage from './pages/Approvals'; // D2: admin approval queue for clerk changes
-import RecycleBinPage from './pages/RecycleBin'; // D1: admin recycle bin (30-day restore)
-import ChangeHistoryPage from './pages/ChangeHistory'; // D1: admin change history (old → new)
-import ResultsPage from './pages/Results'; // 6B: results (OCR sheets, toppers, report cards)
+// R2-E (round 2): route-level code splitting. The whole portal used to
+// ship as one 596 kB JS chunk, so a cold first paint waited on all of it.
+// Pages now load on demand; Layout wraps <Outlet /> in a Suspense
+// fallback, so the sidebar stays visible while a page chunk loads.
+// Auth pages + the public teacher link stay in the entry chunk — they
+// are the first paint for logged-out / token users.
+const DashboardPage = lazy(() => import('./pages/Dashboard'));
+const ClassesPage = lazy(() => import('./pages/Classes'));
+const ClassDetailPage = lazy(() =>
+  import('./pages/Classes').then((m) => ({ default: m.ClassDetailPage })),
+);
+const StudentsPage = lazy(() => import('./pages/Students'));
+const OcrReviewPage = lazy(() => import('./pages/OcrReview'));
+const FeesPage = lazy(() => import('./pages/Fees'));
+const MessagesPage = lazy(() => import('./pages/Messages'));
+const ParentsPage = lazy(() => import('./pages/Parents'));
+const SettingsPage = lazy(() => import('./pages/Settings'));
+const ReportsPage = lazy(() => import('./pages/Reports'));
+// 6C-2 pages: expenses, announcements, events, certificates, leave/late, notifications.
+const ExpensesPage = lazy(() => import('./pages/Expenses'));
+const AnnouncementsPage = lazy(() => import('./pages/Announcements'));
+const EventsPage = lazy(() => import('./pages/Events'));
+const CertificatesPage = lazy(() => import('./pages/Certificates'));
+const LeavesPage = lazy(() => import('./pages/Leaves'));
+const NotificationsPage = lazy(() => import('./pages/Notifications'));
+const SecurityPage = lazy(() => import('./pages/Security')); // 6D: 2FA, roles & permissions, data export, login alerts, backups
+const ApprovalsPage = lazy(() => import('./pages/Approvals')); // D2: admin approval queue for clerk changes
+const RecycleBinPage = lazy(() => import('./pages/RecycleBin')); // D1: admin recycle bin (30-day restore)
+const ChangeHistoryPage = lazy(() => import('./pages/ChangeHistory')); // D1: admin change history (old → new)
+const ResultsPage = lazy(() => import('./pages/Results')); // 6B: results (OCR sheets, toppers, report cards)
 // 6C-1 pages: sessions / exams / timetable / staff & payroll.
-import SessionsPage from './pages/Sessions';
-import ExamsPage from './pages/Exams';
-import TimetablePage from './pages/Timetable';
-import StaffPage from './pages/Staff';
+const SessionsPage = lazy(() => import('./pages/Sessions'));
+const ExamsPage = lazy(() => import('./pages/Exams'));
+const TimetablePage = lazy(() => import('./pages/Timetable'));
+const StaffPage = lazy(() => import('./pages/Staff'));
 // P8-TOUR: guided tour + help page (Phase 10 criterion E).
-import HelpPage from './pages/Help';
+const HelpPage = lazy(() => import('./pages/Help'));
 
 /** Redirects to /login when there is no signed-in user. */
 function RequireAuth({ children }: { children: ReactNode }) {
   const { user, loading } = useAuth();
   const location = useLocation();
-  if (loading) {
-    return (
-      <div className="flex min-h-screen items-center justify-center">
-        <Spinner label="Checking your session…" />
-      </div>
-    );
+  // R2-E (round 2) blank-white fix: a returning user already has a cached
+  // user in localStorage, so render the app shell immediately instead of
+  // blocking the whole tree on /auth/me (Render cold start can take
+  // ~60 s — that wait used to show nothing but a spinner, and with the
+  // old service-worker shell it showed a bare white page). /auth/me
+  // still re-verifies in the background; a 401/403 signs out via
+  // AuthContext. Only a genuinely unknown session (no cached user)
+  // waits on the spinner.
+  if (!user) {
+    if (loading) {
+      return (
+        <div className="flex min-h-screen items-center justify-center">
+          <Spinner label="Checking your session…" />
+        </div>
+      );
+    }
+    return <Navigate to="/login" state={{ from: location.pathname }} replace />;
   }
-  if (!user) return <Navigate to="/login" state={{ from: location.pathname }} replace />;
   return <>{children}</>;
 }
 
@@ -82,6 +102,21 @@ export default function App() {
         <Route path="/forgot-password" element={<ForgotPasswordPage />} />
         <Route path="/reset-password" element={<ResetPasswordPage />} />
         <Route path="/t/:token" element={<TeacherLinkPage />} />
+
+        {/* R2-C fix (F3): dead routes — /calendar, /holidays and /leave.
+            These used to live inside the authenticated portal below, so the
+            redirect only fired after the auth gate, Layout and all its
+            mount-time effects had run — and the GuidedTour's auto-open used
+            to drag a fresh admin to '/' before the target ever rendered, so
+            on live (fresh TEST school, first login) the redirects looked
+            dead. As top-level routes the redirect fires on match, before
+            any auth/layout work; an unauthenticated visit lands on /events
+            (or /leaves) and RequireAuth then sends it to /login as usual.
+            The calendar lives on /events (it merges holidays), holidays are
+            managed in Settings, and leave applications live on /leaves. */}
+        <Route path="/calendar" element={<Navigate to="/events" replace />} />
+        <Route path="/holidays" element={<Navigate to="/events" replace />} />
+        <Route path="/leave" element={<Navigate to="/leaves" replace />} />
 
         {/* Authenticated portal */}
         <Route
@@ -118,13 +153,7 @@ export default function App() {
           <Route path="staff" element={<StaffPage />} />
           {/* P8-TOUR: Help page (guided tour + how-tos + glossary). */}
           <Route path="help" element={<HelpPage />} />
-          {/* Phase 9 fix: dead routes — /calendar, /holidays and /leave
-              404'd (old bookmarks / in-page references). The calendar
-              lives on /events (it merges holidays), holidays are managed
-              in Settings, and leave applications live on /leaves. */}
-          <Route path="calendar" element={<Navigate to="/events" replace />} />
-          <Route path="holidays" element={<Navigate to="/events" replace />} />
-          <Route path="leave" element={<Navigate to="/leaves" replace />} />
+          {/* Dead routes moved to top level (above the portal) — see above. */}
           {/* D2: Approval Queue page (admin only) */}
           <Route
             path="approvals"

@@ -19,8 +19,8 @@
 
 import type { Db } from '../../lib/db';
 import { ApiError } from '../../lib/errors';
-import { writeChangeLogs } from '../hardening/helpers';
-import { isValidDateString, isValidMonthKey, localMonthKey, monthStartDate } from '../../jobs/date-utils';
+import { writeChangeLogs, logCreate, logDelete } from '../hardening/helpers';
+import { isValidDateString, isValidMonthKey, localMonthKey, monthEndDate } from '../../jobs/date-utils';
 import type {
   FeeListItem,
   FeeListResult,
@@ -101,6 +101,8 @@ export async function createFeeStructure(
   db: Db,
   schoolId: string,
   input: FeeStructureInput,
+  opts?: { now?: Date },
+  actorId?: string,
 ): Promise<FeeStructureView> {
   const amount = assertPositiveInt(input.monthly_amount, 'monthly_amount');
   const admissionFee = input.admission_fee !== undefined ? assertNonNegativeInt(input.admission_fee, 'admission_fee') : 0;
@@ -121,16 +123,58 @@ export async function createFeeStructure(
       effectiveFrom: new Date(`${input.effective_from}T00:00:00Z`),
     },
   });
+  await logCreate(db, {
+    schoolId,
+    actorId: actorId ?? null,
+    entity: 'fee_structure',
+    entityId: created.id,
+    after: { class_id: input.class_id, monthly_amount: amount, admission_fee: admissionFee, sibling_discount_pct: siblingPct, effective_from: input.effective_from },
+  });
   await db.auditLog.create({
     data: {
       schoolId,
-      actorType: 'system',
+      actorId: actorId ?? null,
+      actorType: 'user',
       action: 'fee.structure.create',
       entity: 'fee_structure',
       entityId: created.id,
       details: { class_id: input.class_id, monthly_amount: amount, effective_from: input.effective_from, admission_fee: admissionFee, sibling_discount_pct: siblingPct },
     },
   });
+  // R2-F backfill: a structure created mid-month must make Collect/Receipt
+  // work the SAME month. Previously nothing created the current month's
+  // records until the next 1st-of-month rollover, and the month-start
+  // cutoff in latestStructuresByClass meant even the on-the-fly payFee
+  // path and a manual rollover skipped the class. So backfill the current
+  // (school-local) month here, idempotently (skipDuplicates — an existing
+  // record, e.g. from an earlier structure or a payment, is never
+  // rewritten). A structure whose effective month is still in the future
+  // backfills nothing; its first month is created by that month's rollover.
+  let backfilled = 0;
+  const school = await getSchoolOr404(db, schoolId);
+  const now = opts?.now ?? new Date();
+  const currentMonth = localMonthKey(now, (school.timezone as string | undefined) ?? 'Asia/Karachi');
+  if (input.effective_from <= monthEndDate(currentMonth)) {
+    backfilled = await backfillMonthForClass(db, schoolId, input.class_id, {
+      id: created.id,
+      monthlyAmount: created.monthlyAmount,
+      effectiveFrom: created.effectiveFrom,
+      admissionFee: created.admissionFee ?? 0,
+      siblingDiscountPct: created.siblingDiscountPct ?? 0,
+    }, currentMonth);
+  }
+  if (backfilled > 0) {
+    // Round 2: the backfill creates fee records — one summary row (same
+    // reasoning as the rollover summary below).
+    await writeChangeLogs(db, {
+      schoolId,
+      actorId: actorId ?? null,
+      entity: 'fee_record',
+      entityId: null,
+      before: { created_records: null },
+      after: { created_records: backfilled },
+    });
+  }
   return {
     id: created.id,
     class_id: created.classId,
@@ -140,6 +184,7 @@ export async function createFeeStructure(
     sibling_discount_pct: created.siblingDiscountPct ?? 0,
     effective_from: toISODate(created.effectiveFrom),
     created_at: created.createdAt.toISOString(),
+    backfilled_records: backfilled,
   };
 }
 
@@ -148,6 +193,7 @@ export async function updateFeeStructure(
   schoolId: string,
   structureId: string,
   patch: Partial<FeeStructureInput>,
+  actorId?: string,
 ): Promise<FeeStructureView> {
   const existing: any = await db.feeStructure.findUnique({ where: { id: structureId } });
   if (!existing || existing.schoolId !== schoolId) throw ApiError.notFound('Fee structure not found');
@@ -172,6 +218,7 @@ export async function updateFeeStructure(
   const updated: any = await db.feeStructure.update({ where: { id: structureId }, data });
   await writeChangeLogs(db, {
     schoolId,
+    actorId: actorId ?? null,
     entity: 'fee_structure',
     entityId: structureId,
     before: beforeStructure,
@@ -180,6 +227,17 @@ export async function updateFeeStructure(
       admission_fee: updated.admissionFee ?? 0,
       sibling_discount_pct: updated.siblingDiscountPct ?? 0,
       effective_from: toISODate(updated.effectiveFrom),
+    },
+  });
+  await db.auditLog.create({
+    data: {
+      schoolId,
+      actorId: actorId ?? null,
+      actorType: 'user',
+      action: 'fee.structure.update',
+      entity: 'fee_structure',
+      entityId: structureId,
+      details: { monthly_amount: updated.monthlyAmount, effective_from: toISODate(updated.effectiveFrom) },
     },
   });
   const klass: any = await db.class.findFirst({ where: { id: updated.classId, schoolId } });
@@ -195,7 +253,7 @@ export async function updateFeeStructure(
   };
 }
 
-export async function deleteFeeStructure(db: Db, schoolId: string, structureId: string): Promise<void> {
+export async function deleteFeeStructure(db: Db, schoolId: string, structureId: string, actorId?: string): Promise<void> {
   const existing: any = await db.feeStructure.findUnique({ where: { id: structureId } });
   if (!existing || existing.schoolId !== schoolId) throw ApiError.notFound('Fee structure not found');
   // A structure that already produced fee records must not vanish silently:
@@ -216,9 +274,33 @@ export async function deleteFeeStructure(db: Db, schoolId: string, structureId: 
     }
   }
   await db.feeStructure.delete({ where: { id: structureId } });
+  await logDelete(db, {
+    schoolId,
+    actorId: actorId ?? null,
+    entity: 'fee_structure',
+    entityId: structureId,
+    before: { class_id: existing.classId, monthly_amount: existing.monthlyAmount, admission_fee: existing.admissionFee ?? 0, effective_from: toISODate(existing.effectiveFrom) },
+  });
+  await db.auditLog.create({
+    data: {
+      schoolId,
+      actorId: actorId ?? null,
+      actorType: 'user',
+      action: 'fee.structure.delete',
+      entity: 'fee_structure',
+      entityId: structureId,
+      details: { class_id: existing.classId, monthly_amount: existing.monthlyAmount },
+    },
+  });
 }
 
-/** Latest structure per class effective on or before the given month start. */
+/** Latest structure per class effective on or before the END of the given
+ * month. Fee applicability is month-granular: a structure effective any
+ * day inside month M applies to all of M (full monthly amount — there is
+ * no pro-rating). The previous month-START cutoff silently excluded
+ * mid-month structures from listFees projections, payFee's on-the-fly
+ * record creation, and rolloverMonth, so a class with a structure created
+ * on e.g. 7 Nov had nothing collectable for November at all. */
 export interface StructureForCalc {
   id: string;
   monthlyAmount: number;
@@ -232,7 +314,7 @@ async function latestStructuresByClass(
   schoolId: string,
   monthKey: string,
 ): Promise<Map<string, StructureForCalc>> {
-  const from = new Date(`${monthStartDate(monthKey)}T00:00:00Z`);
+  const from = new Date(`${monthEndDate(monthKey)}T00:00:00Z`);
   const all: any[] = await db.feeStructure.findMany({
     where: { schoolId, effectiveFrom: { lte: from } },
     orderBy: { effectiveFrom: 'desc' },
@@ -367,6 +449,53 @@ export async function feeBreakdownForStudent(
     arrears,
     scholarshipDiscount,
   });
+}
+
+/**
+ * Create `month` fee records for the active students of ONE class from the
+ * given structure — the single-class slice of rolloverMonth, used by the
+ * createFeeStructure backfill. Same fee math (see feeBreakdownForStudent),
+ * same idempotency (createMany skipDuplicates on the studentId+month
+ * unique key): existing records — paid, partial, or from an earlier
+ * structure — are never rewritten or duplicated. Returns how many records
+ * were actually created. No audit row here; the caller logs its own.
+ */
+export async function backfillMonthForClass(
+  db: Db,
+  schoolId: string,
+  classId: string,
+  structure: StructureForCalc,
+  month: string,
+): Promise<number> {
+  if (!isValidMonthKey(month)) throw ApiError.validation('month must be YYYY-MM');
+  const students: any[] = await db.student.findMany({
+    where: { schoolId, classId, status: 'active', deletedAt: null },
+    select: { id: true, parentPhoneHash: true },
+  });
+  const toCreate: Array<{ schoolId: string; studentId: string; month: string; amountDue: number; amountPaid: number; discount: number; arrears: number; scholarshipDiscount: number }> = [];
+  for (const s of students) {
+    const breakdown = await feeBreakdownForStudent(db, schoolId, s, structure, month);
+    toCreate.push({
+      schoolId,
+      studentId: s.id,
+      month,
+      amountDue: breakdown.amount_due,
+      amountPaid: 0,
+      discount: 0,
+      arrears: breakdown.arrears,
+      scholarshipDiscount: 0,
+    });
+  }
+  let created = 0;
+  const CHUNK = 500;
+  for (let i = 0; i < toCreate.length; i += CHUNK) {
+    const res = await db.feeRecord.createMany({
+      data: toCreate.slice(i, i + CHUNK),
+      skipDuplicates: true,
+    });
+    created += res.count;
+  }
+  return created;
 }
 
 // ---------------------------------------------------------------------------
@@ -568,6 +697,16 @@ export async function payFee(
           scholarshipDiscount: scholarship,
           // NOTE: `status` is a GENERATED column — never written, only read.
         },
+      });
+      // Round 2: a fee record created on the fly by a payment is still a
+      // create — log amount_due/arrears (the payment log below only covers
+      // the paid/discount fields).
+      await logCreate(tx, {
+        schoolId,
+        actorId,
+        entity: 'fee_record',
+        entityId: record.id,
+        after: { student_id: studentId, month: input.month, amount_due: amountDue, arrears, scholarship_discount: scholarship },
       });
     } else if (
       (input.arrears !== undefined || input.scholarship_discount !== undefined) &&
@@ -817,7 +956,7 @@ export async function monthlyFeeReport(db: Db, schoolId: string, month: string):
 // Month rollover (also used by the 1st-of-month job)
 // ---------------------------------------------------------------------------
 
-export async function rolloverMonth(db: Db, schoolId: string, month: string): Promise<RolloverResult> {
+export async function rolloverMonth(db: Db, schoolId: string, month: string, actorId?: string | null): Promise<RolloverResult> {
   if (!isValidMonthKey(month)) throw ApiError.validation('month must be YYYY-MM');
   const structures = await latestStructuresByClass(db, schoolId, month);
   const classes: any[] = await db.class.findMany({ where: { schoolId, deletedAt: null } });
@@ -877,6 +1016,18 @@ export async function rolloverMonth(db: Db, schoolId: string, month: string): Pr
       entityId: null,
       details: { month, created, skipped: toCreate.length - created, classes_without_structure: classesWithoutStructure },
     },
+  });
+  // Round 2: the rollover creates fee records — log one summary row
+  // (per-record rows would flood the history every month; the audit row
+  // above carries the full counts).
+  await writeChangeLogs(db, {
+    schoolId,
+    actorId: actorId ?? null,
+    actorType: 'system',
+    entity: 'fee_record',
+    entityId: null,
+    before: { created_records: null },
+    after: { created_records: created },
   });
 
   return { month, created, already_existed: toCreate.length - created, classes_without_structure: classesWithoutStructure };

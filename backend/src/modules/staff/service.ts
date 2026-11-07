@@ -10,7 +10,7 @@ import { ApiError } from '../../lib/errors';
 import { isValidDateString, dateOnly } from '../../lib/dates';
 import { normalizePhone, encryptPhone, decryptPhone, sha256Hex, maskPhone } from '../../lib/crypto';
 import { writeAudit } from '../../lib/audit';
-import { writeChangeLogs } from '../hardening/helpers';
+import { writeChangeLogs, logCreate, logDelete } from '../hardening/helpers';
 import { paginatedResponse, parsePagination } from '../../lib/pagination';
 import type { Db } from '../../lib/db';
 
@@ -104,6 +104,13 @@ export async function createStaff(
       subjects: subjectsOf(input.subjects), salaryMonthly: input.salary_monthly ?? null,
     },
   });
+  await logCreate(db, {
+    schoolId,
+    actorId,
+    entity: 'staff',
+    entityId: created.id,
+    after: { name: created.name, role: created.role, phone: phone.enc ? maskedPhone(phone.enc) : null, email: created.email, joining_date: created.joiningDate, subjects: created.subjects, salary_monthly: created.salaryMonthly },
+  });
   await writeAudit(db, { schoolId, actorId, actorType: 'user', action: 'staff.create', entity: 'staff', entityId: created.id, details: { name, role: input.role } });
   return toPublicStaff(created);
 }
@@ -179,6 +186,13 @@ export async function deleteStaff(db: Db, schoolId: string, id: string, actorId:
   await (db as any).deletedRecord.create({
     data: { schoolId, entity: 'staff', entityId: id, snapshot, deletedBy: actorId, deletedAt: new Date(), restoreBy: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) },
   });
+  await logDelete(db, {
+    schoolId,
+    actorId,
+    entity: 'staff',
+    entityId: id,
+    before: { name: s.name, role: s.role },
+  });
   await writeAudit(db, { schoolId, actorId, actorType: 'user', action: 'staff.delete', entity: 'staff', entityId: id, details: { name: s.name } });
 }
 
@@ -212,6 +226,13 @@ export async function assignStaff(
   const dup = await db.staffClassAssignment.findFirst({ where: { staffId, classId: input.class_id, subject } });
   if (dup) throw ApiError.conflict(`${staff.name} is already assigned to teach ${subject} in Class ${cls.name}-${cls.section}`);
   const created = await db.staffClassAssignment.create({ data: { schoolId, staffId, classId: input.class_id, subject } });
+  await logCreate(db, {
+    schoolId,
+    actorId,
+    entity: 'staff_class_assignment',
+    entityId: created.id,
+    after: { staff_id: staffId, class_id: input.class_id, subject },
+  });
   await writeAudit(db, { schoolId, actorId, actorType: 'user', action: 'staff.assign', entity: 'staff_class_assignment', entityId: created.id, details: { staff_id: staffId, class_id: input.class_id, subject } });
   return toPublicAssignment(created, staff.name, `${cls.name}-${cls.section}`);
 }
@@ -220,6 +241,13 @@ export async function removeAssignment(db: Db, schoolId: string, staffId: string
   const row = await db.staffClassAssignment.findFirst({ where: { id: assignmentId, schoolId, staffId } });
   if (!row) throw ApiError.notFound('Assignment not found');
   await db.staffClassAssignment.delete({ where: { id: assignmentId } });
+  await logDelete(db, {
+    schoolId,
+    actorId,
+    entity: 'staff_class_assignment',
+    entityId: assignmentId,
+    before: { staff_id: staffId, class_id: row.classId, subject: row.subject },
+  });
   await writeAudit(db, { schoolId, actorId, actorType: 'user', action: 'staff.unassign', entity: 'staff_class_assignment', entityId: assignmentId, details: { staff_id: staffId, subject: row.subject } });
 }
 
@@ -270,6 +298,13 @@ export async function createSalaryRecord(
   const created = await db.salaryRecord.create({
     data: { schoolId, staffId: input.staff_id, month: input.month, baseSalary, deductions, netPay: computeNetPay(baseSalary, deductions), paidAt: null, payslipNo },
   });
+  await logCreate(db, {
+    schoolId,
+    actorId,
+    entity: 'salary_record',
+    entityId: created.id,
+    after: { staff_id: input.staff_id, month: input.month, base_salary: created.baseSalary, deductions: created.deductions, net_pay: created.netPay, payslip_no: created.payslipNo },
+  });
   await writeAudit(db, { schoolId, actorId, actorType: 'user', action: 'payroll.create', entity: 'salary_record', entityId: created.id, details: { staff_id: input.staff_id, month: input.month, net_pay: created.netPay } });
   return toPublicSalaryRecord(created, staff.name);
 }
@@ -307,6 +342,13 @@ export async function deleteSalaryRecord(db: Db, schoolId: string, id: string, a
   if (!r) throw ApiError.notFound('Salary record not found');
   if (r.paidAt) throw ApiError.conflict('A paid salary record cannot be deleted. Unmark it as paid first.');
   await db.salaryRecord.delete({ where: { id } });
+  await logDelete(db, {
+    schoolId,
+    actorId,
+    entity: 'salary_record',
+    entityId: id,
+    before: { staff_id: r.staffId, month: r.month, base_salary: r.baseSalary, deductions: r.deductions, net_pay: r.netPay },
+  });
   await writeAudit(db, { schoolId, actorId, actorType: 'user', action: 'payroll.delete', entity: 'salary_record', entityId: id, details: { month: r.month } });
 }
 

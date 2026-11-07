@@ -44,7 +44,8 @@ describe('staff CRUD', () => {
     const updated = await svc.updateStaff(db, schoolId, s.id as string, { phone: '03219876543', salary_monthly: 65000 }, 'admin-1');
     expect(updated.phone_masked).toBe('+92 3XX XXXX543');
     const logs = (db as any).changeLog.findMany({ where: { entity: 'staff', entityId: s.id } });
-    const phoneLog = logs.find((l: any) => l.field === 'phone');
+    // Round 2: the create also logs a phone row (old null) — pick the update row.
+    const phoneLog = logs.filter((l: any) => l.field === 'phone').find((l: any) => l.oldValue === '+92 3XX XXXX567');
     expect(phoneLog.oldValue).toBe('+92 3XX XXXX567');
     expect(phoneLog.newValue).toBe('+92 3XX XXXX543');
     expect((await svc.listStaff(db, schoolId, { role: 'teacher' })).total).toBe(1);

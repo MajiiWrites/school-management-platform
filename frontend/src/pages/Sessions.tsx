@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import { api, ApiClientError } from '../lib/api';
 import type { AcademicSession, ClassItem, PageResult } from '../lib/types';
-import { fmtDate } from '../lib/utils';
+import { fmtDate, todayISO } from '../lib/utils';
 import { Badge, Button, Card, EmptyState, ErrorBanner, Field, inputCls, Modal, Spinner, useToast } from '../components/ui';
 import ConfirmDialog from '../components/ConfirmDialog';
 
@@ -164,10 +164,19 @@ export default function SessionsPage() {
             <input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. 2026-27" autoComplete="off" required />
           </Field>
           <Field label="Start date">
-            <input type="date" className={inputCls} value={startDate} onChange={(e) => setStartDate(e.target.value)} autoComplete="off" required />
+            {/* R2-D (h): no "Today" control existed anywhere — the native
+                date input offers none — so the re-test's Today click could
+                not set a date. Explicit button, school-local (PKT) today. */}
+            <div className="flex gap-2">
+              <input type="date" className={inputCls} value={startDate} onChange={(e) => setStartDate(e.target.value)} autoComplete="off" required />
+              <Button type="button" variant="secondary" onClick={() => setStartDate(todayISO())}>Today</Button>
+            </div>
           </Field>
           <Field label="End date">
-            <input type="date" className={inputCls} value={endDate} onChange={(e) => setEndDate(e.target.value)} autoComplete="off" required />
+            <div className="flex gap-2">
+              <input type="date" className={inputCls} value={endDate} onChange={(e) => setEndDate(e.target.value)} autoComplete="off" required />
+              <Button type="button" variant="secondary" onClick={() => setEndDate(todayISO())}>Today</Button>
+            </div>
           </Field>
           <div className="flex items-end">
             <Button type="submit" disabled={busy}>Add session</Button>

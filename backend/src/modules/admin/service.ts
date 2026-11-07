@@ -3,7 +3,7 @@ import { config } from '../../config';
 import { ApiError } from '../../lib/errors';
 import { todayInTz, currentMonthInTz, isValidDateString, isNonSchoolDay, dateOnly, monthRange } from '../../lib/dates';
 import { writeAudit } from '../../lib/audit';
-import { writeChangeLogs } from '../hardening/helpers';
+import { writeChangeLogs, logCreate, logDelete } from '../hardening/helpers';
 import { paginatedResponse, parsePagination } from '../../lib/pagination';
 import type { Db } from '../../lib/db';
 
@@ -266,6 +266,13 @@ export async function createClerk(db: Db, schoolId: string, input: { email: stri
   const clerk = await db.user.create({
     data: { schoolId: schoolId, email, passwordHash: passwordHash, role: 'clerk', emailVerified: true },
   });
+  await logCreate(db, {
+    schoolId,
+    actorId: adminId,
+    entity: 'user',
+    entityId: clerk.id,
+    after: { email, role: 'clerk' },
+  });
   await writeAudit(db, { schoolId, actorId: adminId, actorType: 'user', action: 'user.clerk_create', entity: 'user', entityId: clerk.id, details: { email } });
   return { id: clerk.id, email: clerk.email, role: clerk.role, school_id: clerk.schoolId, email_verified: clerk.emailVerified };
 }
@@ -284,6 +291,13 @@ export async function deleteUser(db: Db, schoolId: string, id: string, adminId: 
     if (admins <= 1) throw ApiError.conflict('Cannot delete the last admin of the school');
   }
   await db.user.delete({ where: { id } });
+  await logDelete(db, {
+    schoolId,
+    actorId: adminId,
+    entity: 'user',
+    entityId: id,
+    before: { email: target.email, role: target.role },
+  });
   await writeAudit(db, { schoolId, actorId: adminId, actorType: 'user', action: 'user.delete', entity: 'user', entityId: id, details: { email: target.email, role: target.role } });
 }
 
@@ -300,6 +314,13 @@ export async function createHoliday(db: Db, schoolId: string, input: { date: str
   const existing = await db.holiday.findFirst({ where: { schoolId: schoolId, date: dateOnly(input.date) } });
   if (existing) throw ApiError.conflict('This date is already a holiday');
   const created = await db.holiday.create({ data: { schoolId: schoolId, date: dateOnly(input.date), name: input.name.trim() } });
+  await logCreate(db, {
+    schoolId,
+    actorId: adminId,
+    entity: 'holiday',
+    entityId: created.id,
+    after: { date: input.date, name: created.name },
+  });
   await writeAudit(db, { schoolId, actorId: adminId, actorType: 'user', action: 'holiday.create', entity: 'holiday', entityId: created.id, details: { date: input.date, name: input.name } });
   return created;
 }
@@ -308,6 +329,13 @@ export async function deleteHoliday(db: Db, schoolId: string, id: string, adminI
   const existing = await db.holiday.findFirst({ where: { id, schoolId: schoolId } });
   if (!existing) throw ApiError.notFound('Holiday not found');
   await db.holiday.delete({ where: { id } });
+  await logDelete(db, {
+    schoolId,
+    actorId: adminId,
+    entity: 'holiday',
+    entityId: id,
+    before: { date: existing.date, name: existing.name },
+  });
   await writeAudit(db, { schoolId, actorId: adminId, actorType: 'user', action: 'holiday.delete', entity: 'holiday', entityId: id, details: { date: existing.date } });
 }
 
@@ -323,6 +351,13 @@ export async function createSession(db: Db, schoolId: string, input: { name: str
   if (!isValidDateString(input.start_date) || !isValidDateString(input.end_date)) throw ApiError.validation('Dates must be YYYY-MM-DD');
   if (input.start_date >= input.end_date) throw ApiError.validation('start_date must be before end_date');
   const created = await db.academicSession.create({ data: { schoolId: schoolId, name: input.name.trim(), startDate: dateOnly(input.start_date), endDate: dateOnly(input.end_date), isCurrent: false } });
+  await logCreate(db, {
+    schoolId,
+    actorId: adminId,
+    entity: 'academic_session',
+    entityId: created.id,
+    after: { name: created.name, start_date: created.startDate, end_date: created.endDate },
+  });
   await writeAudit(db, { schoolId, actorId: adminId, actorType: 'user', action: 'session.create', entity: 'academic_session', entityId: created.id, details: { name: input.name } });
   return created;
 }
@@ -333,6 +368,14 @@ export async function makeSessionCurrent(db: Db, schoolId: string, id: string, a
   await db.$transaction(async (tx) => {
     await tx.academicSession.updateMany({ where: { schoolId: schoolId, isCurrent: true }, data: { isCurrent: false } });
     await tx.academicSession.update({ where: { id }, data: { isCurrent: true } });
+  });
+  await writeChangeLogs(db, {
+    schoolId,
+    actorId: adminId,
+    entity: 'academic_session',
+    entityId: id,
+    before: { is_current: false },
+    after: { is_current: true },
   });
   await writeAudit(db, { schoolId, actorId: adminId, actorType: 'user', action: 'session.make_current', entity: 'academic_session', entityId: id });
   return { ...session, is_current: true };
@@ -351,9 +394,11 @@ export async function promoteStudents(
   const session = await db.academicSession.findFirst({ where: { id: input.session_id, schoolId: schoolId } });
   if (!session) throw ApiError.notFound('Session not found');
   if (!Array.isArray(input.mappings) || input.mappings.length === 0) throw ApiError.validation('mappings must be a non-empty array');
+  const beforeClassByStudent = new Map<string, string>();
   for (const m of input.mappings) {
     const student = await db.student.findFirst({ where: { id: m.student_id, schoolId: schoolId } });
     if (!student) throw ApiError.validation(`Student not found: ${m.student_id}`);
+    beforeClassByStudent.set(m.student_id, (student as any).classId);
     const toClass = await db.class.findFirst({ where: { id: m.to_class_id, schoolId: schoolId } });
     if (!toClass) throw ApiError.validation(`Class not found: ${m.to_class_id}`);
   }
@@ -372,6 +417,19 @@ export async function promoteStudents(
       await tx.student.update({ where: { id: m.student_id }, data: { classId: m.to_class_id } });
     }
   });
+  for (const m of input.mappings) {
+    const fromClassId = beforeClassByStudent.get(m.student_id);
+    if (fromClassId !== undefined && fromClassId !== m.to_class_id) {
+      await writeChangeLogs(db, {
+        schoolId,
+        actorId: adminId,
+        entity: 'student',
+        entityId: m.student_id,
+        before: { class_id: fromClassId },
+        after: { class_id: m.to_class_id },
+      });
+    }
+  }
   await writeAudit(db, { schoolId, actorId: adminId, actorType: 'user', action: 'promotion.run', entity: 'academic_session', entityId: input.session_id, details: { promoted: input.mappings.length } });
   return { promoted: input.mappings.length };
 }
@@ -387,6 +445,13 @@ export async function createLeave(db: Db, schoolId: string, input: { student_id:
   if (!student) throw ApiError.notFound('Student not found');
   const created = await db.leaveApplication.create({
     data: { schoolId: schoolId, studentId: input.student_id, fromDate: dateOnly(input.from_date), toDate: dateOnly(input.to_date), reason: input.reason.trim(), status: 'pending' },
+  });
+  await logCreate(db, {
+    schoolId,
+    actorId: adminId,
+    entity: 'leave_application',
+    entityId: created.id,
+    after: { student_id: input.student_id, from_date: input.from_date, to_date: input.to_date, reason: created.reason, status: 'pending' },
   });
   await writeAudit(db, { schoolId, actorId: adminId, actorType: 'user', action: 'leave.create', entity: 'leave_application', entityId: created.id, details: { student_id: input.student_id } });
   return toLeaveView(created, student.name);

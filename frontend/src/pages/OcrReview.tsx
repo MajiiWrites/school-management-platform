@@ -12,6 +12,15 @@ function errText(e: unknown): string {
   return e instanceof ApiClientError ? e.message : 'Something went wrong.';
 }
 
+/** Human-readable reason for a "Duplicate?" flag, so the badge explains
+ * itself instead of leaving the admin guessing what collides. */
+function duplicateLabel(reason?: string | null): string {
+  if (reason === 'duplicate_name') return 'Duplicate? — same name already in this class';
+  if (reason === 'duplicate_roll_no') return 'Duplicate? — roll number already used in this class';
+  if (reason === 'duplicate_phone') return 'Duplicate? — same parent number already in this class';
+  return 'Duplicate? — matches an existing student in this class';
+}
+
 export default function OcrReviewPage() {
   const { id: classId } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -220,7 +229,11 @@ export default function OcrReviewPage() {
                         ) : (
                           <span className="text-xs text-slate-500">{Math.round(r.confidence * 100)}%</span>
                         )}
-                        {r.duplicate && <Badge tone="amber">Duplicate?</Badge>}
+                        {r.duplicate && (
+                          <span title={duplicateLabel(r.duplicate_reason)}>
+                            <Badge tone="amber">Duplicate?</Badge>
+                          </span>
+                        )}
                       </td>
                       <td className="px-3 py-2">
                         <button className="text-sm font-medium text-red-600 hover:underline" onClick={() => setPendingRemoveRow(i)}>

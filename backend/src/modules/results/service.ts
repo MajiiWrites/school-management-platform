@@ -20,7 +20,7 @@
 import PDFDocument from 'pdfkit';
 import { ApiError } from '../../lib/errors';
 import { writeAudit } from '../../lib/audit';
-import { writeChangeLogs, softDeleteEntity } from '../hardening/helpers';
+import { writeChangeLogs, logCreate, softDeleteEntity } from '../hardening/helpers';
 import { paginatedResponse, parsePagination } from '../../lib/pagination';
 import { normalizeName } from '../../lib/crypto';
 import { runOcr } from '../ocr/ocr-engine';
@@ -171,6 +171,7 @@ export async function upsertExam(
   db: Db,
   schoolId: string,
   input: { name: string; session_id?: string | null; start_date?: string | null; end_date?: string | null },
+  actorId?: string | null,
 ): Promise<any> {
   const name = input.name.trim();
   if (!name) throw ApiError.validation('Exam name is required');
@@ -182,7 +183,7 @@ export async function upsertExam(
     const session = await db.academicSession.findFirst({ where: { id: input.session_id, schoolId } });
     if (!session) throw ApiError.notFound('Academic session not found');
   }
-  return db.exam.create({
+  const created = await db.exam.create({
     data: {
       schoolId,
       name,
@@ -191,6 +192,14 @@ export async function upsertExam(
       endDate: input.end_date ? new Date(input.end_date) : null,
     },
   });
+  await logCreate(db, {
+    schoolId,
+    actorId: actorId ?? null,
+    entity: 'exam',
+    entityId: created.id,
+    after: { name: created.name, session_id: created.sessionId },
+  });
+  return created;
 }
 
 /** Grading scales for a class: class-specific rows first, then school-wide (class_id NULL). */
@@ -311,7 +320,7 @@ export async function uploadResultSheet(
   opts: { runOcr?: (filePath: string) => Promise<{ raw_text: string; engine: string; warnings: string[] }> } = {},
 ): Promise<UploadResult> {
   await assertClassInSchool(db, schoolId, classId);
-  const exam = await upsertExam(db, schoolId, { name: input.exam_name, session_id: input.session_id ?? null });
+  const exam = await upsertExam(db, schoolId, { name: input.exam_name, session_id: input.session_id ?? null }, actorId ?? null);
   const sheet = await db.resultSheet.create({
     data: {
       schoolId,
@@ -326,6 +335,13 @@ export async function uploadResultSheet(
     const ocr = opts.runOcr ? await opts.runOcr(input.file_path) : await runOcr(input.file_path);
     const parsed = parseResultSheet(ocr.raw_text);
     await db.resultSheet.update({ where: { id: sheet.id }, data: { status: 'review', rawText: ocr.raw_text } });
+    await logCreate(db, {
+      schoolId,
+      actorId: actorId ?? null,
+      entity: 'result_sheet',
+      entityId: sheet.id,
+      after: { exam_id: exam.id, class_id: classId, status: 'review' },
+    });
     await writeAudit(db, { schoolId, actorId: actorId ?? null, actorType: 'user', action: 'result_sheet.upload', entity: 'result_sheet', entityId: sheet.id, details: { class_id: classId, exam_id: exam.id, engine: ocr.engine, rows_found: parsed.rows.length } });
     return {
       result_sheet_id: sheet.id,
@@ -467,7 +483,8 @@ export async function saveResultRows(
       const updated = await db.result.update({ where: { id: existing.id }, data });
       await writeChangeLogs(db, { schoolId, actorId: actorId ?? null, entity: 'result', entityId: existing.id, before: beforeView, after: resultChangeView(updated) });
     } else {
-      await db.result.create({ data });
+      const created = await db.result.create({ data });
+      await logCreate(db, { schoolId, actorId: actorId ?? null, entity: 'result', entityId: created.id, after: resultChangeView(created) });
     }
     out.saved += 1;
     if (studentId) out.linked += 1;
@@ -492,7 +509,7 @@ export async function saveManualResults(
   let examId = input.exam_id ?? null;
   if (!examId) {
     if (!input.exam_name) throw ApiError.validation('exam_id or exam_name is required');
-    const exam = await upsertExam(db, schoolId, { name: input.exam_name, session_id: input.session_id ?? null });
+    const exam = await upsertExam(db, schoolId, { name: input.exam_name, session_id: input.session_id ?? null }, actorId ?? null);
     examId = exam.id;
   }
   if (!examId) throw ApiError.validation('exam_id or exam_name is required');
@@ -694,9 +711,11 @@ export async function getReportCard(db: Db, schoolId: string, studentId: string,
   const percentage = total > 0 ? Math.round((obtained / total) * 10000) / 100 : null;
   const { grade } = await gradeForPercentage(db, schoolId, first.classId, percentage);
   const position = rows.map((r: any) => r.position).filter((p: any) => p !== null && p !== undefined).sort((a: number, b: number) => a - b)[0] ?? null;
-  // Father's name: the student record wins; fall back to the father's name
-  // entered with the result itself (manual entry / review table), so a
-  // result entered for a student whose profile has no father still shows one.
+  // Father's name: the name saved ON THE RESULT wins — the report card
+  // is the record of this exam, so a father name entered/corrected with
+  // the result must show here even when the student profile has a
+  // different (stale) one. Fall back to the profile only when the result
+  // carries no father name at all.
   const resultFather = rows.map((r: any) => (r.fatherName ?? '').trim()).find((f: string) => f) ?? null;
   const remarks = rows.map((r: any) => (r.remarks ?? '').trim()).filter((m: string) => m);
   return {
@@ -705,7 +724,7 @@ export async function getReportCard(db: Db, schoolId: string, studentId: string,
     student: {
       id: student.id,
       name: student.name,
-      father_name: student.fatherName ?? resultFather,
+      father_name: resultFather ?? student.fatherName,
       admission_no: student.admissionNo ?? null,
       roll_no: student.rollNo ?? null,
     },

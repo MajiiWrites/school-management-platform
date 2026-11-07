@@ -7,6 +7,7 @@
 import bcrypt from 'bcrypt';
 import { ApiError } from '../../lib/errors';
 import { writeAudit } from '../../lib/audit';
+import { writeChangeLogs } from './helpers';
 import { paginatedResponse, parsePagination } from '../../lib/pagination';
 import type { Db } from '../../lib/db';
 import { ACTIONS, DEFAULT_MATRIX, RESOURCES, getEffectivePermissions } from './permissions';
@@ -87,6 +88,14 @@ export async function createPrincipal(
   const principal = await db.user.create({
     data: { schoolId, email, passwordHash, role: 'principal', emailVerified: true },
   });
+  await writeChangeLogs(db, {
+    schoolId,
+    actorId: adminId,
+    entity: 'user',
+    entityId: principal.id,
+    before: {},
+    after: { email, role: 'principal' },
+  });
   await writeAudit(db, {
     schoolId,
     actorId: adminId,
@@ -116,10 +125,19 @@ export async function listChangeHistory(
     (db as any).changeLog.findMany({ where, orderBy: [{ changedAt: 'desc' }], skip, take: limit }),
     (db as any).changeLog.count({ where }),
   ]);
+  // Round 2: resolve the actor id to the admin's email so the WHO column
+  // shows a person, not a bare UUID. Users have no display name — email
+  // is the identity. Deleted actors resolve to null (actor_id is SetNull).
+  const actorIds = [...new Set(items.map((r: any) => r.actorId).filter((id: unknown): id is string => typeof id === 'string' && id.length > 0))];
+  const actors = actorIds.length > 0
+    ? await (db as any).user.findMany({ where: { schoolId, id: { in: actorIds } } })
+    : [];
+  const emailById = new Map<string, string>(actors.map((u: any) => [u.id, u.email] as [string, string]));
   const mapped = items.map((r: any) => ({
     id: r.id,
     school_id: r.schoolId,
     actor_id: r.actorId ?? null,
+    actor_email: r.actorId ? (emailById.get(r.actorId) ?? null) : null,
     actor_type: r.actorType,
     entity: r.entity,
     entity_id: r.entityId ?? null,

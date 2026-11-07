@@ -69,7 +69,7 @@ feesRouter.post(
   asyncHandler(async (req, res) => {
     // 6A: clerk structure creates go to the approval queue (202).
     if (await queueIfClerk(req, res, { actionType: 'create', entity: 'fee_structure', payload: req.body })) return;
-    const data = await createFeeStructure(getDb(), schoolIdOf(req), req.body);
+    const data = await createFeeStructure(getDb(), schoolIdOf(req), req.body, undefined, req.user!.sub);
     res.status(201).json({ ok: true, data });
   }),
 );
@@ -80,7 +80,7 @@ feesRouter.patch(
   requireQueueable('fees', 'update'),
   asyncHandler(async (req, res) => {
     if (await queueIfClerk(req, res, { actionType: 'update', entity: 'fee_structure', entityId: req.params.id, payload: { id: req.params.id, patch: req.body } })) return;
-    const data = await updateFeeStructure(getDb(), schoolIdOf(req), req.params.id, req.body);
+    const data = await updateFeeStructure(getDb(), schoolIdOf(req), req.params.id, req.body, req.user!.sub);
     res.json({ ok: true, data });
   }),
 );
@@ -90,7 +90,7 @@ feesRouter.delete(
   requireAdmin,
   requirePermission('fees', 'delete'),
   asyncHandler(async (req, res) => {
-    await deleteFeeStructure(getDb(), schoolIdOf(req), req.params.id);
+    await deleteFeeStructure(getDb(), schoolIdOf(req), req.params.id, req.user!.sub);
     res.json({ ok: true, data: { deleted: true } });
   }),
 );
@@ -262,7 +262,7 @@ feesRouter.post(
   asyncHandler(async (req, res) => {
     const month = (req.body?.month as string | undefined) ?? queryStr(req, 'month');
     if (!month) throw ApiError.validation('month (YYYY-MM) is required');
-    const data = await rolloverMonth(getDb(), schoolIdOf(req), month);
+    const data = await rolloverMonth(getDb(), schoolIdOf(req), month, req.user?.sub ?? null);
     res.json({ ok: true, data });
   }),
 );

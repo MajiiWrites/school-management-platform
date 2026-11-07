@@ -17,7 +17,7 @@
 import { ApiError } from '../../lib/errors';
 import { isValidDateString, dateOnly } from '../../lib/dates';
 import { writeAudit } from '../../lib/audit';
-import { writeChangeLogs } from '../hardening/helpers';
+import { writeChangeLogs, logCreate, logDelete } from '../hardening/helpers';
 import { paginatedResponse, parsePagination } from '../../lib/pagination';
 import type { Db } from '../../lib/db';
 import { promoteStudents } from '../admin/service';
@@ -88,6 +88,13 @@ export async function createSession(
   if (dup) throw ApiError.conflict(`A session named "${name}" already exists`);
   const created = await db.academicSession.create({
     data: { schoolId, name, startDate: dateOnly(input.start_date), endDate: dateOnly(input.end_date), isCurrent: false },
+  });
+  await logCreate(db, {
+    schoolId,
+    actorId,
+    entity: 'academic_session',
+    entityId: created.id,
+    after: { name: created.name, start_date: created.startDate, end_date: created.endDate },
   });
   await writeAudit(db, { schoolId, actorId, actorType: 'user', action: 'session.create', entity: 'academic_session', entityId: created.id, details: { name } });
   return toPublicSession(created, false);
@@ -197,6 +204,13 @@ export async function deleteSession(db: Db, schoolId: string, id: string, actorI
   await db.academicSession.delete({ where: { id } });
   await (db as any).deletedRecord.create({
     data: { schoolId, entity: 'academic_session', entityId: id, snapshot, deletedBy: actorId, deletedAt: new Date(), restoreBy: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) },
+  });
+  await logDelete(db, {
+    schoolId,
+    actorId,
+    entity: 'academic_session',
+    entityId: id,
+    before: { name: s.name, start_date: s.startDate, end_date: s.endDate },
   });
   await writeAudit(db, { schoolId, actorId, actorType: 'user', action: 'session.delete', entity: 'academic_session', entityId: id, details: { name: s.name } });
 }

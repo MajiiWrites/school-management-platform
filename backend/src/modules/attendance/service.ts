@@ -1,6 +1,7 @@
 import { ApiError } from '../../lib/errors';
 import { isNonSchoolDay, todayInTz, isValidDateString, dateOnly } from '../../lib/dates';
 import { writeAudit } from '../../lib/audit';
+import { writeChangeLogs } from '../hardening/helpers';
 import { resolveLinkToken } from '../classes/service';
 import { buildAbsentDrafts } from '../messaging/service';
 import { createPrismaMessagingStore } from '../messaging/store';
@@ -256,6 +257,14 @@ export async function unlockAttendance(db: Db, schoolId: string, classId: string
   const day = await getClassDay(db, classId, date, schoolId);
   if (!day) throw ApiError.notFound('No attendance submission exists for this class and date');
   const updated = await db.attendanceDay.update({ where: { id: day.id }, data: { unlocked: true, unlockedBy: adminId } });
+  await writeChangeLogs(db, {
+    schoolId,
+    actorId: adminId,
+    entity: 'attendance_day',
+    entityId: day.id,
+    before: { unlocked: false },
+    after: { unlocked: true },
+  });
   await writeAudit(db, { schoolId, actorId: adminId, actorType: 'user', action: 'attendance.unlock', entity: 'attendance_day', entityId: day.id, details: { class_id: classId, date } });
   return updated;
 }
@@ -305,6 +314,22 @@ export async function editAttendance(
       })),
     });
   });
+
+  // Round 2: log every status that actually changed (one row per student).
+  const prevIdByStudent = new Map<string, string>(prevRecords.map((r: any) => [r.studentId, r.id]));
+  for (const s of students) {
+    const next = statuses.get(s.id);
+    const prev = prevByStudent.get(s.id);
+    if (next === undefined || next === prev) continue;
+    await writeChangeLogs(db, {
+      schoolId,
+      actorId: adminId,
+      entity: 'attendance_record',
+      entityId: prevIdByStudent.get(s.id) ?? null,
+      before: prev === undefined ? {} : { status: prev },
+      after: { status: next },
+    });
+  }
 
   // Re-sync absent drafts: cancel unapproved drafts for students no longer
   // absent; create drafts for newly absent students (dedupe-guarded).
@@ -408,6 +433,14 @@ export async function markTeacherAttendance(
   const saved = existing
     ? await db.teacherAttendance.update({ where: { id: existing.id }, data })
     : await db.teacherAttendance.create({ data });
+  await writeChangeLogs(db, {
+    schoolId,
+    actorId: adminId,
+    entity: 'teacher_attendance',
+    entityId: saved.id,
+    before: existing ? { status: existing.status } : {},
+    after: { status: input.status },
+  });
   await writeAudit(db, { schoolId, actorId: adminId, actorType: 'user', action: 'teacher_attendance.mark', entity: 'teacher_attendance', entityId: saved.id, details: { class_id: input.class_id, date: input.date, status: input.status } });
   return saved;
 }

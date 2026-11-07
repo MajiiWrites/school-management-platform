@@ -129,11 +129,16 @@ export default function StudentsPanel({
     try {
       const form = new FormData();
       form.append('file', file);
-      const res = await api<{ imported: number; duplicates_flagged: number; invalid_rows: number }>(
+      const res = await api<{ imported: number; duplicates_flagged: number; invalid_rows: Array<{ row: number; reason: string }> | number }>(
         `/classes/${classId}/students/import-csv`,
         { method: 'POST', body: form },
       );
-      push('success', `Imported ${res.imported} students (${res.duplicates_flagged} duplicates flagged, ${res.invalid_rows} invalid rows).`);
+      // R2-D (a): the API returns invalid_rows as an ARRAY of {row, reason}
+      // (same shape as the preview and Parents.tsx); interpolating it
+      // directly rendered "[object Object]". Count it, tolerating the
+      // legacy number shape the mock API returns.
+      const invalidCount = Array.isArray(res.invalid_rows) ? res.invalid_rows.length : res.invalid_rows;
+      push('success', `Imported ${res.imported} students (${res.duplicates_flagged} duplicates flagged, ${invalidCount} invalid rows).`);
       // Refresh list
       const fresh = await api<{ items: Student[] }>(`/classes/${classId}/students?limit=200`);
       setStudents(fresh.items);
