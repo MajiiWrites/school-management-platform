@@ -1,7 +1,7 @@
 import bcrypt from 'bcrypt';
 import { config } from '../../config';
 import { ApiError } from '../../lib/errors';
-import { hashToken, randomToken } from '../../lib/crypto';
+import { hashToken, randomToken, normalizePhone, encryptPhone, sha256Hex } from '../../lib/crypto';
 import { signAccessToken, signRefreshToken, signTemp2faToken, makeEmailToken, verifyRefreshToken } from '../../lib/tokens';
 import { sendMail, verificationEmailBody, resetPasswordEmailBody } from '../../lib/mail';
 import { writeAudit } from '../../lib/audit';
@@ -11,6 +11,71 @@ import type { Db } from '../../lib/db';
 
 const VERIFY_TTL_MS = 24 * 60 * 60 * 1000;
 const RESET_TTL_MS = 60 * 60 * 1000;
+
+// Registration profile (2026-11-08): value lists for the signup fields.
+// Keep in sync with the CHECK constraints in migration
+// 20261108020000_add_registration_profile and the zod enums in
+// routes.ts (which re-export these).
+export const PROVINCES = [
+  'Punjab',
+  'Sindh',
+  'Khyber Pakhtunkhwa',
+  'Balochistan',
+  'Gilgit-Baltistan',
+  'Azad Jammu & Kashmir',
+  'Islamabad Capital Territory',
+] as const;
+export type Province = (typeof PROVINCES)[number];
+export const SCHOOL_CATEGORIES = ['Private', 'Public', 'Semi-Government'] as const;
+export type SchoolCategory = (typeof SCHOOL_CATEGORIES)[number];
+export const ORG_TYPES = ['School', 'College'] as const;
+export type OrgType = (typeof ORG_TYPES)[number];
+
+export interface SignupInput {
+  school_name: string;
+  email: string;
+  password: string;
+  admin_name: string;
+  admin_phone: string;
+  address: string;
+  tehsil: string;
+  district: string;
+  province: Province;
+  category: SchoolCategory;
+  org_type: OrgType;
+}
+
+export interface SignupSchool {
+  id: string;
+  name: string;
+  slug: string;
+  address: string | null;
+  tehsil: string | null;
+  district: string | null;
+  province: string | null;
+  category: string | null;
+  org_type: string | null;
+}
+
+/** Defense in depth: the service validates the registration profile
+ * itself and never trusts the route's zod schema alone — direct callers
+ * (and future routes) get the same rejections. */
+function validateRegistrationProfile(input: SignupInput): { adminName: string; adminPhoneE164: string } {
+  const adminName = typeof input.admin_name === 'string' ? input.admin_name.trim() : '';
+  if (adminName.length < 2 || adminName.length > 100) throw ApiError.validation('Admin name must be 2–100 characters');
+  const adminPhoneE164 = normalizePhone(input.admin_phone);
+  if (!adminPhoneE164) throw ApiError.validation('Enter a valid Pakistani mobile number, e.g. 03001234567');
+  const address = typeof input.address === 'string' ? input.address.trim() : '';
+  if (address.length < 5 || address.length > 500) throw ApiError.validation('Address must be 5–500 characters');
+  for (const [key, value] of [['tehsil', input.tehsil], ['district', input.district]] as const) {
+    const v = typeof value === 'string' ? value.trim() : '';
+    if (v.length < 2 || v.length > 100) throw ApiError.validation(`${key} must be 2–100 characters`);
+  }
+  if (!(PROVINCES as readonly string[]).includes(input.province)) throw ApiError.validation('Province is not valid');
+  if (!(SCHOOL_CATEGORIES as readonly string[]).includes(input.category)) throw ApiError.validation('Category must be Private, Public or Semi-Government');
+  if (!(ORG_TYPES as readonly string[]).includes(input.org_type)) throw ApiError.validation('Organization type must be School or College');
+  return { adminName, adminPhoneE164 };
+}
 
 export interface PublicUser {
   id: string;
@@ -45,8 +110,9 @@ async function uniqueSlug(db: Db, name: string): Promise<string> {
 
 export async function signup(
   db: Db,
-  input: { school_name: string; email: string; password: string },
-): Promise<{ user: PublicUser; school: { id: string; name: string; slug: string }; access: string; refresh: string; dev_token?: string }> {
+  input: SignupInput,
+): Promise<{ user: PublicUser; school: SignupSchool; access: string; refresh: string; dev_token?: string }> {
+  const { adminName, adminPhoneE164 } = validateRegistrationProfile(input);
   const email = input.email.trim().toLowerCase();
   const existing = await db.user.findFirst({ where: { email } });
   if (existing) throw ApiError.conflict('An account with this email already exists');
@@ -55,19 +121,39 @@ export async function signup(
   const { token, hash } = makeEmailToken();
   const slug = await uniqueSlug(db, input.school_name);
 
-  const school = await db.school.create({
-    data: { name: input.school_name.trim(), slug, timezone: 'Asia/Karachi', country: 'PK', settings: {} },
-  });
-  const user = await db.user.create({
-    data: {
-      schoolId: school.id,
-      email,
-      passwordHash: passwordHash,
-      role: 'admin',
-      emailVerified: false,
-      verifyTokenHash: hash,
-      verifyExpiresAt: new Date(Date.now() + VERIFY_TTL_MS),
-    },
+  // School + admin are created in one transaction: a failure cannot
+  // leave a school without its admin (or vice versa).
+  const { school, user } = await db.$transaction(async (tx) => {
+    const school = await tx.school.create({
+      data: {
+        name: input.school_name.trim(),
+        slug,
+        timezone: 'Asia/Karachi',
+        country: 'PK',
+        settings: {},
+        address: input.address.trim(),
+        tehsil: input.tehsil.trim(),
+        district: input.district.trim(),
+        province: input.province,
+        category: input.category,
+        orgType: input.org_type,
+      },
+    });
+    const user = await tx.user.create({
+      data: {
+        schoolId: school.id,
+        email,
+        passwordHash: passwordHash,
+        role: 'admin',
+        emailVerified: false,
+        verifyTokenHash: hash,
+        verifyExpiresAt: new Date(Date.now() + VERIFY_TTL_MS),
+        name: adminName,
+        phoneEnc: encryptPhone(adminPhoneE164),
+        phoneHash: sha256Hex(adminPhoneE164),
+      },
+    });
+    return { school, user };
   });
   await writeAudit(db, {
     schoolId: school.id,
@@ -115,9 +201,19 @@ export async function signup(
   // return no tokens — so localStorage got the literal string "undefined"
   // and every call after signup 401'd. Login-before-verification is
   // allowed by design, so issue tokens here exactly like login does.
-  const out: { user: PublicUser; school: { id: string; name: string; slug: string }; access: string; refresh: string; dev_token?: string } = {
+  const out: { user: PublicUser; school: SignupSchool; access: string; refresh: string; dev_token?: string } = {
     user: toPublicUser(user),
-    school: { id: school.id, name: school.name, slug: school.slug },
+    school: {
+      id: school.id,
+      name: school.name,
+      slug: school.slug,
+      address: school.address ?? null,
+      tehsil: school.tehsil ?? null,
+      district: school.district ?? null,
+      province: school.province ?? null,
+      category: school.category ?? null,
+      org_type: school.orgType ?? null,
+    },
     access: signAccessToken(user),
     refresh: signRefreshToken(user),
   };

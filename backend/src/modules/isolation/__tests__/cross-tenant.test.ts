@@ -682,8 +682,8 @@ describe('cross-tenant isolation: School B vs School A', () => {
   describe('signup seeds per-school templates (no shared templates)', () => {
     it('two signups each get exactly their own 6 templates', async () => {
       const fresh = new FakeDb();
-      const a = await signup(fresh as any, { school_name: 'Gamma School', email: 'g@gamma.test', password: 'Secret123!' });
-      const b = await signup(fresh as any, { school_name: 'Delta School', email: 'd@delta.test', password: 'Secret123!' });
+      const a = await signup(fresh as any, { school_name: 'Gamma School', email: 'g@gamma.test', password: 'Secret123!', admin_name: 'Gamma Admin', admin_phone: '03001234567', address: '1 Gamma Road', tehsil: 'Gamma Tehsil', district: 'Gamma District', province: 'Punjab', category: 'Private', org_type: 'School' });
+      const b = await signup(fresh as any, { school_name: 'Delta School', email: 'd@delta.test', password: 'Secret123!', admin_name: 'Delta Admin', admin_phone: '03007654321', address: '2 Delta Road', tehsil: 'Delta Tehsil', district: 'Delta District', province: 'Sindh', category: 'Public', org_type: 'College' });
       expect(a.school.id).not.toBe(b.school.id);
       const tplA = fresh.messageTemplate.findMany({ where: { schoolId: a.school.id } });
       const tplB = fresh.messageTemplate.findMany({ where: { schoolId: b.school.id } });

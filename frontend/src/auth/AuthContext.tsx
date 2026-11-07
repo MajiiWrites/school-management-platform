@@ -3,11 +3,27 @@ import type { ReactNode } from 'react';
 import { api, cachedApiGet, clearTokens, getAccessToken, setTokens, SESSION_EXPIRED_EVENT, SESSION_EXPIRED_KEY } from '../lib/api';
 import type { User } from '../lib/types';
 
+/** Registration details collected on signup (one request) — the
+ * backend stores them as the school's registration profile. */
+export interface SignupDetails {
+  school_name: string;
+  admin_name: string;
+  admin_phone: string;
+  address: string;
+  tehsil: string;
+  district: string;
+  province: string;
+  category: string;
+  org_type: string;
+  email: string;
+  password: string;
+}
+
 interface AuthState {
   user: User | null;
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
-  signup: (schoolName: string, email: string, password: string) => Promise<void>;
+  signup: (details: SignupDetails) => Promise<void>;
   logout: () => void;
   /** 6D: true when the last logout was an idle/session expiry (server
    * rejected the refresh, or the idle timer fired). The login page shows a
@@ -141,10 +157,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     cacheUser(data.user);
   }, [clearSessionExpired]);
 
-  const signup = useCallback(async (schoolName: string, email: string, password: string) => {
+  const signup = useCallback(async (details: SignupDetails) => {
     const data = await api<{ access: string; refresh: string; user: User }>('/auth/signup', {
       method: 'POST',
-      body: { school_name: schoolName, email, password },
+      body: details,
     });
     clearSessionExpired();
     setTokens(data.access, data.refresh);

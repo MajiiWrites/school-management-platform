@@ -83,6 +83,30 @@ describe('certificates — Module F Point 9', () => {
     });
   });
 
+  it('school address comes from the school row first, legacy settings JSON only as fallback', async () => {
+    // (c) Legacy school: no row address — the old JSON value is used.
+    const legacy = await issueCertificate(db as any, schoolId, studentId, 'bonafide', ACTOR);
+    expect(legacy.school_address).toBe('1 Test Road');
+
+    const school = db.school.findUnique({ where: { id: schoolId } })!;
+    // (a) Newly registered school: the address lives ONLY in the row
+    // column (registration never writes the JSON) — it must not be blank.
+    school.address = '12 Main Bazaar Road, Bahawalpur';
+    school.settings = { logo_url: null };
+    const registered = await issueCertificate(db as any, schoolId, studentId, 'bonafide', ACTOR);
+    expect(registered.school_address).toBe('12 Main Bazaar Road, Bahawalpur');
+    expect(renderCertificateHtml(registered)).toContain('12 Main Bazaar Road, Bahawalpur');
+
+    // (b) Address edited after registration: the NEW row address wins over
+    // a stale legacy JSON address — the old one must never print.
+    school.address = '99 New Campus Road';
+    school.settings = { school_address: '1 Test Road', logo_url: null };
+    const edited = await issueCertificate(db as any, schoolId, studentId, 'character', ACTOR);
+    expect(edited.school_address).toBe('99 New Campus Road');
+    expect(renderCertificateHtml(edited)).toContain('99 New Campus Road');
+    expect(renderCertificateHtml(edited)).not.toContain('1 Test Road');
+  });
+
   it('admin review/edit overrides are applied to the snapshot, untouched fields stay saved', async () => {
     const cert = await issueCertificate(db as any, schoolId, studentId, 'character', ACTOR, {
       details: { name: 'Ahmed Raza (corrected)', roll_no: 7 },

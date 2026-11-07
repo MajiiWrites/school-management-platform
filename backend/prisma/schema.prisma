@@ -45,6 +45,16 @@ model School {
   // FINAL REBUILD (Module C): the personal/school number SMS is sent from.
   // NULL = not set yet. Plain TEXT (school's own sending number, shown
   // back to its admin); parent numbers stay encrypted.
+  // Registration profile (2026-11-08): collected at signup. All
+  // nullable — old schools have NULLs. CHECK constraints (province /
+  // category / orgType value lists) live in migration
+  // 20261108020000_add_registration_profile (Prisma 6.x has no @@check).
+  address  String?
+  tehsil   String?
+  district String?
+  province String?
+  category String?
+  orgType  String?
   smsSenderNumber String?
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
@@ -96,6 +106,12 @@ model User {
   id              String    @id @default(uuid()) @db.Uuid
   schoolId        String    @db.Uuid
   school          School    @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  // Registration profile (2026-11-08): admin name + phone, collected at
+  // signup. Same AES-256-GCM enc + SHA-256 hash pattern as Staff
+  // (name/phoneEnc/phoneHash); phoneEnc/phoneHash are the E.164 number.
+  name      String?
+  phoneEnc  String?
+  phoneHash String?
   email           String    @unique @db.Citext
   passwordHash    String
   role            String

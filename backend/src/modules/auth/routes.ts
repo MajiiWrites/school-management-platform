@@ -9,12 +9,29 @@ import { authLimiter } from '../../middleware/rateLimit';
 import * as service from './service';
 import * as twofa from '../hardening/twofa';
 
+import { normalizePhone } from '../../lib/crypto';
+
+// Registration profile enums (2026-11-08) — single source of truth is
+// service.ts; re-exported here so tests/clients can import from the route.
+export { PROVINCES, SCHOOL_CATEGORIES, ORG_TYPES } from './service';
+import { PROVINCES, SCHOOL_CATEGORIES, ORG_TYPES } from './service';
+
 export const authRouter = Router();
 
 const signupSchema = z.object({
   school_name: z.string().min(2, 'School name is required').max(120),
   email: emailSchema,
   password: passwordSchema,
+  admin_name: z.string().trim().min(2, 'Admin name must be 2–100 characters').max(100),
+  admin_phone: z
+    .string()
+    .refine((v) => normalizePhone(v) !== null, 'Enter a valid Pakistani mobile number, e.g. 03001234567'),
+  address: z.string().trim().min(5, 'Address must be 5–500 characters').max(500),
+  tehsil: z.string().trim().min(2, 'Tehsil must be 2–100 characters').max(100),
+  district: z.string().trim().min(2, 'District must be 2–100 characters').max(100),
+  province: z.enum(PROVINCES),
+  category: z.enum(SCHOOL_CATEGORIES),
+  org_type: z.enum(ORG_TYPES),
 });
 const loginSchema = z.object({
   email: emailSchema,

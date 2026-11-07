@@ -1,6 +1,7 @@
 import bcrypt from 'bcrypt';
 import { config } from '../../config';
 import { ApiError } from '../../lib/errors';
+import { decryptPhone, maskPhone } from '../../lib/crypto';
 import { todayInTz, currentMonthInTz, isValidDateString, isNonSchoolDay, dateOnly } from '../../lib/dates';
 import { writeAudit } from '../../lib/audit';
 import { writeChangeLogs, logCreate, logDelete } from '../hardening/helpers';
@@ -220,6 +221,29 @@ export async function getSettings(db: Db, schoolId: string): Promise<Record<stri
   const school = await db.school.findUnique({ where: { id: schoolId } });
   if (!school) throw ApiError.notFound('School not found');
   const settings = (school.settings as Record<string, unknown>) ?? {};
+  // Registration profile (2026-11-08, read-only in this round): sourced
+  // from the school ROW, never from settings JSON — except school_address,
+  // where a legacy JSON value is kept as fallback for schools registered
+  // before the address moved to the row. The earliest admin user supplies
+  // admin_name / admin_phone_masked (decrypted then masked; a corrupt or
+  // missing phone yields null, never a throw or a raw number).
+  let admin: any = null;
+  try {
+    admin =
+      typeof (db as any).user?.findFirst === 'function'
+        ? await db.user.findFirst({ where: { schoolId: schoolId, role: 'admin' }, orderBy: [{ createdAt: 'asc' }] })
+        : null;
+  } catch {
+    admin = null;
+  }
+  let adminPhoneMasked: string | null = null;
+  if (admin?.phoneEnc) {
+    try {
+      adminPhoneMasked = maskPhone(decryptPhone(admin.phoneEnc));
+    } catch {
+      adminPhoneMasked = null;
+    }
+  }
   return {
     teacher_reminder_time: '08:00',
     fee_auto_send: false,
@@ -233,11 +257,19 @@ export async function getSettings(db: Db, schoolId: string): Promise<Record<stri
     // from settings JSONB (defaults below when unset).
     school_name: school.name,
     timezone: school.timezone ?? 'Asia/Karachi',
-    school_address: '',
     school_phone: '',
     logo_url: '',
     language: 'en',
     ...settings,
+    // Registration profile — row wins over any legacy settings JSON.
+    school_address: (school as any).address ?? (settings.school_address as string | undefined) ?? '',
+    tehsil: (school as any).tehsil ?? null,
+    district: (school as any).district ?? null,
+    province: (school as any).province ?? null,
+    category: (school as any).category ?? null,
+    org_type: (school as any).orgType ?? null,
+    admin_name: admin?.name ?? null,
+    admin_phone_masked: adminPhoneMasked,
   };
 }
 
@@ -248,19 +280,28 @@ export async function updateSettings(db: Db, schoolId: string, patch: Record<str
   const before = (school.settings as Record<string, unknown>) ?? {};
   // 6C-2: school_name / timezone live on the schools ROW, not in settings
   // JSONB — split them out so the JSON never shadows the row (getSettings
-  // reads name/timezone from the row first).
-  const { school_name, timezone, ...jsonPatch } = valid as Record<string, unknown>;
+  // reads name/timezone from the row first). Registration round (2026-11-08):
+  // school_address joins them — the address is a row column now, so a
+  // Settings edit and the registration address can never diverge.
+  const { school_name, timezone, school_address, ...jsonPatch } = valid as Record<string, unknown>;
   const merged = { ...before, ...jsonPatch };
   const rowData: Record<string, unknown> = { settings: merged };
   if (school_name !== undefined) rowData.name = school_name;
   if (timezone !== undefined) rowData.timezone = timezone;
+  if (school_address !== undefined) rowData.address = school_address;
   await db.school.update({ where: { id: schoolId }, data: rowData });
   // 6A change history: one row per changed setting key (row-backed keys
   // compare against the row's old value).
   const beforeAll: Record<string, unknown> = Object.fromEntries(
     Object.keys(valid).map((k) => [
       k,
-      k === 'school_name' ? school.name : k === 'timezone' ? school.timezone : before[k] ?? null,
+      k === 'school_name'
+        ? school.name
+        : k === 'timezone'
+          ? school.timezone
+          : k === 'school_address'
+            ? (school as any).address ?? before['school_address'] ?? null
+            : before[k] ?? null,
     ]),
   );
   await writeChangeLogs(db, {

@@ -38,6 +38,14 @@ export interface SchoolSettings {
   school_phone?: string;
   logo_url?: string;
   language?: 'en' | 'ur';
+  // Registration profile (collected at signup; read-only in Settings).
+  tehsil?: string;
+  district?: string;
+  province?: string;
+  category?: string;
+  org_type?: string;
+  admin_name?: string;
+  admin_phone_masked?: string;
 }
 
 export interface DashboardData {

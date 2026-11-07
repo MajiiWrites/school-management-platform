@@ -234,7 +234,12 @@ async function toCertificateView(db: Db, schoolId: string, school: any, row: any
     leaving_reason: (row.leavingReason as string | null) ?? null,
     leaving_reason_option: (row.leavingReasonOption as LeavingReasonOption | null) ?? null,
     school_name: school.name,
-    school_address: (settings.school_address as string | null) ?? null,
+    // Registration profile (2026-11-08): the address lives on the school
+    // ROW now — prefer it exactly like getSettings does, with the legacy
+    // settings-JSON value only as fallback. Otherwise a newly registered
+    // school (which never writes the JSON) prints a missing address, and
+    // an edited address prints the stale JSON value.
+    school_address: (school as any).address ?? (settings.school_address as string | null) ?? null,
     logo_url: (settings.logo_url as string | null) ?? null,
     issued_at: row.issuedAt ? new Date(row.issuedAt).toISOString() : new Date().toISOString(),
     issued_by: row.issuedBy ?? null,

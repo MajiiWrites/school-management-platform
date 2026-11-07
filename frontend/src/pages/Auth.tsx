@@ -11,7 +11,7 @@ function AuthShell({ title, sub, children }: { title: string; sub: string; child
     <div className="flex min-h-screen items-center justify-center bg-slate-50 px-4 py-10">
       <div className="w-full max-w-md">
         <div className="mb-6 text-center">
-          <p className="text-2xl font-bold text-brand-900">🏫 School Manager</p>
+          <p className="text-2xl font-bold text-brand-900">🏫 Student Manager</p>
           <p className="mt-1 text-sm text-slate-500">Attendance · Parent SMS · Fees</p>
         </div>
         <Card className="p-6">
@@ -86,10 +86,32 @@ export function LoginPage() {
   );
 }
 
+const PROVINCES = [
+  'Punjab',
+  'Sindh',
+  'Khyber Pakhtunkhwa',
+  'Balochistan',
+  'Gilgit-Baltistan',
+  'Azad Jammu & Kashmir',
+  'Islamabad Capital Territory',
+] as const;
+
+const CATEGORIES = ['Private', 'Public', 'Semi-Government'] as const;
+
+const ORG_TYPES = ['School', 'College'] as const;
+
 export function SignupPage() {
   const { signup } = useAuth();
   const navigate = useNavigate();
   const [schoolName, setSchoolName] = useState('');
+  const [orgType, setOrgType] = useState('');
+  const [category, setCategory] = useState('');
+  const [address, setAddress] = useState('');
+  const [tehsil, setTehsil] = useState('');
+  const [district, setDistrict] = useState('');
+  const [province, setProvince] = useState('');
+  const [adminName, setAdminName] = useState('');
+  const [adminPhone, setAdminPhone] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -104,7 +126,19 @@ export function SignupPage() {
     }
     setBusy(true);
     try {
-      await signup(schoolName.trim(), email.trim(), password);
+      await signup({
+        school_name: schoolName.trim(),
+        admin_name: adminName.trim(),
+        admin_phone: adminPhone.trim(),
+        address: address.trim(),
+        tehsil: tehsil.trim(),
+        district: district.trim(),
+        province,
+        category,
+        org_type: orgType,
+        email: email.trim(),
+        password,
+      });
       // R2-C fix: signup now issues access+refresh tokens (round-1 fix), so
       // the session is live immediately — land straight on the dashboard.
       // The dashboard shows a dismissible verification reminder instead
@@ -121,12 +155,58 @@ export function SignupPage() {
     <AuthShell title="Create your school" sub="One account runs the whole school.">
       {error && <ErrorBanner message={error} />}
       <form onSubmit={submit} className="space-y-4">
+        <h2 className="text-sm font-semibold text-slate-900">School details</h2>
         <Field label="School name">
           <input className={inputCls} required value={schoolName} onChange={(e) => setSchoolName(e.target.value)} placeholder="e.g. Al-Noor Public School" autoComplete="off" />
+        </Field>
+        <Field label="Organization type">
+          <select className={inputCls} required value={orgType} onChange={(e) => setOrgType(e.target.value)}>
+            <option value="">Select…</option>
+            {ORG_TYPES.map((t) => (
+              <option key={t} value={t}>{t}</option>
+            ))}
+          </select>
+        </Field>
+        <Field label="School category">
+          <select className={inputCls} required value={category} onChange={(e) => setCategory(e.target.value)}>
+            <option value="">Select…</option>
+            {CATEGORIES.map((c) => (
+              <option key={c} value={c}>{c}</option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Address">
+          <input className={inputCls} required value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Street, town/city" autoComplete="off" />
+        </Field>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Tehsil">
+            <input className={inputCls} required value={tehsil} onChange={(e) => setTehsil(e.target.value)} placeholder="e.g. Bahawalpur Saddar" autoComplete="off" />
+          </Field>
+          <Field label="District">
+            <input className={inputCls} required value={district} onChange={(e) => setDistrict(e.target.value)} placeholder="e.g. Bahawalpur" autoComplete="off" />
+          </Field>
+        </div>
+        <Field label="Province">
+          <select className={inputCls} required value={province} onChange={(e) => setProvince(e.target.value)}>
+            <option value="">Select…</option>
+            {PROVINCES.map((p) => (
+              <option key={p} value={p}>{p}</option>
+            ))}
+          </select>
+        </Field>
+
+        <h2 className="pt-2 text-sm font-semibold text-slate-900">Admin details</h2>
+        <Field label="Admin name">
+          <input className={inputCls} required value={adminName} onChange={(e) => setAdminName(e.target.value)} placeholder="e.g. Majid Ali" autoComplete="name" />
+        </Field>
+        <Field label="Admin number" hint="Pakistani mobile number">
+          <input className={inputCls} type="tel" required value={adminPhone} onChange={(e) => setAdminPhone(e.target.value)} placeholder="e.g. 03001234567" autoComplete="tel" />
         </Field>
         <Field label="Admin email">
           <input className={inputCls} type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="admin@school.pk" autoComplete="email" />
         </Field>
+
+        <h2 className="pt-2 text-sm font-semibold text-slate-900">Account</h2>
         <Field label="Password" hint="At least 8 characters.">
           <input className={inputCls} type="password" required value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" autoComplete="new-password" />
         </Field>

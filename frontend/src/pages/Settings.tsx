@@ -78,7 +78,10 @@ function SchoolSettingsTab() {
     setConfirming(false);
     setBusy(true);
     try {
-      await api('/settings', { method: 'PATCH', body: s });
+      // Registration details are read-only: strip them from the PATCH
+      // body so the backend never receives them as an edit attempt.
+      const { tehsil: _tehsil, district: _district, province: _province, category: _category, org_type: _orgType, admin_name: _adminName, admin_phone_masked: _masked, ...editable } = s;
+      await api('/settings', { method: 'PATCH', body: editable });
       // Round 5 (F2): the language + session settings are cached per
       // session — a save must invalidate that cache or the new values
       // would not apply until the 5-minute cache expired.
@@ -156,6 +159,43 @@ function SchoolSettingsTab() {
         <Field label="School phone">
           <input className={inputCls} value={s.school_phone ?? ''} onChange={(e) => setS({ ...s, school_phone: e.target.value })} placeholder="e.g. 03001234567" autoComplete="off" />
         </Field>
+        {/* Registration profile (collected at signup) — read-only here;
+            the editable School address above reflects the registered
+            address. Rows show "—" when the backend has not returned a
+            value (older schools registered before this profile existed). */}
+        <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
+          <h3 className="text-sm font-semibold text-slate-900">Registration details</h3>
+          <dl className="mt-2 space-y-1.5 text-sm">
+            <div className="flex flex-wrap justify-between gap-x-4">
+              <dt className="text-slate-500">Organization type</dt>
+              <dd className="font-medium text-slate-800">{s.org_type ?? '—'}</dd>
+            </div>
+            <div className="flex flex-wrap justify-between gap-x-4">
+              <dt className="text-slate-500">School category</dt>
+              <dd className="font-medium text-slate-800">{s.category ?? '—'}</dd>
+            </div>
+            <div className="flex flex-wrap justify-between gap-x-4">
+              <dt className="text-slate-500">Province</dt>
+              <dd className="font-medium text-slate-800">{s.province ?? '—'}</dd>
+            </div>
+            <div className="flex flex-wrap justify-between gap-x-4">
+              <dt className="text-slate-500">Tehsil</dt>
+              <dd className="font-medium text-slate-800">{s.tehsil ?? '—'}</dd>
+            </div>
+            <div className="flex flex-wrap justify-between gap-x-4">
+              <dt className="text-slate-500">District</dt>
+              <dd className="font-medium text-slate-800">{s.district ?? '—'}</dd>
+            </div>
+            <div className="flex flex-wrap justify-between gap-x-4">
+              <dt className="text-slate-500">Admin name</dt>
+              <dd className="font-medium text-slate-800">{s.admin_name ?? '—'}</dd>
+            </div>
+            <div className="flex flex-wrap justify-between gap-x-4">
+              <dt className="text-slate-500">Admin number</dt>
+              <dd className="font-mono text-xs font-medium text-slate-800">{s.admin_phone_masked ?? '—'}</dd>
+            </div>
+          </dl>
+        </div>
         <Field label="School logo" hint="Shown on certificates and ID cards. JPG/PNG up to ~500 KB.">
           {/* Round 5 (R2): the row used to be a non-wrapping flex row and
               the native file input is ~312px wide with no shrink — at a
