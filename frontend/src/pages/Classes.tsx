@@ -1,7 +1,10 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { api, ApiClientError } from '../lib/api';
+import { api, ApiClientError, isAbortError } from '../lib/api';
+import { LIVE_SEARCH_DEBOUNCE_MS } from '../lib/search';
+import { useDebouncedValue } from '../lib/useDebouncedValue';
+import LiveSearchInput, { HighlightedText } from '../components/LiveSearchInput';
 import type { ClassItem, PageResult, Student } from '../lib/types';
 import { displayClass } from '../lib/utils';
 import { Badge, Button, Card, EmptyState, ErrorBanner, Field, inputCls, Modal, Spinner, useToast } from '../components/ui';
@@ -19,6 +22,23 @@ export default function ClassesPage() {
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<ClassItem | null>(null);
   const [pendingDelete, setPendingDelete] = useState<ClassItem | null>(null);
+  // FINAL REBUILD Point 3: live class filter (client-side — the class
+  // list is small; the student search below stays server-side). Typing
+  // filters on every keystroke after a ~200 ms debounce; matches are
+  // highlighted on the card.
+  const [classSearch, setClassSearch] = useState('');
+  const debouncedClassSearch = useDebouncedValue(classSearch, LIVE_SEARCH_DEBOUNCE_MS);
+  const filteredClasses = useMemo(() => {
+    const q = debouncedClassSearch.trim().toLowerCase();
+    if (!q) return classes;
+    return classes.filter(
+      (c) =>
+        c.name.toLowerCase().includes(q) ||
+        c.section.toLowerCase().includes(q) ||
+        displayClass(c).toLowerCase().includes(q) ||
+        c.teacher_name.toLowerCase().includes(q),
+    );
+  }, [classes, debouncedClassSearch]);
   const { push, view } = useToast();
 
   const load = useCallback(() => {
@@ -72,6 +92,14 @@ export default function ClassesPage() {
       </div>
 
       {error && <ErrorBanner message={error} onRetry={load} />}
+      {classes.length > 0 && (
+        <LiveSearchInput
+          value={classSearch}
+          onChange={setClassSearch}
+          placeholder="Search classes by name or teacher…"
+          ariaLabel="Search classes"
+        />
+      )}
       {classes.length === 0 && !error && (
         <EmptyState
           title="No classes yet"
@@ -84,9 +112,16 @@ export default function ClassesPage() {
         />
       )}
 
+      {classes.length > 0 && filteredClasses.length === 0 && (
+        <EmptyState
+          title="No class found"
+          body={`No class matches "${debouncedClassSearch.trim()}". Try a different class name or teacher name.`}
+        />
+      )}
+
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {classes.map((c) => (
-          <ClassCard key={c.id} c={c} onEdit={() => { setEditing(c); setShowForm(true); }} onDelete={() => setPendingDelete(c)} onChanged={load} push={push} />
+        {filteredClasses.map((c) => (
+          <ClassCard key={c.id} c={c} query={debouncedClassSearch} onEdit={() => { setEditing(c); setShowForm(true); }} onDelete={() => setPendingDelete(c)} onChanged={load} push={push} />
         ))}
       </div>
 
@@ -126,12 +161,14 @@ export default function ClassesPage() {
 
 function ClassCard({
   c,
+  query,
   onEdit,
   onDelete,
   onChanged,
   push,
 }: {
   c: ClassItem;
+  query?: string;
   onEdit: () => void;
   onDelete: () => void;
   onChanged: () => void;
@@ -209,9 +246,11 @@ function ClassCard({
     <Card className="flex flex-col p-5">
       <div className="flex items-start justify-between gap-2">
         <div>
-          <h2 className="text-lg font-bold text-slate-900">Class {displayClass(c)}</h2>
+          <h2 className="text-lg font-bold text-slate-900">
+            Class <HighlightedText text={displayClass(c)} query={query ?? ''} />
+          </h2>
           <p className="text-sm text-slate-500">
-            {c.teacher_name} · {c.student_count ?? 0} students
+            <HighlightedText text={c.teacher_name} query={query ?? ''} /> · {c.student_count ?? 0} students
           </p>
         </div>
         {c.submitted_today ? <Badge tone="green">Submitted ✓</Badge> : <Badge tone="amber">Pending today</Badge>}
@@ -353,7 +392,14 @@ function ClassForm({
     setConfirming(false);
     setBusy(true);
     try {
-      const body = { name: name.trim(), section: section.trim(), teacher_name: teacherName.trim(), teacher_phone: teacherPhone.trim() && !isMaskedPhone(teacherPhone.trim()) ? teacherPhone.trim() : undefined };
+      const body = {
+        name: name.trim(),
+        // Point 1: section is optional — omit it when blank; the server
+        // stores "" and it can be added later from Edit.
+        section: section.trim() || undefined,
+        teacher_name: teacherName.trim(),
+        teacher_phone: teacherPhone.trim() && !isMaskedPhone(teacherPhone.trim()) ? teacherPhone.trim() : undefined,
+      };
       if (initial) await api(`/classes/${initial.id}`, { method: 'PATCH', body });
       else await api('/classes', { method: 'POST', body });
       onSaved();
@@ -372,16 +418,19 @@ function ClassForm({
           <Field label="Class name">
             <input className={inputCls} required value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. 5" autoComplete="off" />
           </Field>
-          <Field label="Section">
-            <input className={inputCls} required value={section} onChange={(e) => setSection(e.target.value)} placeholder="e.g. A" autoComplete="off" />
+          {/* Point 1: section is OPTIONAL — only class name + teacher name
+              are required. Leave blank to add it later from Edit. */}
+          <Field label="Section (optional)">
+            <input className={inputCls} value={section} onChange={(e) => setSection(e.target.value)} placeholder="e.g. A — leave blank if none" autoComplete="off" />
           </Field>
         </div>
         <Field label="Teacher name">
           <input className={inputCls} required value={teacherName} onChange={(e) => setTeacherName(e.target.value)} placeholder="e.g. Ms. Shazia Parveen" autoComplete="off" />
         </Field>
-        <Field label="Teacher phone" hint="Pakistan format, e.g. 03001234567">
+        <Field label="Teacher phone (optional)" hint="Pakistan format, e.g. 03001234567">
           <input className={inputCls} type="tel" value={teacherPhone} onChange={(e) => setTeacherPhone(e.target.value)} placeholder="03XX XXXXXXX" autoComplete="off" />
         </Field>
+        <p className="text-xs text-slate-500">Only class name and teacher name are required — section and teacher phone can be added later.</p>
         <div className="flex justify-end gap-2">
           <Button variant="secondary" onClick={onClose}>Cancel</Button>
           <Button type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save class'}</Button>
@@ -392,8 +441,8 @@ function ClassForm({
         title={initial ? `Update Class ${displayClass(initial)}?` : 'Add this class?'}
         message={
           initial
-            ? `Are you sure? This will update Class ${displayClass(initial)} to Class ${name.trim() || '?'}-${section.trim() || '?'} (teacher: ${teacherName.trim() || '—'}).`
-            : `Are you sure? This will add a new class: Class ${name.trim() || '?'}-${section.trim() || '?'} (teacher: ${teacherName.trim() || '—'}).`
+            ? `Are you sure? This will update Class ${displayClass(initial)} to Class ${displayClass({ name: name.trim() || '?', section: section.trim() })} (teacher: ${teacherName.trim() || '—'}).`
+            : `Are you sure? This will add a new class: Class ${displayClass({ name: name.trim() || '?', section: section.trim() })} (teacher: ${teacherName.trim() || '—'}).`
         }
         confirmLabel={initial ? 'Update class' : 'Add class'}
         tone="primary"
@@ -423,13 +472,13 @@ export function ClassDetailPage() {
   const [total, setTotal] = useState(0);
   const [pages, setPages] = useState(1);
   const [search, setSearch] = useState('');
-  const [debouncedSearch, setDebouncedSearch] = useState('');
+  // FINAL REBUILD Point 3: same live-search treatment as Students.tsx —
+  // ~200 ms debounce, server `q`, previous request aborted.
+  const debouncedSearch = useDebouncedValue(search, LIVE_SEARCH_DEBOUNCE_MS);
+  const searchAbort = useRef<AbortController | null>(null);
   const [flagFilter, setFlagFilter] = useState<'all' | 'missing' | 'invalid' | 'duplicate'>('all');
 
-  useEffect(() => {
-    const t = window.setTimeout(() => setDebouncedSearch(search), 300);
-    return () => window.clearTimeout(t);
-  }, [search]);
+  useEffect(() => () => searchAbort.current?.abort(), []);
 
   useEffect(() => {
     if (!id) return;
@@ -442,18 +491,26 @@ export function ClassDetailPage() {
 
   const loadStudents = useCallback(() => {
     if (!id) return;
+    searchAbort.current?.abort();
+    const controller = new AbortController();
+    searchAbort.current = controller;
     setListLoading(true);
-    const q = new URLSearchParams({ page: String(page), limit: '50' });
-    if (debouncedSearch.trim()) q.set('search', debouncedSearch.trim());
-    if (flagFilter !== 'all') q.set('flag', flagFilter);
-    api<PageResult<Student>>(`/classes/${id}/students?${q.toString()}`)
+    const params = new URLSearchParams({ page: String(page), limit: '50' });
+    if (debouncedSearch.trim()) params.set('q', debouncedSearch.trim());
+    if (flagFilter !== 'all') params.set('flag', flagFilter);
+    api<PageResult<Student>>(`/classes/${id}/students?${params.toString()}`, { signal: controller.signal })
       .then((d) => {
         setStudents(d.items);
         setTotal(d.total);
         setPages(d.pages);
       })
-      .catch(() => setError('Could not load students.'))
-      .finally(() => setListLoading(false));
+      .catch((e) => {
+        if (isAbortError(e)) return; // superseded by a newer keystroke
+        setError('Could not load students.');
+      })
+      .finally(() => {
+        if (searchAbort.current === controller) setListLoading(false);
+      });
   }, [id, page, debouncedSearch, flagFilter]);
 
   useEffect(() => {
@@ -488,6 +545,7 @@ export function ClassDetailPage() {
           total={total}
           search={search}
           onSearchChange={(q) => { setSearch(q); setPage(1); }}
+          searching={listLoading && debouncedSearch.trim() !== ''}
           flagFilter={flagFilter}
           onFlagFilterChange={(f) => { setFlagFilter(f); setPage(1); }}
           onPageChange={setPage}

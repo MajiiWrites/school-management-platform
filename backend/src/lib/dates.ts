@@ -42,7 +42,7 @@ export function isSunday(dateStr: string): boolean {
  * ("Invalid value for argument `date`: premature end of input. Expected
  * ISO-8601 DateTime") — every read/write of a @db.Date column MUST go
  * through this helper (QA 2026-11-06: the string form 500'd every
- * attendance, holiday, session and leave endpoint live).
+ * attendance, holiday and session endpoints live).
  */
 export function dateOnly(dateStr: string): Date {
   return new Date(`${dateStr}T00:00:00.000Z`);

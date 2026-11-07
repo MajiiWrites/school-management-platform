@@ -1,11 +1,12 @@
 import bcrypt from 'bcrypt';
 import { config } from '../../config';
 import { ApiError } from '../../lib/errors';
-import { todayInTz, currentMonthInTz, isValidDateString, isNonSchoolDay, dateOnly, monthRange } from '../../lib/dates';
+import { todayInTz, currentMonthInTz, isValidDateString, isNonSchoolDay, dateOnly } from '../../lib/dates';
 import { writeAudit } from '../../lib/audit';
 import { writeChangeLogs, logCreate, logDelete } from '../hardening/helpers';
 import { paginatedResponse, parsePagination } from '../../lib/pagination';
 import type { Db } from '../../lib/db';
+import { applyPromotion } from '../sessions/service';
 
 // ---------------------------------------------------------------------------
 // Dashboard
@@ -405,187 +406,26 @@ export async function makeSessionCurrent(db: Db, schoolId: string, id: string, a
 // Promotions
 // ---------------------------------------------------------------------------
 
+/**
+ * Promotions — thin delegate (Module D, 2026-11-07). The old implementation
+ * lived here and had the root defects: no student-status / deletedAt check
+ * (a 'left' student could be promoted), roll numbers copied unchanged into
+ * the target class (UNIQUE (class_id, roll_no) violation on real Postgres),
+ * no batch/status/outcome (double promotion, no undo/edit), no
+ * graduate/hold path for the highest class, and change logs written after
+ * the transaction. All promotion logic now lives in exactly one place —
+ * modules/sessions/service.ts (preview → apply → undo / edit) — and this
+ * function only forwards to it so POST /admin/promotions keeps its
+ * contract ({promoted}). New callers should use the sessions endpoints.
+ */
 export async function promoteStudents(
   db: Db,
   schoolId: string,
   input: { session_id: string; mappings: Array<{ student_id: string; to_class_id: string }> },
   adminId: string,
 ): Promise<{ promoted: number }> {
-  const session = await db.academicSession.findFirst({ where: { id: input.session_id, schoolId: schoolId } });
-  if (!session) throw ApiError.notFound('Session not found');
-  if (!Array.isArray(input.mappings) || input.mappings.length === 0) throw ApiError.validation('mappings must be a non-empty array');
-  const beforeClassByStudent = new Map<string, string>();
-  for (const m of input.mappings) {
-    const student = await db.student.findFirst({ where: { id: m.student_id, schoolId: schoolId } });
-    if (!student) throw ApiError.validation(`Student not found: ${m.student_id}`);
-    beforeClassByStudent.set(m.student_id, (student as any).classId);
-    const toClass = await db.class.findFirst({ where: { id: m.to_class_id, schoolId: schoolId } });
-    if (!toClass) throw ApiError.validation(`Class not found: ${m.to_class_id}`);
-  }
-  await db.$transaction(async (tx) => {
-    for (const m of input.mappings) {
-      // ISOLATION FIX: the old re-read inside the transaction was by id
-      // alone. Re-prove school ownership here (defence in depth: the
-      // pre-validation above already checked, the tx must not trust it).
-      const student = await tx.student.findFirst({ where: { id: m.student_id, schoolId: schoolId } });
-      if (!student) throw ApiError.validation(`Student not found: ${m.student_id}`);
-      const toClass = await tx.class.findFirst({ where: { id: m.to_class_id, schoolId: schoolId } });
-      if (!toClass) throw ApiError.validation(`Class not found: ${m.to_class_id}`);
-      await tx.promotion.create({
-        data: { schoolId: schoolId, studentId: m.student_id, fromClassId: (student as any).classId, toClassId: m.to_class_id, sessionId: input.session_id, promotedAt: new Date(), promotedBy: adminId },
-      });
-      await tx.student.update({ where: { id: m.student_id }, data: { classId: m.to_class_id } });
-    }
-  });
-  for (const m of input.mappings) {
-    const fromClassId = beforeClassByStudent.get(m.student_id);
-    if (fromClassId !== undefined && fromClassId !== m.to_class_id) {
-      await writeChangeLogs(db, {
-        schoolId,
-        actorId: adminId,
-        entity: 'student',
-        entityId: m.student_id,
-        before: { class_id: fromClassId },
-        after: { class_id: m.to_class_id },
-      });
-    }
-  }
-  await writeAudit(db, { schoolId, actorId: adminId, actorType: 'user', action: 'promotion.run', entity: 'academic_session', entityId: input.session_id, details: { promoted: input.mappings.length } });
-  return { promoted: input.mappings.length };
-}
-
-// ---------------------------------------------------------------------------
-// Leave applications
-// ---------------------------------------------------------------------------
-
-export async function createLeave(db: Db, schoolId: string, input: { student_id: string; from_date: string; to_date: string; reason: string }, adminId: string): Promise<any> {
-  if (!isValidDateString(input.from_date) || !isValidDateString(input.to_date)) throw ApiError.validation('Dates must be YYYY-MM-DD');
-  if (input.from_date > input.to_date) throw ApiError.validation('from_date must be on or before to_date');
-  const student = await db.student.findFirst({ where: { id: input.student_id, schoolId: schoolId } });
-  if (!student) throw ApiError.notFound('Student not found');
-  const created = await db.leaveApplication.create({
-    data: { schoolId: schoolId, studentId: input.student_id, fromDate: dateOnly(input.from_date), toDate: dateOnly(input.to_date), reason: input.reason.trim(), status: 'pending' },
-  });
-  await logCreate(db, {
-    schoolId,
-    actorId: adminId,
-    entity: 'leave_application',
-    entityId: created.id,
-    after: { student_id: input.student_id, from_date: input.from_date, to_date: input.to_date, reason: created.reason, status: 'pending' },
-  });
-  await writeAudit(db, { schoolId, actorId: adminId, actorType: 'user', action: 'leave.create', entity: 'leave_application', entityId: created.id, details: { student_id: input.student_id } });
-  return toLeaveView(created, student.name);
-}
-
-/** Snake_case leave view (the contract the frontend uses). The raw Prisma
- * row is camelCase — returning it made the Leaves page crash on
- * `from_date.slice(...)` (Phase 9 fix). */
-export function toLeaveView(r: any, studentName: string | null): Record<string, unknown> {
-  return {
-    id: r.id,
-    student_id: r.studentId,
-    student_name: studentName,
-    from_date: new Date(r.fromDate).toISOString().slice(0, 10),
-    to_date: new Date(r.toDate).toISOString().slice(0, 10),
-    reason: r.reason,
-    status: r.status,
-    created_at: r.createdAt ? new Date(r.createdAt).toISOString() : new Date().toISOString(),
-  };
-}
-
-export async function listLeaves(db: Db, schoolId: string, query: Record<string, any>): Promise<any[]> {
-  const where: Record<string, unknown> = { schoolId: schoolId };
-  if (query.student_id) where.studentId = String(query.student_id);
-  if (query.status) where.status = String(query.status);
-  const rows = await db.leaveApplication.findMany({ where, orderBy: [{ createdAt: 'desc' }] });
-  const students: any[] = rows.length
-    ? await db.student.findMany({ where: { schoolId: schoolId, id: { in: [...new Set(rows.map((r: any) => r.studentId))] } } })
-    : [];
-  const nameById = new Map(students.map((s: any) => [s.id, s.name as string]));
-  return rows.map((r: any) => toLeaveView(r, nameById.get(r.studentId) ?? null));
-}
-
-export async function decideLeave(db: Db, schoolId: string, id: string, status: 'approved' | 'rejected', adminId: string): Promise<any> {
-  const leave = await db.leaveApplication.findFirst({ where: { id, schoolId: schoolId } });
-  if (!leave) throw ApiError.notFound('Leave application not found');
-  // Snapshot before-values BEFORE the update: some DB layers mutate the
-  // fetched row in place, which would erase the old values (6A lesson).
-  const beforeStatus = leave.status;
-  const beforeDecidedBy = leave.decidedBy ?? null;
-  const updated = await db.leaveApplication.update({ where: { id }, data: { status, decidedBy: adminId } });
-  // 6C-2: every edit writes change_logs (one row per changed field).
-  await writeChangeLogs(db, {
-    schoolId,
-    actorId: adminId,
-    entity: 'leave_application',
-    entityId: id,
-    before: { status: beforeStatus, decided_by: beforeDecidedBy },
-    after: { status, decided_by: adminId },
-  });
-  await writeAudit(db, { schoolId, actorId: adminId, actorType: 'user', action: 'leave.decide', entity: 'leave_application', entityId: id, details: { status } });
-  return updated;
-}
-
-// ---------------------------------------------------------------------------
-// Late arrivals (6C-2) — see FEATURES-6C2.md "Late-tracking decision".
-// There is NO late-arrival table/column in the v2 schema, and
-// LeaveApplication has no `type` column, so late arrivals are NOT stored
-// as leave rows. Late IS a first-class attendance status
-// (attendance_records.status = 'late', v1): a late arrival is recorded at
-// attendance-submit time and read back here. No migration was needed.
-// ---------------------------------------------------------------------------
-
-export async function listLateArrivals(
-  db: Db,
-  schoolId: string,
-  query: Record<string, any>,
-): Promise<Array<{ date: string; student_id: string; student_name: string; roll_no: number | null; class_id: string; class_name: string }>> {
-  // Default (no date/month given): today in the SCHOOL timezone.
-  let start: string;
-  let end: string;
-  if (query.date) {
-    if (!isValidDateString(String(query.date))) throw ApiError.validation('date must be YYYY-MM-DD');
-    start = String(query.date);
-    end = String(query.date);
-  } else if (query.month) {
-    if (!/^\d{4}-\d{2}$/.test(String(query.month))) throw ApiError.validation('month must be YYYY-MM');
-    ({ start, end } = monthRange(String(query.month)));
-  } else {
-    const schoolRow: any = await db.school.findUnique({ where: { id: schoolId } }).catch(() => null);
-    const today = todayInTz((schoolRow?.timezone as string | undefined) ?? 'Asia/Karachi');
-    start = today;
-    end = today;
-  }
-  const dayWhere: Record<string, unknown> = { schoolId: schoolId, date: { gte: dateOnly(start), lte: dateOnly(end) } };
-  if (query.class_id) dayWhere.classId = String(query.class_id);
-  const days = await db.attendanceDay.findMany({ where: dayWhere, orderBy: [{ date: 'asc' }] });
-  if (days.length === 0) return [];
-  const dayIds = days.map((d: any) => d.id);
-  const dayById = new Map<string, any>(days.map((d: any) => [d.id, d] as [string, any]));
-  const records = await db.attendanceRecord.findMany({ where: { attendanceDayId: { in: dayIds }, status: 'late' } });
-  if (records.length === 0) return [];
-  const studentIds = [...new Set(records.map((r: any) => r.studentId))];
-  const students = await db.student.findMany({ where: { schoolId: schoolId, id: { in: studentIds } } });
-  const studentById = new Map<string, any>(students.map((s: any) => [s.id, s] as [string, any]));
-  const classes = await db.class.findMany({ where: { schoolId: schoolId } });
-  const classById = new Map<string, any>(classes.map((c: any) => [c.id, c] as [string, any]));
-  return records
-    .map((r: any) => {
-      const day = dayById.get(r.attendanceDayId);
-      const s = studentById.get(r.studentId);
-      if (!day || !s) return null;
-      const c = classById.get(s.classId);
-      return {
-        date: new Date(day.date).toISOString().slice(0, 10),
-        student_id: s.id,
-        student_name: s.name,
-        roll_no: s.rollNo ?? null,
-        class_id: s.classId,
-        class_name: c ? `${c.name}-${c.section}` : s.classId,
-      };
-    })
-    .filter((x: any): x is NonNullable<typeof x> => x !== null)
-    .sort((a: any, b: any) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  const result = await applyPromotion(db, schoolId, input.session_id, { mappings: input.mappings }, adminId);
+  return { promoted: result.promoted };
 }
 
 // ---------------------------------------------------------------------------

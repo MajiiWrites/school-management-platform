@@ -288,7 +288,7 @@ export async function mockRequest<T>(path: string, method: string, body?: unknow
     return { collected: 17500, pending: 20000, by_class: CLASSES.map((c) => ({ class: `${c.name}-${c.section}`, collected: 5000, pending: 7500 })) } as T;
   }
 
-  // Sessions / holidays / audit / notifications / users / leaves / promotions
+  // Sessions / holidays / audit / notifications / users / promotions
   if (rawPath === '/sessions' && method === 'GET') {
     return page([{ id: 'ss-1', name: '2026-27', start_date: '2026-04-01', end_date: '2027-03-31', is_current: true }]) as T;
   }
@@ -326,8 +326,6 @@ export async function mockRequest<T>(path: string, method: string, body?: unknow
     return { id: 'ap-1', status: 'rejected' } as T;
   }
   if (rawPath === '/promotions' && method === 'POST') return { ok: true } as T;
-  if (rawPath === '/leaves' && method === 'GET') return page([]) as T;
-  if (rawPath === '/leaves' && method === 'POST') return { ok: true } as T;
 
   // Fallback: unknown mock route
   throw Object.assign(new Error(`Mock route not implemented: ${method} ${rawPath}`), { status: 501, code: 'MOCK_MISSING' });

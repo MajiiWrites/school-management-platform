@@ -312,7 +312,12 @@ export async function listStudents(
 ): Promise<{ items: any[]; total: number; page: number; pages: number }> {
   await assertClassInSchool(db, schoolId, classId);
   const { page, limit, skip } = parsePagination(query);
-  const search = String(query.search ?? '').trim();
+  // FINAL REBUILD Point 3: live search. `q` is the new param; `search`
+  // is kept as an alias (existing pages + older clients already send it).
+  // Empty q = plain list (all students); a non-empty q matches nothing
+  // → total 0 ("No student found" in the UI). Server-side only — the
+  // client never fetches all students, so 1000+ rows stay fast.
+  const search = String(query.q ?? query.search ?? '').trim();
   const status = String(query.status ?? '').trim();
   const flag = String(query.flag ?? '').trim();
   const where: Record<string, unknown> = { schoolId: schoolId, classId: classId, deletedAt: null };
@@ -320,8 +325,16 @@ export async function listStudents(
   if (flag) Object.assign(where, await flagWhere(db, schoolId, classId, flag));
   const or: Record<string, unknown>[] = [];
   if (search) {
+    // Partial match anywhere, case-insensitive, Urdu + English. Prisma
+    // `contains` + `insensitive` is a substring match, so "ahm" finds
+    // "Ahmed" and "احم" finds "احمد". Fields: student name (EN + Urdu),
+    // father's name, parent/guardian name, admission number. Roll number
+    // is an Int, so it matches exactly when the query parses as a number.
     or.push({ name: { contains: search, mode: 'insensitive' } });
+    or.push({ nameUr: { contains: search, mode: 'insensitive' } });
+    or.push({ fatherName: { contains: search, mode: 'insensitive' } });
     or.push({ parentName: { contains: search, mode: 'insensitive' } });
+    or.push({ admissionNo: { contains: search, mode: 'insensitive' } });
     const asNum = Number.parseInt(search, 10);
     if (!Number.isNaN(asNum)) or.push({ rollNo: asNum });
   }
@@ -484,7 +497,8 @@ export async function listStudentsSchoolWide(
   query: Record<string, any>,
 ): Promise<{ items: any[]; total: number; page: number; pages: number }> {
   const { page, limit, skip } = parsePagination(query);
-  const search = String(query.search ?? '').trim();
+  // Point 3: same `q` (alias `search`) live search as listStudents.
+  const search = String(query.q ?? query.search ?? '').trim();
   const status = String(query.status ?? '').trim();
   const admissionNo = String(query.admission_no ?? '').trim();
   const classId = String(query.class_id ?? '').trim();
@@ -495,6 +509,9 @@ export async function listStudentsSchoolWide(
   const or: Record<string, unknown>[] = [];
   if (search) {
     or.push({ name: { contains: search, mode: 'insensitive' } });
+    or.push({ nameUr: { contains: search, mode: 'insensitive' } });
+    or.push({ fatherName: { contains: search, mode: 'insensitive' } });
+    or.push({ parentName: { contains: search, mode: 'insensitive' } });
     or.push({ admissionNo: { contains: search, mode: 'insensitive' } });
     const asNum = Number.parseInt(search, 10);
     if (!Number.isNaN(asNum)) or.push({ rollNo: asNum });

@@ -36,8 +36,8 @@ local-only) or sign up a new school. Automated version of most items below:
 - [ ] Submit with a revoked token → 404. With a random token → 404.
 - [ ] Submit on a Sunday → 409 "No attendance on Sundays or holidays".
 - [ ] Create a holiday for today, unlock the day (PATCH), submit → 409 naming the holiday rule; delete the holiday.
-- [ ] Submit with `late` and `leave` statuses → counts recorded correctly.
-- [ ] Create a leave application → 201.
+- [ ] Submit with `present` and `absent` statuses → counts recorded correctly (only present/absent counts in the response).
+- [ ] Submit with an invalid status value → 400 validation error; the old removed routes → 404 (NotFound page).
 - [ ] Mark a teacher absent → 200/201 and **no** new messages in the queue.
 
 ## D. Messages (approval-gated)

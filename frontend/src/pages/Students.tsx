@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { api } from '../lib/api';
+import { api, isAbortError } from '../lib/api';
+import { LIVE_SEARCH_DEBOUNCE_MS } from '../lib/search';
+import { useDebouncedValue } from '../lib/useDebouncedValue';
 import type { ClassItem, PageResult, Student } from '../lib/types';
 import { displayClass } from '../lib/utils';
 import { ErrorBanner, EmptyState, Spinner } from '../components/ui';
@@ -26,15 +28,16 @@ export default function StudentsPage() {
   const [total, setTotal] = useState(0);
   const [pages, setPages] = useState(1);
   const [search, setSearch] = useState('');
-  const [debouncedSearch, setDebouncedSearch] = useState('');
+  // FINAL REBUILD Point 3: live search — the input updates on every
+  // keystroke; the query only fires ~200 ms after typing stops, and the
+  // previous request is aborted so a slow reply can never overwrite
+  // fresher results (no flicker, no stale rows).
+  const debouncedSearch = useDebouncedValue(search, LIVE_SEARCH_DEBOUNCE_MS);
+  const searchAbort = useRef<AbortController | null>(null);
   const [flagFilter, setFlagFilter] = useState<StudentFlagFilter>('all');
 
-  // Debounce the search so each keystroke does not fire an API request
-  // (rate-limit friendly: one request 300 ms after the user stops typing).
-  useEffect(() => {
-    const t = window.setTimeout(() => setDebouncedSearch(search), 300);
-    return () => window.clearTimeout(t);
-  }, [search]);
+  // Abort any in-flight search when this page unmounts.
+  useEffect(() => () => searchAbort.current?.abort(), []);
 
   const loadClasses = useCallback(() => {
     setLoading(true);
@@ -52,19 +55,29 @@ export default function StudentsPage() {
 
   const loadStudents = useCallback(() => {
     if (!classId) return;
+    // Cancel the previous (now outdated) search request before firing
+    // the new one — its late reply must never reach setStudents.
+    searchAbort.current?.abort();
+    const controller = new AbortController();
+    searchAbort.current = controller;
     setListLoading(true);
-    const q = new URLSearchParams({ page: String(page), limit: '50' });
-    if (debouncedSearch.trim()) q.set('search', debouncedSearch.trim());
-    if (flagFilter !== 'all') q.set('flag', flagFilter);
-    api<PageResult<Student>>(`/classes/${classId}/students?${q.toString()}`)
+    const params = new URLSearchParams({ page: String(page), limit: '50' });
+    if (debouncedSearch.trim()) params.set('q', debouncedSearch.trim());
+    if (flagFilter !== 'all') params.set('flag', flagFilter);
+    api<PageResult<Student>>(`/classes/${classId}/students?${params.toString()}`, { signal: controller.signal })
       .then((d) => {
         setStudents(d.items);
         setTotal(d.total);
         setPages(d.pages);
         setError('');
       })
-      .catch(() => setError('Could not load students.'))
-      .finally(() => setListLoading(false));
+      .catch((e) => {
+        if (isAbortError(e)) return; // superseded by a newer keystroke
+        setError('Could not load students.');
+      })
+      .finally(() => {
+        if (searchAbort.current === controller) setListLoading(false);
+      });
   }, [classId, page, debouncedSearch, flagFilter]);
 
   useEffect(() => {
@@ -128,6 +141,7 @@ export default function StudentsPage() {
               total={total}
               search={search}
               onSearchChange={(q) => { setSearch(q); setPage(1); }}
+              searching={listLoading && debouncedSearch.trim() !== ''}
               flagFilter={flagFilter}
               onFlagFilterChange={(f) => { setFlagFilter(f); setPage(1); }}
               onPageChange={setPage}

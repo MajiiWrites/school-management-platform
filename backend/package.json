@@ -13,6 +13,7 @@
     "nodemailer": "^6.9.16",
     "otplib": "^13.6.0",
     "pdfkit": "^0.16.0",
+    "sharp": "^0.35.5",
     "zod": "^3.23.8"
   },
   "description": "School Management Platform API — attendance, parent SMS alerts, fee management",

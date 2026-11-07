@@ -23,7 +23,7 @@ parent SMS alerts, and fee management** — with almost no manual work.
 | Admin & classes | Signup + email verification, password reset, clerk logins, class CRUD, teacher assignment |
 | Students | Manual add/edit/delete, CSV/Excel bulk import, search/filter, parent phone validation (PK, +92), duplicate + missing-number flags |
 | OCR lists | Photo upload → Tesseract (eng+urd) → editable review table → merge, no duplicates |
-| Attendance | Tokenized teacher links (regenerate/revoke, one submission per class per day, admin unlock), late/leave statuses, teacher attendance, offline-tolerant link page |
+| Attendance | Tokenized teacher links (regenerate/revoke, one submission per class per day, admin unlock), present/absent statuses, teacher attendance, offline-tolerant link page |
 | Dashboard & reports | Submitted vs pending today, present/absent counts, daily/weekly/monthly reports, PDF/Excel export |
 | Messages | Admin-approved absent alerts (EN/UR templates, variables), delivery log + retry, dedupe (never twice for the same student/day), opt-out respected |
 | SMS via SIM | Android companion app polls the queue and sends from the admin's SIM; connection status in the portal; gateway fallback (optional) |

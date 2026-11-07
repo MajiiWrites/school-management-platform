@@ -10,8 +10,6 @@ export interface ClassAttendanceSummary {
   days_submitted: number;
   present: number;
   absent: number;
-  late: number;
-  leave: number;
   attendance_rate: number | null; // present / (present+absent), null when no data
 }
 
@@ -23,8 +21,6 @@ export interface StudentAttendanceSummary {
   display_name: string;
   present: number;
   absent: number;
-  late: number;
-  leave: number;
   attendance_rate: number | null;
 }
 
@@ -55,18 +51,18 @@ async function loadRange(db: Db, schoolId: string, start: string, end: string, c
 function summarize(days: any[], records: any[], students: any[], classes: any[]): { by_class: ClassAttendanceSummary[]; by_student: StudentAttendanceSummary[] } {
   const classById = new Map<string, any>(classes.map((c: any) => [c.id, c]));
   const dayById = new Map<string, any>(days.map((d: any) => [d.id, d]));
-  const perClass = new Map<string, { present: number; absent: number; late: number; leave: number; days: Set<string> }>();
-  const perStudent = new Map<string, { present: number; absent: number; late: number; leave: number }>();
-  for (const s of students) perStudent.set(s.id, { present: 0, absent: 0, late: 0, leave: 0 });
+  const perClass = new Map<string, { present: number; absent: number; days: Set<string> }>();
+  const perStudent = new Map<string, { present: number; absent: number }>();
+  for (const s of students) perStudent.set(s.id, { present: 0, absent: 0 });
   for (const r of records) {
     const day = dayById.get(r.attendanceDayId);
     if (!day) continue;
-    const cc = perClass.get(day.classId) ?? { present: 0, absent: 0, late: 0, leave: 0, days: new Set<string>() };
-    cc[r.status as 'present' | 'absent' | 'late' | 'leave'] += 1;
+    const cc = perClass.get(day.classId) ?? { present: 0, absent: 0, days: new Set<string>() };
+    cc[r.status as 'present' | 'absent'] += 1;
     cc.days.add(day.date as string);
     perClass.set(day.classId, cc);
     const ps = perStudent.get(r.studentId);
-    if (ps) ps[r.status as 'present' | 'absent' | 'late' | 'leave'] += 1;
+    if (ps) ps[r.status as 'present' | 'absent'] += 1;
   }
   const rate = (p: number, a: number): number | null => (p + a === 0 ? null : Math.round((p / (p + a)) * 1000) / 10);
   const byClass: ClassAttendanceSummary[] = [...perClass.entries()].map(([classId, c]) => {
@@ -77,13 +73,11 @@ function summarize(days: any[], records: any[], students: any[], classes: any[])
       days_submitted: c.days.size,
       present: c.present,
       absent: c.absent,
-      late: c.late,
-      leave: c.leave,
-      attendance_rate: rate(c.present, c.absent),
+            attendance_rate: rate(c.present, c.absent),
     };
   });
   const byStudent: StudentAttendanceSummary[] = students.map((s: any) => {
-    const ps = perStudent.get(s.id) ?? { present: 0, absent: 0, late: 0, leave: 0 };
+    const ps = perStudent.get(s.id) ?? { present: 0, absent: 0 };
     const cls = classById.get(s.classId);
     return {
       student_id: s.id,
@@ -105,8 +99,8 @@ export async function attendanceDaily(db: Db, schoolId: string, query: Record<st
   const data = await loadRange(db, schoolId, date, date, classId);
   const summary = summarize(data.days, data.records, data.students, data.classes);
   const totals = summary.by_class.reduce(
-    (acc, c) => ({ present: acc.present + c.present, absent: acc.absent + c.absent, late: acc.late + c.late, leave: acc.leave + c.leave }),
-    { present: 0, absent: 0, late: 0, leave: 0 },
+    (acc, c) => ({ present: acc.present + c.present, absent: acc.absent + c.absent }),
+    { present: 0, absent: 0 },
   );
   return { date, ...totals, classes_submitted: data.days.length, ...summary };
 }
@@ -409,8 +403,8 @@ export function buildExportRows(report: Record<string, unknown>, kind: string): 
   }
   return {
     title: `Attendance report — ${report.date ?? report.week_start ?? report.month}`,
-    headers: ['Class', 'Days submitted', 'Present', 'Absent', 'Late', 'Leave', 'Rate %'],
-    rows: ((report.by_class as any[]) ?? []).map((c) => [c.display_name, c.days_submitted, c.present, c.absent, c.late, c.leave, c.attendance_rate ?? '—']),
+    headers: ['Class', 'Days submitted', 'Present', 'Absent', 'Rate %'],
+    rows: ((report.by_class as any[]) ?? []).map((c) => [c.display_name, c.days_submitted, c.present, c.absent, c.attendance_rate ?? '—']),
   };
 }
 

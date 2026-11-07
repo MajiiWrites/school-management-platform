@@ -7,8 +7,8 @@ import { buildAbsentDrafts } from '../messaging/service';
 import { createPrismaMessagingStore } from '../messaging/store';
 import type { Db } from '../../lib/db';
 
-export type AttendanceStatus = 'present' | 'absent' | 'late' | 'leave';
-export const ATTENDANCE_STATUSES: AttendanceStatus[] = ['present', 'absent', 'late', 'leave'];
+export type AttendanceStatus = 'present' | 'absent';
+export const ATTENDANCE_STATUSES: AttendanceStatus[] = ['present', 'absent'];
 
 const DEFAULT_ABSENT_TEMPLATE_EN =
   'Dear Parent, your child {student_name} (Class {class}) was marked ABSENT from school today ({date}). Please contact the school if needed. – {school_name}';
@@ -88,8 +88,6 @@ export interface SubmitResult {
   class_id: string;
   present: number;
   absent: number;
-  late: number;
-  leave: number;
   absent_students: Array<{ id: string; name: string }>;
   messages_drafted: number;
   students_without_valid_number: Array<{ id: string; name: string }>;
@@ -137,7 +135,7 @@ export async function submitAttendance(db: Db, input: SubmitInput): Promise<Subm
     throw ApiError.conflict('Attendance for this class has already been submitted today');
   }
 
-  const counts = { present: 0, absent: 0, late: 0, leave: 0 };
+  const counts = { present: 0, absent: 0 };
   for (const st of statuses.values()) counts[st] += 1;
   const absentStudents = students.filter((s: any) => statuses.get(s.id) === 'absent');
 
@@ -299,7 +297,7 @@ export async function editAttendance(
     }
   }
 
-  const counts = { present: 0, absent: 0, late: 0, leave: 0 };
+  const counts = { present: 0, absent: 0 };
   for (const st of statuses.values()) counts[st] += 1;
 
   await db.$transaction(async (tx) => {
@@ -419,7 +417,7 @@ export async function getClassAttendance(db: Db, schoolId: string, classId: stri
 export async function markTeacherAttendance(
   db: Db,
   schoolId: string,
-  input: { class_id: string; date: string; status: 'present' | 'absent' | 'leave'; note?: string | null },
+  input: { class_id: string; date: string; status: 'present' | 'absent'; note?: string | null },
   adminId: string,
 ): Promise<any> {
   if (!isValidDateString(input.date)) throw ApiError.validation('Date must be YYYY-MM-DD');

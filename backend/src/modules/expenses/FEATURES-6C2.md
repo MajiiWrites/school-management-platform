@@ -2,7 +2,7 @@
 
 Agent 6C-2. Backend + frontend for: fee extensions, expenses, announcements
 (notice board only), events + holiday calendar, certificates + ID cards,
-leave + late, reports extensions, settings extensions, notification center.
+reports extensions, settings extensions, notification center.
 Schema/migrations untouched. Every query is scoped by the JWT `school_id`;
 clerk mutations go through the approval queue (202, appliers in
 `modules/hardening/approvals.ts`, 6C-2 block); every edit writes
@@ -18,13 +18,12 @@ for all new deletes/adds; empty states on all new pages.
 | Announcements | `GET /announcements`, `GET /announcements/:id`, `POST /announcements`, `PATCH /announcements/:id`, `DELETE /announcements/:id`, `POST /announcements/:id/approve`, `POST /announcements/:id/send` (wired in Phase 8 QA — see hook section below) |
 | Events | `GET /events`, `POST /events`, `PATCH /events/:id`, `DELETE /events/:id`, `GET /events/calendar?month=` |
 | Certificates | `POST /students/:id/certificates`, `GET /students/:id/certificates`, `GET /certificates/:id` (HTML / `?format=pdf`), `POST /students/:id/issue-id-card`, `GET /students/:id/id-card` |
-| Leave / late | `GET /leaves`, `POST /leaves`, `PATCH /leaves/:id` (now writes change history), `GET /leaves/late?date=&month=&class_id=` |
 | Reports | `GET /reports/fees/defaulters`, `GET /reports/results/summary`, `GET /reports/classes/strength`, `GET /reports/messages/history`, `GET /reports/income-expense` — all support `?format=pdf|xlsx|csv` |
 | Settings | `GET /settings`, `PATCH /settings` (+ `school_name`, `timezone`, `school_address`, `school_phone`, `logo_url`, `language`) |
 | Notifications | `GET /notifications/center` (read-only aggregation) |
 
 Frontend pages: `/expenses`, `/announcements`, `/events`, `/certificates`,
-`/leaves`, `/notifications` (all in the sidebar nav); Fees page gained a
+`/notifications` (all in the sidebar nav); Fees page gained a
 **Vouchers** tab + a per-row **Voucher** button; Reports gained Defaulters /
 Class strength / Income vs expense / Message history tabs + CSV export;
 Settings gained the school-identity section (name, timezone, address,
@@ -105,16 +104,14 @@ on approved + sms_send notices. See
 `backend/src/modules/announcements/service.ts: sendAnnouncementSms`
 and `backend/src/modules/announcements/__tests__/announcements-send.test.ts`.
 
-## Late-tracking decision (no migration)
+## Applications + arrival status — REMOVED (Module G, 2026-11-07)
 
-There is **no late-arrival table or column** in the v2 schema, and
-`LeaveApplication` has **no `type` column**, so late arrivals are NOT
-stored as leave rows (that would need a new migration for a `type`
-column, to record data that already exists elsewhere). Late IS a
-first-class attendance status: `attendance_records.status = 'late'` (v1),
-recorded at attendance-submit time. `GET /leaves/late` reads those rows
-(`admin/service.ts: listLateArrivals`, scoped by school, filterable by
-date / month / class). No schema change was needed and none was made.
+The application feature (`LeaveApplication` / `leave_applications`) and the
+extra attendance statuses were deleted entirely: the table is dropped by
+migration `20261107154000_remove_leave_late`, the frontend page, its route
+and its sidebar item are gone, and student/teacher attendance is
+present/absent only. The section this replaced described the pre-removal
+design and is superseded by this note.
 
 ## Certificates — derived number, no photo column
 
@@ -173,15 +170,14 @@ Backend (new): `backend/src/modules/expenses/{service,routes}.ts`,
 `backend/src/modules/fees/vouchers.ts`.
 Backend (extended): `backend/src/modules/fees/{service,types,routes,receipts}.ts`,
 `backend/src/modules/reports/{service,routes}.ts`,
-`backend/src/modules/admin/{service,routes}.ts` (settings keys,
-`decideLeave` change history, `listLateArrivals`, `GET /leaves/late`),
+`backend/src/modules/admin/{service,routes}.ts` (settings keys),
 `backend/src/modules/hardening/approvals.ts` (6C-2 applier block),
 `backend/src/middleware/permissions.ts` (QUEUEABLE: expenses /
 announcements / events / certificates), `backend/src/app.ts` (6C-2
 mount block), `contracts/API.md` (6C-2 endpoints).
 Tests: `backend/src/modules/expenses/__tests__/features-6c2.test.ts`
 (30 tests, in-memory fake DB).
-Frontend (new): `frontend/src/pages/{Expenses,Announcements,Events,Certificates,Leaves,Notifications}.tsx`,
+Frontend (new): `frontend/src/pages/{Expenses,Announcements,Events,Certificates,Notifications}.tsx`,
 `frontend/src/lib/i18n.tsx`, `frontend/src/lib/api.ts: apiPrint`
 (authenticated printable-page opener — a plain link would 401).
 Frontend (extended): `frontend/src/App.tsx` (routes + LanguageProvider),

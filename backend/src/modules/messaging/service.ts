@@ -71,7 +71,7 @@ export interface StudentDraftInput {
 
 export interface AttendanceRecordInput {
   studentId: string;
-  status: 'present' | 'absent' | 'late' | 'leave';
+  status: 'present' | 'absent';
 }
 
 export interface DraftSkip {
@@ -169,7 +169,7 @@ export async function buildAbsentDrafts(
     const student = studentById.get(record.studentId);
     if (!student) continue;
 
-    // Rule 1: ONLY absent students. Present/late/leave never get messages.
+    // Rule 1: ONLY absent students. Present students never get messages.
     if (record.status !== 'absent') {
       skipped.push({ studentId: student.id, studentName: student.name, reason: 'not_absent' });
       continue;
@@ -684,6 +684,12 @@ export async function getSmsStatus(
   lastSeenAt: Date | null;
   queuedCount: number;
   pendingApprovalCount: number;
+  /** FINAL REBUILD (Module C): the saved sender number, masked for display. */
+  senderNumberMasked: string | null;
+  /** Name of the most-recently-seen linked device, or null when none is linked. */
+  deviceName: string | null;
+  /** True when the linked device was seen in the last 90 s. */
+  deviceOnline: boolean;
 }> {
   const { store } = deps;
   const school = await store.getSchool(input.schoolId);
@@ -692,13 +698,112 @@ export async function getSmsStatus(
   const simConnected =
     devices.lastSeenAt !== null &&
     Date.now() - devices.lastSeenAt.getTime() <= 90_000;
+  const device = (await store.getLatestDevice?.(input.schoolId)) ?? null;
+  const senderNumber = school?.senderNumber ?? null;
   return {
     provider: school?.smsProvider ?? 'sim',
     simConnected,
     lastSeenAt: devices.lastSeenAt,
     queuedCount: counts.queued,
     pendingApprovalCount: counts.pendingApproval,
+    senderNumberMasked: senderNumber ? maskPhone(senderNumber) : null,
+    deviceName: device ? device.name : null,
+    deviceOnline:
+      device !== null &&
+      device.lastSeenAt !== null &&
+      Date.now() - device.lastSeenAt.getTime() <= 90_000,
   };
+}
+
+/* ------------------------------------------------------------------ */
+/* FINAL REBUILD (Module C) — per-school SMS sender number             */
+/*                                                                     */
+/* The admin enters the personal/school number SMS is sent from. It   */
+/* is stored per school (School.smsSenderNumber, migration             */
+/* 20261107150000) and shown masked wherever humans see it — except    */
+/* the admin's own edit field, which needs the full number to edit.   */
+/* The Messages page ties the display to the linked SmsDevice: when   */
+/* a device is linked the sender line names that SIM/device;           */
+/* otherwise the saved number itself is shown as the sender.          */
+/* ------------------------------------------------------------------ */
+
+export interface SenderSettings {
+  /** Full E.164 number for the admin's edit field (admin-only endpoint). */
+  senderNumber: string | null;
+  /** Masked form for display anywhere else. */
+  senderNumberMasked: string | null;
+  deviceName: string | null;
+  deviceOnline: boolean;
+  deviceLastSeenAt: Date | null;
+}
+
+/** Normalize + validate a sender number. Null/'' clears it. */
+export function normalizeSenderNumber(raw: unknown): string | null {
+  if (raw === null || raw === undefined || (typeof raw === 'string' && raw.trim() === '')) {
+    return null;
+  }
+  if (typeof raw !== 'string') {
+    throw Object.assign(new Error('sender_number must be a phone number'), { code: 'VALIDATION' });
+  }
+  const e164 = normalizePK(raw);
+  if (!e164 || !isValidPK(e164)) {
+    throw Object.assign(
+      new Error('sender_number must be a valid Pakistani mobile number (e.g. 03001234567)'),
+      { code: 'VALIDATION' },
+    );
+  }
+  return e164;
+}
+
+export async function getSenderSettings(
+  deps: ServiceDeps,
+  input: { schoolId: string },
+): Promise<SenderSettings> {
+  const { store } = deps;
+  const school = await store.getSchool(input.schoolId);
+  if (!school) {
+    throw Object.assign(new Error('School not found'), { code: 'NOT_FOUND' });
+  }
+  const device = (await store.getLatestDevice?.(input.schoolId)) ?? null;
+  const senderNumber = school.senderNumber ?? null;
+  return {
+    senderNumber,
+    senderNumberMasked: senderNumber ? maskPhone(senderNumber) : null,
+    deviceName: device ? device.name : null,
+    deviceOnline:
+      device !== null &&
+      device.lastSeenAt !== null &&
+      Date.now() - device.lastSeenAt.getTime() <= 90_000,
+    deviceLastSeenAt: device ? device.lastSeenAt : null,
+  };
+}
+
+/** Save (or clear) the sender number. Change history is written by the route. */
+export async function updateSenderNumber(
+  deps: ServiceDeps,
+  input: { schoolId: string; senderNumber: unknown; actorId: string },
+): Promise<SenderSettings> {
+  const { store } = deps;
+  const normalized = normalizeSenderNumber(input.senderNumber);
+  if (typeof store.updateSenderNumber !== 'function') {
+    throw Object.assign(new Error('Sender number storage is not available'), { code: 'CONFIG' });
+  }
+  const school = await store.getSchool(input.schoolId);
+  if (!school) {
+    throw Object.assign(new Error('School not found'), { code: 'NOT_FOUND' });
+  }
+  await store.updateSenderNumber(input.schoolId, normalized);
+  await store.createAuditLog({
+    schoolId: input.schoolId,
+    actorId: input.actorId,
+    actorType: 'user',
+    action: 'sender_number.update',
+    entity: 'school',
+    entityId: input.schoolId,
+    // Masked only — full numbers are never written to logs.
+    details: { sender_number_masked: normalized ? maskPhone(normalized) : null },
+  });
+  return getSenderSettings(deps, { schoolId: input.schoolId });
 }
 
 export { hashPhone, maskPhone };

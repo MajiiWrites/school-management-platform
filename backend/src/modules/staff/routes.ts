@@ -114,8 +114,12 @@ staffRouter.delete(
   }),
 );
 
-// --- Payroll -------------------------------------------------------------------
-// NOTE: /payroll/:id/payslip must be registered before /payroll/:id.
+// --- Payroll (SIMPLIFIED — Module E FINAL REBUILD) ---------------------------
+// One payment = { staff_id, month, amount }. No deductions, allowances,
+// bonuses, tax, base salary, or payslip numbers. GET /payroll returns one
+// summary row per staff member for the month (monthly salary, amount paid,
+// remaining, status Paid / Partially Paid / Unpaid, and the payment rows).
+// NOTE: /payroll/slip must be registered before /payroll/:id.
 staffRouter.get(
   '/payroll',
   asyncHandler(async (req, res) => {
@@ -130,7 +134,7 @@ staffRouter.post(
   requireQueueable('staff', 'create'),
   asyncHandler(async (req, res) => {
     const body = parseBody(
-      z.object({ staff_id: uuidSchema, month: monthSchema, base_salary: z.number().int().min(0).optional().nullable(), deductions: z.number().int().min(0).optional(), payslip_no: z.string().max(60).optional().nullable() }),
+      z.object({ staff_id: uuidSchema, month: monthSchema, amount: z.number().int().min(1) }),
       req.body,
     );
     if (await queueIfClerk(req, res, { actionType: 'create', entity: 'salary_record', payload: body })) return;
@@ -140,11 +144,27 @@ staffRouter.post(
 );
 
 staffRouter.get(
-  '/payroll/:id/payslip',
+  '/payroll/slip',
   asyncHandler(async (req, res) => {
-    const { id } = parseBody(z.object({ id: uuidSchema }), req.params);
-    const data = await service.getPayslipData(getDb(), schoolIdOf(req), id);
-    res.type('html').send(service.renderPayslipHtml(data as any));
+    const q = parseBody(z.object({ staff_id: uuidSchema, month: monthSchema }), req.query);
+    const data = await service.getPayslipData(getDb(), schoolIdOf(req), q.staff_id, q.month);
+    if (req.query.format === 'pdf') {
+      try {
+        const pdf = await service.renderPayslipPdf(data);
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `inline; filename="salary-slip-${data.staff_name.replace(/[^A-Za-z0-9]+/g, '-')}-${q.month}.pdf"`);
+        res.send(pdf);
+        return;
+      } catch (err) {
+        if ((err as Error & { code?: string }).code !== 'PDF_UNAVAILABLE') throw err;
+        // Fall through to HTML when pdfkit is not installed.
+      }
+    }
+    if (req.query.format === 'json') {
+      res.json({ ok: true, data });
+      return;
+    }
+    res.type('html').send(service.renderPayslipHtml(data));
   }),
 );
 
@@ -163,10 +183,7 @@ staffRouter.patch(
   requireQueueable('staff', 'update'),
   asyncHandler(async (req, res) => {
     const { id } = parseBody(z.object({ id: uuidSchema }), req.params);
-    const body = parseBody(
-      z.object({ base_salary: z.number().int().min(0).optional(), deductions: z.number().int().min(0).optional(), paid: z.boolean().optional() }),
-      req.body,
-    );
+    const body = parseBody(z.object({ amount: z.number().int().min(1) }), req.body);
     if (await queueIfClerk(req, res, { actionType: 'update', entity: 'salary_record', entityId: id, payload: { id, patch: body } })) return;
     const updated = await service.updateSalaryRecord(getDb(), schoolIdOf(req), id, body, req.user!.sub);
     res.json({ ok: true, data: updated });
@@ -181,6 +198,6 @@ staffRouter.delete(
     const { id } = parseBody(z.object({ id: uuidSchema }), req.params);
     if (await queueIfClerk(req, res, { actionType: 'delete', entity: 'salary_record', entityId: id, payload: { id } })) return;
     await service.deleteSalaryRecord(getDb(), schoolIdOf(req), id, req.user!.sub);
-    res.json({ ok: true, data: { message: 'Salary record deleted' } });
+    res.json({ ok: true, data: { message: 'Payment deleted' } });
   }),
 );

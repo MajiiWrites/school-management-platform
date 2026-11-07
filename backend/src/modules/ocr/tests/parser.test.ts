@@ -147,3 +147,52 @@ test('parseStudentList still flags a true duplicate: same name + same phone', ()
   assert.equal(rows[1].duplicate, true);
   assert.equal(rows[1].duplicate_reason, 'duplicate_name');
 });
+
+// --- FINAL REBUILD Point 2: EXACT spelling — never correct, translate,
+// shorten, reorder, merge or "improve" a name --------------------------
+import { splitParentTail } from '../parser.js';
+
+test('parseLine keeps odd spellings exactly as read (no correction)', () => {
+  // "Muhd" stays "Muhd" (not "Muhammad"); "McDonald" keeps its capitals;
+  // "O'Brien" keeps its apostrophe; double spaces only collapse.
+  const a = parseLine('1. Muhd Ali 0301-2345678');
+  assert.equal(a?.name, 'Muhd Ali');
+  const b = parseLine('2. McDonald O\'Brien');
+  assert.equal(b?.name, "McDonald O'Brien");
+  const c = parseLine('3. Ahmed   Raza');
+  assert.equal(c?.name, 'Ahmed Raza');
+});
+
+test('parseLine keeps titles (Mr/Miss) — they are part of the spelling as read', () => {
+  const row = parseLine('1. Mr Ahmed Raza 0301-2345678');
+  assert.equal(row?.name, 'Mr Ahmed Raza');
+  const row2 = parseLine('2. Miss Fatima Khan');
+  assert.equal(row2?.name, 'Miss Fatima Khan');
+});
+
+test('parseLine keeps hyphens and digits in a name verbatim', () => {
+  const row = parseLine('1. Abdul-Rehman Khan 0301-2345678');
+  assert.equal(row?.name, 'Abdul-Rehman Khan');
+});
+
+test('splitParentTail extracts "s/o" into parent_name, never into the name', () => {
+  assert.deepEqual(splitParentTail('Ali s/o Ahmed'), { name: 'Ali', parent_name: 'Ahmed' });
+  assert.deepEqual(splitParentTail('Ali d/o Fatima Bibi'), { name: 'Ali', parent_name: 'Fatima Bibi' });
+  assert.deepEqual(splitParentTail('Ali w/o Hassan'), { name: 'Ali', parent_name: 'Hassan' });
+  assert.deepEqual(splitParentTail('Ahmed Raza'), { name: 'Ahmed Raza', parent_name: null });
+  // No name before the tail: do not mangle the line.
+  assert.deepEqual(splitParentTail('s/o Ahmed'), { name: 's/o Ahmed', parent_name: null });
+});
+
+test('parseLine: "Ali s/o Ahmed" saves student "Ali" + parent "Ahmed"', () => {
+  const row = parseLine('1. Ali s/o Ahmed 0301-2345678');
+  assert.equal(row?.name, 'Ali');
+  assert.equal(row?.parent_name, 'Ahmed');
+  assert.equal(row?.parent_phone, '+923012345678');
+});
+
+test('parseLine: Urdu name spelling is kept exactly as read', () => {
+  const row = parseLine('2. محمد علی');
+  assert.equal(row?.name, 'محمد علی');
+  assert.equal(row?.name_ur, 'محمد علی');
+});

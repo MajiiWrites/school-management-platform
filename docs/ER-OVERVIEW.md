@@ -44,7 +44,7 @@ erDiagram
 |---|---|---|
 | Tenancy & access | `schools`, `users` | One school = one tenant. `users.role` is `admin` (everything) or `clerk` (fees + read-only logs; cannot manage users, settings, links, or approve messages). |
 | People | `classes`, `students` | Class = name + section, unique per school. Student roll number unique per class. Parent phone stored encrypted (`parent_phone_enc`) + SHA-256 hash (`parent_phone_hash`) for duplicate detection only. `parent_opt_out = true` means never message that number. |
-| Attendance | `attendance_days`, `attendance_records`, `teacher_attendance`, `leave_applications` | One `attendance_day` per class per day (unique). Records are `present / absent / late / leave`. Teacher absence is recorded only — it never creates messages. |
+| Attendance | `attendance_days`, `attendance_records`, `teacher_attendance` | One `attendance_day` per class per day (unique). Records are `present / absent`. Teacher absence is recorded only — it never creates messages. |
 | Fees | `fee_structures`, `fee_records` | One active fee structure per class (latest `effective_from`). One `fee_record` per student per month (`YYYY-MM`, unique). `status` is a GENERATED column (`unpaid / partial / paid`) computed from amounts — never written by code. Receipt numbers are `{school_slug}-{YYYYMM}-{seq}`, sequential per school. |
 | Messaging | `message_templates`, `message_queue`, `message_deliveries`, `sms_devices` | `message_queue` is the outbox and the ONLY source of sends. `dedupe_key` is UNIQUE: `absent:{student_id}:{date}`, `fee:{student_id}:{month}`, `teacher:{class_id}:{date}` — the database itself prevents double sends. Templates exist per type × language (`absent / fee_reminder / teacher_reminder` × `en / ur`) with `{variables}`. `sms_devices` are the Android companion phones; online = `last_seen_at` within 90 s. |
 | School calendar | `holidays`, `academic_sessions`, `promotions` | Sundays are always non-school days (no row needed). No attendance or messages on Sundays/holidays. Promotions move students between classes within a session. |
@@ -55,8 +55,8 @@ erDiagram
 1. **No message without approval** — absent/fee drafts sit in `message_queue`
    unapproved until an admin approves; the Android app and gateway only ever
    read `approved + queued` rows.
-2. **Absent-only** — only students with status `absent` get drafts; present /
-   late / leave students never do; teacher absence never does.
+2. **Absent-only** — only students with status `absent` get drafts; present
+   students never do; teacher absence never does.
 3. **One send per (student, day/month)** — enforced by the unique
    `dedupe_key`, not just by application logic.
 4. **Paid means silent** — a `paid` fee record never generates a reminder,

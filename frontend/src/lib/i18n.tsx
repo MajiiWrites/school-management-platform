@@ -25,7 +25,6 @@ const NAV_LABELS: Record<string, { en: string; ur: string }> = {
   announcements: { en: 'Announcements', ur: 'اعلانات' },
   events: { en: 'Events & Calendar', ur: 'تقریبات اور کیلنڈر' },
   certificates: { en: 'Certificates', ur: 'اسناد' },
-  leaves: { en: 'Leave & Late', ur: 'چھٹی اور تاخیر' },
   notifications: { en: 'Notifications', ur: 'اطلاعات' },
   // Keys owned by other phases (kept in English + Urdu so the nav never
   // falls back to a raw key).
@@ -48,7 +47,6 @@ const PAGE_TITLES: Record<string, { en: string; ur: string }> = {
   announcements: { en: 'Announcements', ur: 'اعلانات' },
   events: { en: 'Events & Calendar', ur: 'تقریبات اور کیلنڈر' },
   certificates: { en: 'Certificates & ID Cards', ur: 'اسناد اور شناختی کارڈ' },
-  leaves: { en: 'Leave & Late Arrivals', ur: 'چھٹی اور تاخیر' },
   notifications: { en: 'Notification Center', ur: 'اطلاعاتی مرکز' },
 };
 

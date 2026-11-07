@@ -15,7 +15,7 @@ const recordsSchema = z.object({
   records: z.array(
     z.object({
       student_id: uuidSchema,
-      status: z.enum(['present', 'absent', 'late', 'leave']),
+      status: z.enum(['present', 'absent']),
     }),
   ),
 });
@@ -98,7 +98,7 @@ authed.post(
       z.object({
         class_id: uuidSchema,
         date: dateSchema,
-        status: z.enum(['present', 'absent', 'leave']),
+        status: z.enum(['present', 'absent']),
         note: z.string().max(500).optional().nullable(),
       }),
       req.body,

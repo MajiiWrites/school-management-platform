@@ -32,7 +32,7 @@ const CLASS_ID = 'class-r2a';
 function freshDb(): any {
   const db = new FakeDb() as any;
   // Collections the sessions fake-db does not carry but these services use.
-  for (const name of ['feeStructure', 'event', 'announcement', 'expense', 'certificate', 'result', 'resultSheet', 'leaveApplication', 'attendanceDay', 'attendanceRecord', 'messageTemplate', 'messageQueue', 'feeVoucher', 'schoolBackup', 'deletedRecord']) {
+  for (const name of ['feeStructure', 'event', 'announcement', 'expense', 'certificate', 'result', 'resultSheet', 'attendanceDay', 'attendanceRecord', 'messageTemplate', 'messageQueue', 'feeVoucher', 'schoolBackup', 'deletedRecord']) {
     if (!db[name]) db[name] = new FakeCollection();
   }
   db.school.create({ data: { id: SCHOOL, name: 'R2A Test School', slug: 'r2a-test-school', timezone: 'Asia/Karachi', country: 'PK', settings: {} } });

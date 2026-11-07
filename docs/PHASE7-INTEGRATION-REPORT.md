@@ -1,5 +1,7 @@
 # Phase 7 Integration Report — School Management Platform v2
 
+> Module G note (2026-11-07): the application + arrival-status feature described in this historical report was removed entirely (migration `20261107154000_remove_leave_late`); mentions below are pre-removal record, not current behaviour.
+
 Date: 2026-11-07 ~00:40 PKT. Agent: P7-INT (integration only — no new features,
 no pushes, no deploys, no live-DB access). Project root:
 `/home/hatch/workspace/school-management-platform`.

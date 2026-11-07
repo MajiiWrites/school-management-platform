@@ -166,6 +166,10 @@ export class FakeDb {
   approvalRequest = new FakeCollection();
   notification = new FakeCollection();
   feeRecord = new FakeCollection();
+  attendanceDay = new FakeCollection();
+  attendanceRecord = new FakeCollection();
+  resultSheet = new FakeCollection();
+  result = new FakeCollection();
   holiday = new FakeCollection();
   rolePermission = new FakeCollection();
 

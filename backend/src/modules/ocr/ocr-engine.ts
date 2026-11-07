@@ -2,8 +2,12 @@
 // Never fabricate a result: if no engine is available, throw OcrUnavailableError
 // and the route returns 503 with install instructions.
 import { execFile } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { readFile, unlink, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
+import sharp from 'sharp';
 
 const execFileAsync = promisify(execFile);
 
@@ -92,17 +96,275 @@ async function tesseractLangs(): Promise<string[]> {
   }
 }
 
-/** Run Tesseract CLI on an image file. `langs` e.g. "eng+urd". */
+export interface OcrWord {
+  text: string;
+  /** Tesseract word confidence 0..100 (-1 = no word, e.g. punctuation-only). */
+  conf: number;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  line: number;
+}
+
+/**
+ * EXIF orientation (JPEG APP1) read with stdlib Buffer parsing only.
+ * Phone photos are usually stored un-rotated with an EXIF orientation tag
+ * (6 = rotate 90° CW, 8 = 90° CCW, 3 = 180°); Tesseract reads raw pixels
+ * and does NOT apply the tag, so such photos OCR sideways. Returns the raw
+ * EXIF orientation value (1 = normal), or null when there is no EXIF tag.
+ */
+export function readJpegOrientation(buf: Buffer): number | null {
+  if (buf.length < 4 || buf[0] !== 0xff || buf[1] !== 0xd8) return null;
+  let off = 2;
+  while (off + 4 <= buf.length) {
+    if (buf[off] !== 0xff) return null;
+    const marker = buf[off + 1]!;
+    const len = buf.readUInt16BE(off + 2);
+    if (len < 2 || off + 2 + len > buf.length) return null;
+    if (marker === 0xe1) {
+      const seg = buf.subarray(off + 4, off + 2 + len);
+      if (seg.length < 6 || seg.toString('ascii', 0, 6) !== 'Exif\0\0') return null;
+      return readTiffOrientation(seg.subarray(6));
+    }
+    if (marker === 0xda || marker === 0xd9) return null; // start-of-scan / end-of-image
+    off += 2 + len;
+  }
+  return null;
+}
+
+function readTiffOrientation(tiff: Buffer): number | null {
+  if (tiff.length < 8) return null;
+  const le = tiff.toString('ascii', 0, 2) === 'II';
+  if (tiff.toString('ascii', 0, 2) !== 'II' && tiff.toString('ascii', 0, 2) !== 'MM') return null;
+  const u16 = (o: number): number => (le ? tiff.readUInt16LE(o) : tiff.readUInt16BE(o));
+  const u32 = (o: number): number => (le ? tiff.readUInt32LE(o) : tiff.readUInt32BE(o));
+  if (u16(2) !== 42) return null;
+  const ifdOff = u32(4);
+  if (ifdOff + 2 > tiff.length) return null;
+  const count = u16(ifdOff);
+  for (let i = 0; i < count; i++) {
+    const e = ifdOff + 2 + i * 12;
+    if (e + 12 > tiff.length) break;
+    if (u16(e) === 0x0112) return u16(e + 8); // orientation tag, SHORT value inline
+  }
+  return null;
+}
+
+/** EXIF orientation value -> rotation the pixels need (degrees clockwise). */
+export function orientationToDegrees(orientation: number | null): number {
+  if (orientation === 3) return 180;
+  if (orientation === 6) return 90;
+  if (orientation === 8) return 270;
+  return 0; // 1 = normal; 2/4/5/7 are mirrors (no pure rotation fixes them)
+}
+
+/**
+ * Detect the page orientation with Tesseract's OSD (`--psm 0 -l osd`).
+ * Best-effort: returns null when OSD data is unavailable. Never throws.
+ */
+export async function detectOrientation(filePath: string): Promise<{ degrees: number; confidence: number } | null> {
+  try {
+    const { stdout } = await execFileAsync('tesseract', [filePath, 'stdout', '--psm', '0', '-l', 'osd'], {
+      timeout: 30_000,
+      maxBuffer: 1024 * 1024,
+    });
+    const deg = stdout.match(/Orientation in degrees:\s*(\d+)/);
+    const conf = stdout.match(/Orientation confidence:\s*([\d.]+)/);
+    if (!deg) return null;
+    return { degrees: parseInt(deg[1]!, 10), confidence: conf ? parseFloat(conf[1]!) : 0 };
+  } catch {
+    return null;
+  }
+}
+
+export interface PreprocessResult {
+  /** Path to the image Tesseract should read (a temp file, or the original). */
+  path: string;
+  /** Steps actually applied, e.g. ['exif-rotate', 'osd-deskew:90', 'grayscale', 'contrast']. */
+  applied: string[];
+  /** True when preprocessing failed and the original file is used as-is. */
+  skipped: boolean;
+  /** Delete any temp files created. Safe to call repeatedly. */
+  cleanup: () => Promise<void>;
+}
+
+/**
+ * Preprocess an uploaded photo for OCR with sharp:
+ * EXIF auto-rotate, OSD-based orientation correction (deskew for 90° steps),
+ * grayscale + contrast normalisation, width capped at 3000px.
+ * NEVER throws and NEVER fails the upload: on any error the original file
+ * is returned with skipped: true and OCR runs on it unmodified.
+ */
+export async function preprocessImage(filePath: string): Promise<PreprocessResult> {
+  const noop = async (): Promise<void> => {};
+  try {
+    const tmpFiles: string[] = [];
+    const cleanup = async (): Promise<void> => {
+      for (const f of tmpFiles) {
+        try {
+          await unlink(f);
+        } catch {
+          /* already gone */
+        }
+      }
+    };
+    const applied: string[] = [];
+    // 1. EXIF auto-rotate (sharp .rotate() reads the Orientation tag).
+    let buf = await sharp(filePath).rotate().toBuffer();
+    try {
+      const raw = await readFile(filePath);
+      const o = readJpegOrientation(raw);
+      if (o !== null && o !== 1 && orientationToDegrees(o) !== 0) applied.push('exif-rotate');
+    } catch {
+      /* orientation read is best-effort */
+    }
+    // 2. OSD orientation correction (deskew): write the rotated image to a
+    // temp file, ask Tesseract OSD for its orientation, rotate back if needed.
+    const tmp1 = join(tmpdir(), `smp-ocr-${randomUUID()}.png`);
+    await writeFile(tmp1, buf);
+    tmpFiles.push(tmp1);
+    const osd = await detectOrientation(tmp1);
+    if (osd && osd.degrees !== 0 && osd.confidence >= 1) {
+      const correction = (360 - osd.degrees) % 360;
+      if (correction !== 0) {
+        buf = await sharp(buf).rotate(correction).toBuffer();
+        applied.push(`osd-deskew:${osd.degrees}`);
+      }
+    }
+    // 3. Grayscale + contrast stretch + width cap, as PNG for Tesseract.
+    const out = join(tmpdir(), `smp-ocr-${randomUUID()}.png`);
+    await sharp(buf).resize({ width: 3000, withoutEnlargement: true }).greyscale().normalise().png().toFile(out);
+    tmpFiles.push(out);
+    applied.push('grayscale', 'contrast');
+    return { path: out, applied, skipped: false, cleanup };
+  } catch {
+    return { path: filePath, applied: [], skipped: true, cleanup: noop };
+  }
+}
+
+/**
+ * Inspect an uploaded image for rotation problems BEFORE OCR runs.
+ * Returns human-readable warnings; never throws (a failed inspection must
+ * not block the upload).
+ *
+ * Rotation itself is fixed by preprocessImage (EXIF auto-rotate + OSD
+ * deskew), so only mirrored EXIF orientations (2/4/5/7 — no pure rotation
+ * fixes them) still warn here.
+ */
+export async function inspectImage(filePath: string): Promise<string[]> {
+  const warnings: string[] = [];
+  try {
+    const buf = await readFile(filePath);
+    const orientation = readJpegOrientation(buf);
+    // Mirrored EXIF orientations (2/4/5/7) cannot be fixed by rotation —
+    // warn the admin. Plain rotations (3/6/8) are auto-corrected by
+    // preprocessImage, so they need no warning.
+    if (orientation !== null && orientation !== 1 && orientationToDegrees(orientation) === 0) {
+      warnings.push(
+        `This photo has a mirrored EXIF orientation (${orientation}) — it may read incorrectly. Re-take it upright if names look wrong.`,
+      );
+    }
+  } catch {
+    // unreadable file — OCR below will surface the real error.
+  }
+  return warnings;
+}
+
+/** Run Tesseract TSV output: one row per word, with bounding boxes + confidence. Preprocesses the image first (rotate/deskew/contrast). */
+export async function runTesseractTsv(
+  filePath: string,
+  langs = 'eng+urd',
+  psm = '6',
+  timeoutMs = 180_000,
+): Promise<OcrWord[]> {
+  const prep = await preprocessImage(filePath);
+  try {
+    return await runTesseractTsvOnFile(prep.path, langs, psm, timeoutMs);
+  } finally {
+    await prep.cleanup();
+  }
+}
+
+async function runTesseractTsvOnFile(
+  filePath: string,
+  langs = 'eng+urd',
+  psm = '6',
+  timeoutMs = 180_000,
+): Promise<OcrWord[]> {
+  const available = await tesseractLangs();
+  if (available.length === 0) {
+    throw new OcrUnavailableError('Tesseract OCR binary not found on this server.', TESSERACT_SETUP);
+  }
+  const requested = langs.split('+').map((l) => l.trim()).filter(Boolean);
+  const usable = requested.filter((l) => available.includes(l));
+  if (usable.length === 0) {
+    throw new OcrUnavailableError(
+      `No requested Tesseract languages available (${langs}). Installed: ${available.join(', ') || 'none'}.`,
+      TESSERACT_SETUP,
+    );
+  }
+  const { stdout } = await execFileAsync(
+    'tesseract',
+    [filePath, 'stdout', '--psm', psm, '-l', usable.join('+'), 'tsv'],
+    { timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 },
+  );
+  const lines = stdout.split(/\r?\n/);
+  const words: OcrWord[] = [];
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (!line.trim()) continue;
+    const cols = line.split('\t');
+    // level page block par line word left top width height conf text
+    if (cols.length < 12) continue;
+    if (cols[0] !== '5') continue; // word level only
+    const text = (cols[11] ?? '').trim();
+    if (!text) continue;
+    words.push({
+      text,
+      conf: Number(cols[10] ?? -1),
+      left: Number(cols[6] ?? 0),
+      top: Number(cols[7] ?? 0),
+      width: Number(cols[8] ?? 0),
+      height: Number(cols[9] ?? 0),
+      line: Number(cols[4] ?? 0),
+    });
+  }
+  return words;
+}
+
+/** Run Tesseract CLI on an image file. `langs` e.g. "eng+urd". Preprocesses the image first (rotate/deskew/contrast); falls back to the original on any preprocessing failure. */
 export async function runTesseract(
   filePath: string,
   langs = 'eng+urd',
   timeoutMs = 180_000,
+  psm = '6',
+): Promise<OcrResult> {
+  const prep = await preprocessImage(filePath);
+  try {
+    return await runTesseractOnFile(prep.path, langs, timeoutMs, psm, prep);
+  } finally {
+    await prep.cleanup();
+  }
+}
+
+async function runTesseractOnFile(
+  filePath: string,
+  langs: string,
+  timeoutMs: number,
+  psm: string,
+  prep: PreprocessResult,
 ): Promise<OcrResult> {
   const available = await tesseractLangs();
   if (available.length === 0) {
     throw new OcrUnavailableError('Tesseract OCR binary not found on this server.', TESSERACT_SETUP);
   }
   const warnings: string[] = [];
+  if (prep.skipped) {
+    warnings.push('Image preprocessing was skipped (unreadable image?) — OCR ran on the original file.');
+  } else if (prep.applied.length > 0) {
+    warnings.push(`Image preprocessed for OCR: ${prep.applied.join(', ')}.`);
+  }
   const requested = langs.split('+').map((l) => l.trim()).filter(Boolean);
   const usable = requested.filter((l) => available.includes(l));
   const missing = requested.filter((l) => !available.includes(l));
@@ -122,7 +384,7 @@ export async function runTesseract(
     // on mixed-script lines (RTL reordering), so it is not used.
     if (usable.includes('eng') && usable.includes('urd')) {
       const run = (lang: string) =>
-        execFileAsync('tesseract', [filePath, 'stdout', '--psm', '6', '-l', lang], {
+        execFileAsync('tesseract', [filePath, 'stdout', '--psm', psm, '-l', lang], {
           timeout: timeoutMs,
           maxBuffer: 10 * 1024 * 1024,
         });
@@ -137,7 +399,7 @@ export async function runTesseract(
         warnings: [...warnings, 'Dual-pass OCR (eng + urd merged per line) for mixed-script lists.'],
       };
     }
-    const { stdout } = await execFileAsync('tesseract', [filePath, 'stdout', '--psm', '6', '-l', usable.join('+')], {
+    const { stdout } = await execFileAsync('tesseract', [filePath, 'stdout', '--psm', psm, '-l', usable.join('+')], {
       timeout: timeoutMs,
       maxBuffer: 10 * 1024 * 1024,
     });

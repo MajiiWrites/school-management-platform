@@ -364,11 +364,11 @@ async function main(): Promise<void> {
   }
   console.log(`attendance: class 5-A on ${ATTENDANCE_DATE} — 7 present, 2 absent`);
 
-  // Teacher attendance for the same day (1-A present, 5-A present, 6-B leave).
+  // Teacher attendance for the same day (1-A present, 5-A present, 6-B absent).
   const teacherStatus: Record<string, { status: string; note: string | null }> = {
     '1-A': { status: 'present', note: null },
     '5-A': { status: 'present', note: null },
-    '6-B': { status: 'leave', note: 'Sana Malik on leave' },
+    '6-B': { status: 'absent', note: 'Sana Malik absent' },
   };
   for (const key of Object.keys(teacherStatus)) {
     await prisma.teacherAttendance.upsert({
@@ -388,7 +388,7 @@ async function main(): Promise<void> {
   // Message templates (EN + UR for all three types)
   for (const t of TEMPLATES) {
     await prisma.messageTemplate.upsert({
-      where: { schoolId_type_language: { schoolId: school.id, type: t.type, language: t.language } },
+      where: { schoolId_type_language_name: { schoolId: school.id, type: t.type, language: t.language, name: t.name } },
       update: { body: t.body, name: t.name, isCustom: false, isActive: true },
       create: { schoolId: school.id, type: t.type, language: t.language, name: t.name, body: t.body, isCustom: false, isActive: true },
     });

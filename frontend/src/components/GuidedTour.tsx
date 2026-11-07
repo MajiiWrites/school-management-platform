@@ -106,7 +106,7 @@ export default function GuidedTour() {
   // First login: auto-open once for an admin who has never seen the tour.
   // R2-C fix (F3): this used to auto-open on EVERY first authed page, and
   // the old step effect then dragged the user to step 1's route ('/') —
-  // so a fresh admin opening /calendar, /holidays, /leave (or any deep
+  // so a fresh admin opening /calendar, /holidays (or any deep
   // link) was yanked to the dashboard and the redirect looked broken.
   // The tour is dashboard onboarding: it only auto-opens on the dashboard
   // itself. On any other page it stays unseen until the admin visits '/'.
@@ -132,7 +132,7 @@ export default function GuidedTour() {
   // Relaunch from anywhere (header "?" button, Help page). Explicit, so
   // it starts on step 1's page like the tour always did. The target is
   // recorded in tourNavRef first: the location can flush before the
-  // open/step state does, and without it the close-on-leave effect
+  // open/step state does, and without it the close-on-navigate effect
   // below would mistake the relaunch navigation for the user leaving.
   useEffect(() => {
     const onStart = () => {
@@ -152,12 +152,12 @@ export default function GuidedTour() {
   // itself) was immediately undone by a navigate back to the step's
   // route. That is what made the dead-route redirects look dead for a
   // fresh admin: the tour auto-opened on the dashboard at login, then
-  // dragged every /calendar, /holidays or /leave visit back to '/'.
+  // dragged every /calendar or /holidays visit back to '/'.
   //
   // The router location and the step state are separate updates, so a
   // tour navigation can flush before the step state does (Next clicked:
   // location '/classes' while step is still 0). tourNavRef records the
-  // route the tour itself asked for, so the close-on-leave effect below
+  // route the tour itself asked for, so the close-on-navigate effect below
   // never mistakes the tour's own in-flight navigation for the user
   // leaving.
   const goToStep = useCallback(

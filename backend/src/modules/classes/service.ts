@@ -8,9 +8,15 @@ import type { Db } from '../../lib/db';
 
 export interface ClassInput {
   name: string;
-  section: string;
+  /** Optional — missing/blank is stored as "" (see routes.ts classSchema). */
+  section?: string;
   teacher_name: string;
   teacher_phone?: string | null;
+}
+
+/** Display label: "5-A" with a section, just "5" without one (no "5-"). */
+export function classLabel(name: string, section: string): string {
+  return section ? `${name}-${section}` : name;
 }
 
 /** Today's attendance state for one class (school-local date). */
@@ -41,7 +47,7 @@ export function toPublicClass(c: any, studentCount?: number, today?: TodayStatus
     school_id: c.schoolId,
     name: c.name,
     section: c.section,
-    display_name: `${c.name}-${c.section}`,
+    display_name: classLabel(c.name, c.section),
     teacher_name: c.teacherName,
     teacher_phone_masked: c.teacherPhoneEnc ? maskPhone(decryptPhone(c.teacherPhoneEnc)) : null,
     attendance_link: attendanceLink,
@@ -91,7 +97,7 @@ async function getTodayStatuses(db: Db, schoolId: string): Promise<{ date: strin
 async function assertUniqueName(db: Db, schoolId: string, name: string, section: string, excludeId?: string): Promise<void> {
   const existing = await db.class.findFirst({ where: { schoolId: schoolId, name, section, deletedAt: null } });
   if (existing && existing.id !== excludeId) {
-    throw ApiError.conflict(`Class ${name}-${section} already exists`);
+    throw ApiError.conflict(`Class ${classLabel(name, section)} already exists`);
   }
 }
 
@@ -108,10 +114,10 @@ async function throwClassUniqueConflict(db: Db, schoolId: string, name: string, 
   const deleted = await db.class.findFirst({ where: { schoolId: schoolId, name, section, deletedAt: { not: null } } });
   if (deleted) {
     throw ApiError.conflict(
-      `Class ${name}-${section} was deleted. Restore it from the Recycle Bin, or permanently delete it there first, then create it again.`,
+      `Class ${classLabel(name, section)} was deleted. Restore it from the Recycle Bin, or permanently delete it there first, then create it again.`,
     );
   }
-  throw ApiError.conflict(`Class ${name}-${section} already exists`);
+  throw ApiError.conflict(`Class ${classLabel(name, section)} already exists`);
 }
 
 /** Display-safe view of a class row for change_logs (teacher phone masked). */
@@ -132,7 +138,10 @@ function teacherPhoneFields(phone: string | null | undefined): { enc: string | n
 }
 
 export async function createClass(db: Db, schoolId: string, input: ClassInput, actorId?: string): Promise<any> {
-  await assertUniqueName(db, schoolId, input.name.trim(), input.section.trim());
+  // Point 1: only name + teacher name are required. Section defaults to
+  // "" and teacher phone to null — no validation error for empty optionals.
+  const section = (input.section ?? '').trim();
+  await assertUniqueName(db, schoolId, input.name.trim(), section);
   const phone = teacherPhoneFields(input.teacher_phone);
   let created: any;
   try {
@@ -140,14 +149,14 @@ export async function createClass(db: Db, schoolId: string, input: ClassInput, a
       data: {
         schoolId: schoolId,
         name: input.name.trim(),
-        section: input.section.trim(),
+        section,
         teacherName: input.teacher_name.trim(),
         teacherPhoneEnc: phone.enc,
         teacherPhoneHash: phone.hash,
       },
     });
   } catch (err) {
-    if (isUniqueViolation(err)) await throwClassUniqueConflict(db, schoolId, input.name.trim(), input.section.trim());
+    if (isUniqueViolation(err)) await throwClassUniqueConflict(db, schoolId, input.name.trim(), section);
     throw err;
   }
   await logCreate(db, {

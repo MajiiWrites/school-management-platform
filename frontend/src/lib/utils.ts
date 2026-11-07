@@ -67,7 +67,8 @@ export function fmtPKR(n: number): string {
 }
 
 export function displayClass(c: { name: string; section: string }): string {
-  return `${c.name}-${c.section}`;
+  // FINAL REBUILD Point 1: section is optional — "5" alone, never "5-".
+  return c.section ? `${c.name}-${c.section}` : c.name;
 }
 
 /** Pakistan mobile: normalize to E.164 (+92 + 10 digits) or return null. */

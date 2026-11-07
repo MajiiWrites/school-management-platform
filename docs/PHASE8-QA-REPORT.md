@@ -1,5 +1,7 @@
 # Phase 8 QA Report — School Management Platform v2
 
+> Module G note (2026-11-07): the application + arrival-status feature described in this historical report was removed entirely (migration `20261107154000_remove_leave_late`); mentions below are pre-removal record, not current behaviour.
+
 Date: 2026-11-07 ~20:00 PKT. Agent: P8-QA (acceptance testing + fixes).
 Project root: `/home/hatch/workspace/school-management-platform`.
 Scope: QA on a SCRATCH database + local API only. Live DB never touched,

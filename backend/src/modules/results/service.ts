@@ -26,6 +26,7 @@ import { normalizeName } from '../../lib/crypto';
 import { runOcr } from '../ocr/ocr-engine';
 import { parseResultSheet, type ParsedResultRow } from '../ocr/resultSheets';
 import { exportPdf, exportXlsx } from '../reports/service';
+import { validateExamType } from '../exams/service';
 import type { Db } from '../../lib/db';
 
 export const DEFAULT_PASS_PERCENTAGE = 33;
@@ -125,6 +126,7 @@ export function toPublicExam(e: any): Record<string, unknown> {
     id: e.id,
     school_id: e.schoolId,
     name: e.name,
+    type: e.type ?? 'monthly',
     session_id: e.sessionId ?? null,
     start_date: toISODate(e.startDate),
     end_date: toISODate(e.endDate),
@@ -170,14 +172,17 @@ async function assertExamInSchool(db: Db, schoolId: string, examId: string): Pro
 export async function upsertExam(
   db: Db,
   schoolId: string,
-  input: { name: string; session_id?: string | null; start_date?: string | null; end_date?: string | null },
+  input: { name: string; type?: string | null; session_id?: string | null; start_date?: string | null; end_date?: string | null },
   actorId?: string | null,
 ): Promise<any> {
   const name = input.name.trim();
   if (!name) throw ApiError.validation('Exam name is required');
+  const type = validateExamType(input.type ?? undefined);
   const existing = await db.exam.findFirst({
     where: { schoolId, name, sessionId: input.session_id ?? null, deletedAt: null },
   });
+  // Name match wins: an existing exam keeps its type (the admin changes it
+  // on the Exams page). Only newly created exams take the picked type.
   if (existing) return existing;
   if (input.session_id) {
     const session = await db.academicSession.findFirst({ where: { id: input.session_id, schoolId } });
@@ -187,6 +192,7 @@ export async function upsertExam(
     data: {
       schoolId,
       name,
+      type,
       sessionId: input.session_id ?? null,
       startDate: input.start_date ? new Date(input.start_date) : null,
       endDate: input.end_date ? new Date(input.end_date) : null,
@@ -197,7 +203,7 @@ export async function upsertExam(
     actorId: actorId ?? null,
     entity: 'exam',
     entityId: created.id,
-    after: { name: created.name, session_id: created.sessionId },
+    after: { name: created.name, type: created.type, session_id: created.sessionId },
   });
   return created;
 }
@@ -315,12 +321,12 @@ export async function uploadResultSheet(
   db: Db,
   schoolId: string,
   classId: string,
-  input: { exam_name: string; session_id?: string | null; file_path: string },
+  input: { exam_name: string; exam_type?: string | null; session_id?: string | null; file_path: string },
   actorId?: string | null,
   opts: { runOcr?: (filePath: string) => Promise<{ raw_text: string; engine: string; warnings: string[] }> } = {},
 ): Promise<UploadResult> {
   await assertClassInSchool(db, schoolId, classId);
-  const exam = await upsertExam(db, schoolId, { name: input.exam_name, session_id: input.session_id ?? null }, actorId ?? null);
+  const exam = await upsertExam(db, schoolId, { name: input.exam_name, type: input.exam_type ?? undefined, session_id: input.session_id ?? null }, actorId ?? null);
   const sheet = await db.resultSheet.create({
     data: {
       schoolId,
@@ -503,13 +509,13 @@ export async function saveResultRows(
 export async function saveManualResults(
   db: Db,
   schoolId: string,
-  input: { exam_name?: string; exam_id?: string; class_id: string; session_id?: string | null; rows: ResultRowInput[] },
+  input: { exam_name?: string; exam_type?: string | null; exam_id?: string; class_id: string; session_id?: string | null; rows: ResultRowInput[] },
   actorId?: string | null,
 ): Promise<SaveResult> {
   let examId = input.exam_id ?? null;
   if (!examId) {
     if (!input.exam_name) throw ApiError.validation('exam_id or exam_name is required');
-    const exam = await upsertExam(db, schoolId, { name: input.exam_name, session_id: input.session_id ?? null }, actorId ?? null);
+    const exam = await upsertExam(db, schoolId, { name: input.exam_name, type: input.exam_type ?? undefined, session_id: input.session_id ?? null }, actorId ?? null);
     examId = exam.id;
   }
   if (!examId) throw ApiError.validation('exam_id or exam_name is required');
@@ -530,6 +536,22 @@ export async function listResults(
   if (query.exam_id) where.examId = String(query.exam_id);
   if (query.class_id) where.classId = String(query.class_id);
   if (query.student_id) where.studentId = String(query.student_id);
+  // FINAL REBUILD (Module C): view results by exam type — resolves the
+  // type to the school's exams of that type, then filters by exam id.
+  // An invalid type is a 400, never an empty list. When exam_id is also
+  // given, the two filters intersect (an exam of another type yields
+  // zero rows, not the other type's results).
+  if (query.exam_type) {
+    const type = validateExamType(String(query.exam_type));
+    const examsOfType = await db.exam.findMany({
+      where: { schoolId, type, deletedAt: null },
+      select: { id: true },
+    });
+    const ids = examsOfType.map((e: any) => e.id);
+    where.examId = query.exam_id
+      ? { in: ids.includes(String(query.exam_id)) ? [String(query.exam_id)] : [] as string[] }
+      : { in: ids };
+  }
   if (query.linked === 'true') where.studentId = { not: null };
   if (query.linked === 'false') where.studentId = null;
   const search = String(query.search ?? '').trim();

@@ -65,6 +65,13 @@ async function handleUpload(req: any, res: any, classId: string): Promise<void> 
     res.status(400).json({ ok: false, error: { code: 'VALIDATION', message: 'exam_name is required (e.g. Midterm, Final, Monthly Test)' } });
     return;
   }
+  // FINAL REBUILD (Module C): the admin picks the exam type when
+  // uploading — monthly | midterm | annual (default monthly).
+  const examType = typeof req.body.exam_type === 'string' && req.body.exam_type ? req.body.exam_type : 'monthly';
+  if (!['monthly', 'midterm', 'annual'].includes(examType)) {
+    res.status(400).json({ ok: false, error: { code: 'VALIDATION', message: "exam_type must be one of 'monthly', 'midterm', 'annual'" } });
+    return;
+  }
   const file = (req as any).file as Express.Multer.File | undefined;
   if (!file) {
     res.status(400).json({ ok: false, error: { code: 'VALIDATION', message: 'No image uploaded. Send a multipart field named "image".' } });
@@ -75,7 +82,7 @@ async function handleUpload(req: any, res: any, classId: string): Promise<void> 
       getDb(),
       schoolIdOf(req),
       classId,
-      { exam_name: examName, session_id: typeof req.body.session_id === 'string' ? req.body.session_id : null, file_path: file.path },
+      { exam_name: examName, exam_type: examType, session_id: typeof req.body.session_id === 'string' ? req.body.session_id : null, file_path: file.path },
       req.user!.sub,
     );
     res.status(201).json({ ok: true, data: result });
@@ -98,8 +105,9 @@ resultsRouter.post(
     const { id } = parseBody(classIdParams, req.params);
     // Clerk upload: the file is already on disk (multer ran first); the
     // queue payload carries its path so OCR runs at approve time (see
-    // approvals.ts result_sheet.create applier).
-    if (await queueIfClerk(req, res, { actionType: 'create', entity: 'result_sheet', payload: { class_id: id, exam_name: String(req.body.exam_name ?? ''), file_path: (req as any).file?.path ?? null } })) return;
+    // approvals.ts result_sheet.create applier). exam_type rides along so
+    // the approved upload creates the exam with the picked type.
+    if (await queueIfClerk(req, res, { actionType: 'create', entity: 'result_sheet', payload: { class_id: id, exam_name: String(req.body.exam_name ?? ''), exam_type: typeof req.body.exam_type === 'string' && req.body.exam_type ? req.body.exam_type : 'monthly', file_path: (req as any).file?.path ?? null } })) return;
     await handleUpload(req, res, id);
   }),
 );
@@ -111,7 +119,7 @@ resultsRouter.post(
   upload.single('image'),
   asyncHandler(async (req, res) => {
     const body = parseBody(z.object({ class_id: uuidSchema }), req.body);
-    if (await queueIfClerk(req, res, { actionType: 'create', entity: 'result_sheet', payload: { class_id: body.class_id, exam_name: String(req.body.exam_name ?? ''), file_path: (req as any).file?.path ?? null } })) return;
+    if (await queueIfClerk(req, res, { actionType: 'create', entity: 'result_sheet', payload: { class_id: body.class_id, exam_name: String(req.body.exam_name ?? ''), exam_type: typeof req.body.exam_type === 'string' && req.body.exam_type ? req.body.exam_type : 'monthly', file_path: (req as any).file?.path ?? null } })) return;
     await handleUpload(req, res, body.class_id);
   }),
 );
@@ -194,6 +202,7 @@ resultsRouter.post(
       z.object({
         exam_id: uuidSchema.optional(),
         exam_name: z.string().min(1).max(120).optional(),
+        exam_type: z.enum(['monthly', 'midterm', 'annual']).optional(),
         class_id: uuidSchema,
         session_id: uuidSchema.optional().nullable(),
         rows: z.array(rowSchema).min(1),

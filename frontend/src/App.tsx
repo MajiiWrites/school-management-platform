@@ -26,12 +26,11 @@ const MessagesPage = lazy(() => import('./pages/Messages'));
 const ParentsPage = lazy(() => import('./pages/Parents'));
 const SettingsPage = lazy(() => import('./pages/Settings'));
 const ReportsPage = lazy(() => import('./pages/Reports'));
-// 6C-2 pages: expenses, announcements, events, certificates, leave/late, notifications.
+// 6C-2 pages: expenses, announcements, events, certificates, notifications.
 const ExpensesPage = lazy(() => import('./pages/Expenses'));
 const AnnouncementsPage = lazy(() => import('./pages/Announcements'));
 const EventsPage = lazy(() => import('./pages/Events'));
 const CertificatesPage = lazy(() => import('./pages/Certificates'));
-const LeavesPage = lazy(() => import('./pages/Leaves'));
 const NotificationsPage = lazy(() => import('./pages/Notifications'));
 const SecurityPage = lazy(() => import('./pages/Security')); // 6D: 2FA, roles & permissions, data export, login alerts, backups
 const ApprovalsPage = lazy(() => import('./pages/Approvals')); // D2: admin approval queue for clerk changes
@@ -103,7 +102,7 @@ export default function App() {
         <Route path="/reset-password" element={<ResetPasswordPage />} />
         <Route path="/t/:token" element={<TeacherLinkPage />} />
 
-        {/* R2-C fix (F3): dead routes — /calendar, /holidays and /leave.
+        {/* R2-C fix (F3): dead routes — /calendar and /holidays.
             These used to live inside the authenticated portal below, so the
             redirect only fired after the auth gate, Layout and all its
             mount-time effects had run — and the GuidedTour's auto-open used
@@ -111,12 +110,12 @@ export default function App() {
             on live (fresh TEST school, first login) the redirects looked
             dead. As top-level routes the redirect fires on match, before
             any auth/layout work; an unauthenticated visit lands on /events
-            (or /leaves) and RequireAuth then sends it to /login as usual.
+            and RequireAuth then sends it to /login as usual.
             The calendar lives on /events (it merges holidays), holidays are
-            managed in Settings, and leave applications live on /leaves. */}
+            managed in Settings. Module G (2026-11-07): the removed page's
+            old paths are gone too — they now fall through to NotFound. */}
         <Route path="/calendar" element={<Navigate to="/events" replace />} />
         <Route path="/holidays" element={<Navigate to="/events" replace />} />
-        <Route path="/leave" element={<Navigate to="/leaves" replace />} />
 
         {/* Authenticated portal */}
         <Route
@@ -142,7 +141,6 @@ export default function App() {
           <Route path="announcements" element={<AnnouncementsPage />} />
           <Route path="events" element={<EventsPage />} />
           <Route path="certificates" element={<CertificatesPage />} />
-          <Route path="leaves" element={<LeavesPage />} />
           <Route path="notifications" element={<NotificationsPage />} />
           {/* 6B: results */}
           <Route path="results" element={<ResultsPage />} />

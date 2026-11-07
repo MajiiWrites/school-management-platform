@@ -1,5 +1,5 @@
 // 6C-2 feature tests (fees extensions, vouchers, expenses, announcements,
-// events, certificates + ID cards, leave/late, reports exports,
+// events, certificates + ID cards, reports exports,
 // notification center, settings, cross-tenant 404s).
 // Uses the fees module's in-memory fake DB, extended with the v2
 // collections these services need. No live DB, no schema changes.
@@ -18,7 +18,6 @@ import { createExpense, updateExpense, deleteExpense, listExpenses, incomeVsExpe
 import { createAnnouncement, approveAnnouncement, listAnnouncements } from '../../announcements/service';
 import { createEvent, monthCalendar } from '../../events/service';
 import { issueCertificate, listCertificatesForStudent, renderCertificateHtml, renderCertificatePdf, issueIdCard } from '../../certificates/service';
-import { createLeave, decideLeave, listLateArrivals } from '../../admin/service';
 import { getSettings, updateSettings } from '../../admin/service';
 import { feeDefaulters, classStrength, messageHistory, resultsSummary } from '../../reports/service';
 import { buildExportRows, exportCsv, exportPdf, exportXlsx } from '../../reports/service';
@@ -35,7 +34,7 @@ function makeDb(): FakeDb {
   const extra = [
     'expense', 'announcement', 'event', 'certificate', 'feeVoucher',
     'ocrUpload', 'resultSheet', 'result', 'exam', 'attendanceDay',
-    'attendanceRecord', 'messageQueue', 'user', 'leaveApplication',
+    'attendanceRecord', 'messageQueue', 'user',
   ] as const;
   for (const key of extra) (db as any)[key] = new FakeCollection();
   (db as any).feeVoucher.uniqueKey = (r: any) => `${r.schoolId}|${r.voucherNo}`;
@@ -277,15 +276,21 @@ describe('6C-2 announcements, events, certificates', () => {
   });
 
   it('certificate: issue → derived number, HTML + PDF content', async () => {
-    const cert = await issueCertificate(db as any, SCHOOL, 'stu-1', 'leaving', 'actor-1');
+    // Module F (Point 9): a School Leaving Certificate now requires a
+    // leaving reason — one of the four exact options.
+    const cert = await issueCertificate(db as any, SCHOOL, 'stu-1', 'leaving', 'actor-1', {
+      leaving_reason_option: 'completed_primary',
+    });
     expect(cert.certificate_no).toMatch(/^DEMO-PUBLIC-LEA-[0-9A-Z]{8}$/);
     expect(cert.type_label).toBe('School Leaving Certificate');
     expect(cert.student_name).toBe('Ahmed Raza');
     expect(cert.class_name).toBe('5-A');
+    expect(cert.leaving_reason).toBe('Completed 5th Grade (Primary)');
     const html = renderCertificateHtml(cert);
     expect(html).toContain('Ahmed Raza');
     expect(html).toContain(cert.certificate_no);
     expect(html).toContain('School Leaving Certificate');
+    expect(html).toContain('Reason for leaving: Completed 5th Grade (Primary).');
     const pdf = await renderCertificatePdf(cert);
     expect(pdf.subarray(0, 5).toString()).toBe('%PDF-');
     expect(pdf.length).toBeGreaterThan(500);
@@ -307,35 +312,6 @@ describe('6C-2 announcements, events, certificates', () => {
     await expectNotFound(issueCertificate(db as any, OTHER_SCHOOL, 'stu-1', 'bonafide', 'a'));
     await createEvent(db as any, SCHOOL, { date: '2026-11-06', title: 'Sports Day' }, 'a');
     expect((await monthCalendar(db as any, OTHER_SCHOOL, '2026-11')).days).toEqual([]);
-  });
-});
-
-describe('6C-2 leave approve/reject + late arrivals', () => {
-  let db: FakeDb;
-  beforeEach(() => { db = makeDb(); });
-
-  it('decideLeave writes change history for approve and reject', async () => {
-    const l1: any = await createLeave(db as any, SCHOOL, { student_id: 'stu-1', from_date: '2026-11-10', to_date: '2026-11-11', reason: 'Family wedding' }, 'actor-1');
-    const approved = await decideLeave(db as any, SCHOOL, l1.id, 'approved', 'actor-1');
-    expect(approved.status).toBe('approved');
-    const l2: any = await createLeave(db as any, SCHOOL, { student_id: 'stu-2', from_date: '2026-11-10', to_date: '2026-11-10', reason: 'Sick' }, 'actor-1');
-    const rejected = await decideLeave(db as any, SCHOOL, l2.id, 'rejected', 'actor-1');
-    expect(rejected.status).toBe('rejected');
-    const logs = db.changeLog.findMany({ where: { entity: 'leave_application' } });
-    expect(logs.some((l: any) => l.newValue === 'approved')).toBe(true);
-    expect(logs.some((l: any) => l.newValue === 'rejected')).toBe(true);
-    await expectNotFound(decideLeave(db as any, OTHER_SCHOOL, l1.id, 'approved', 'a'));
-  });
-
-  it('late arrivals come from attendance records with status late', async () => {
-    const day: any = db.attendanceDay.create({ data: { schoolId: SCHOOL, classId: 'class-5a', date: new Date('2026-11-06T00:00:00Z'), submittedBy: 'admin', submittedAt: new Date() } });
-    (db as any).attendanceRecord.create({ data: { attendanceDayId: day.id, studentId: 'stu-1', status: 'late', markedAt: new Date(), updatedBy: 'admin' } });
-    (db as any).attendanceRecord.create({ data: { attendanceDayId: day.id, studentId: 'stu-2', status: 'present', markedAt: new Date(), updatedBy: 'admin' } });
-    const late = await listLateArrivals(db as any, SCHOOL, { date: '2026-11-06' });
-    expect(late).toHaveLength(1);
-    expect(late[0].student_name).toBe('Ahmed Raza');
-    expect(late[0].class_name).toBe('5-A');
-    expect(await listLateArrivals(db as any, OTHER_SCHOOL, { date: '2026-11-06' })).toEqual([]);
   });
 });
 

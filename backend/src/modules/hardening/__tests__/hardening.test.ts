@@ -194,7 +194,7 @@ class FakeCollection {
 const COLLECTIONS = [
   'school', 'user', 'class', 'student', 'attendanceDay', 'attendanceRecord', 'teacherAttendance',
   'feeStructure', 'feeRecord', 'messageTemplate', 'messageQueue', 'messageDelivery', 'smsDevice',
-  'holiday', 'academicSession', 'promotion', 'leaveApplication', 'ocrUpload', 'auditLog',
+  'holiday', 'academicSession', 'promotion', 'ocrUpload', 'auditLog',
   'notification', 'rolePermission', 'approvalRequest', 'deletedRecord', 'changeLog', 'exam',
   'gradingScale', 'resultSheet', 'result', 'timetableEntry', 'staff', 'staffClassAssignment',
   'salaryRecord', 'expense', 'announcement', 'event', 'certificate', 'examDatesheet',
@@ -366,7 +366,7 @@ describe('recycle bin', () => {
   });
 
   it('restore after the 30-day window is refused', async () => {
-    const student = await studentsSvc.createStudent(db, SCHOOL, klass.id, { name: 'Late', roll_no: 1 }, admin.id);
+    const student = await studentsSvc.createStudent(db, SCHOOL, klass.id, { name: 'Bilal', roll_no: 1 }, admin.id);
     await studentsSvc.deleteStudent(db, SCHOOL, student.id, admin.id);
     const bin = await recycleBin.listRecycleBin(db, SCHOOL, {});
     // Age the snapshot past its restore deadline.

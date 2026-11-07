@@ -13,9 +13,13 @@ import * as service from './service';
 export const classesRouter = Router();
 classesRouter.use(authenticate, requireSchool);
 
-const classSchema = z.object({
+export const classSchema = z.object({
   name: z.string().min(1, 'Class name is required').max(20),
-  section: z.string().min(1, 'Section is required').max(10),
+  // FINAL REBUILD Point 1: section is OPTIONAL — a class needs only a
+  // name + a teacher name. Missing/blank section is stored as "" (the DB
+  // column stays non-null, @@unique([schoolId, name, section]) keeps
+  // working: "5" + "" is one distinct key). No schema change needed.
+  section: z.string().trim().max(10).optional(),
   teacher_name: z.string().min(2, 'Teacher name is required').max(120),
   teacher_phone: z.string().optional().nullable(),
 });

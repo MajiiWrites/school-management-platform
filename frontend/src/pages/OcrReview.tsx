@@ -1,9 +1,10 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { api, ApiClientError } from '../lib/api';
+import { api, ApiClientError, API_BASE, getAccessToken } from '../lib/api';
 import type { OcrRow, OcrUpload } from '../lib/types';
 import { Badge, Button, Card, EmptyState, ErrorBanner, Spinner, useToast } from '../components/ui';
 import ConfirmDialog from '../components/ConfirmDialog';
+import ImageZoom from '../components/ImageZoom';
 
 /** OCR confidence below this is flagged for manual review. */
 export const OCR_LOW_CONFIDENCE_THRESHOLD = 0.7;
@@ -26,14 +27,39 @@ export default function OcrReviewPage() {
   const navigate = useNavigate();
   const [upload, setUpload] = useState<OcrUpload | null>(null);
   const [rows, setRows] = useState<OcrRow[]>([]);
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [showRaw, setShowRaw] = useState(false);
   const [confirmingSave, setConfirmingSave] = useState(false);
   const [pendingRemoveRow, setPendingRemoveRow] = useState<number | null>(null);
-  const fileRef = useRef<HTMLInputElement>(null);
+  const galleryRef = useRef<HTMLInputElement>(null);
+  const cameraRef = useRef<HTMLInputElement>(null);
   const { push, view } = useToast();
+
+  // Revoke the object URL when the image changes / the page unmounts.
+  useEffect(() => () => {
+    if (imageUrl) URL.revokeObjectURL(imageUrl);
+  }, [imageUrl]);
+
+  /** Fetch the original photo (authenticated) for the zoomable review view. */
+  const loadImage = async (uploadId: string) => {
+    try {
+      const token = getAccessToken();
+      const res = await fetch(`${API_BASE}/ocr-uploads/${uploadId}/image`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) return;
+      const blob = await res.blob();
+      setImageUrl((old) => {
+        if (old) URL.revokeObjectURL(old);
+        return URL.createObjectURL(blob);
+      });
+    } catch {
+      // The review table still works without the image.
+    }
+  };
 
   const doUpload = async (file: File) => {
     if (!classId) return;
@@ -45,6 +71,7 @@ export default function OcrReviewPage() {
       const data = await api<OcrUpload>(`/classes/${classId}/ocr-upload`, { method: 'POST', body: form });
       setUpload(data);
       setRows(data.rows);
+      void loadImage(data.upload_id);
       push('success', `OCR found ${data.rows.length} rows — review them below before saving.`);
     } catch (e) {
       setError(errText(e));
@@ -66,6 +93,8 @@ export default function OcrReviewPage() {
   }).length;
 
   const lowConfidenceCount = rows.filter((r) => r.confidence < OCR_LOW_CONFIDENCE_THRESHOLD).length;
+  const unverifiedCount = rows.filter((r) => r.verification === 'mismatch').length;
+  const missingPhoneCount = rows.filter((r) => !r.parent_phone?.trim()).length;
 
   const confirmSave = () => {
     if (!classId || !upload) return;
@@ -79,7 +108,12 @@ export default function OcrReviewPage() {
 
   const doSave = async () => {
     if (!classId || !upload) return;
-    const cleaned = rows.filter((r) => r.name.trim() !== '');
+    // Rows with no parent number are saved as "-" (the server treats "-"
+    // as "no number": never validated, never encrypted, and the student
+    // lands in the Parents → Missing number list; SMS skips them).
+    const cleaned = rows
+      .filter((r) => r.name.trim() !== '')
+      .map((r) => ({ ...r, parent_phone: r.parent_phone?.trim() ? r.parent_phone : '-' }));
     setConfirmingSave(false);
     setSaving(true);
     try {
@@ -117,6 +151,18 @@ export default function OcrReviewPage() {
           {lowConfidenceCount > 0
             ? ` ${lowConfidenceCount} row(s) below ${Math.round(OCR_LOW_CONFIDENCE_THRESHOLD * 100)}% confidence are highlighted — check them carefully.`
             : ' All rows are above the confidence threshold.'}
+          {unverifiedCount > 0 && ` ${unverifiedCount} name(s) were not confirmed by the second OCR pass — compare them with the photo.`}
+          {missingPhoneCount > 0 && ` ${missingPhoneCount} row(s) have no parent number (shown as —); they will appear under Parents → Missing number, and SMS will skip them.`}
+        </div>
+      )}
+
+      {upload?.warnings && upload.warnings.length > 0 && (
+        <div className="space-y-2">
+          {upload.warnings.map((w, i) => (
+            <div key={i} className="rounded-lg border border-sky-300 bg-sky-50 px-4 py-3 text-sm text-sky-800" role="alert">
+              {w}
+            </div>
+          ))}
         </div>
       )}
 
@@ -126,13 +172,28 @@ export default function OcrReviewPage() {
           <p className="mt-2 font-medium text-slate-800">Choose a photo or scan of the student list</p>
           <p className="mt-1 text-sm text-slate-500">
             Clear, well-lit photos work best. Roll numbers and parent phone numbers are picked up when present.
+            Names are kept exactly as written on the list — nothing is corrected or re-spelled.
           </p>
-          <div className="mt-4 flex justify-center gap-2">
-            <Button disabled={uploading} onClick={() => fileRef.current?.click()}>
-              {uploading ? 'Reading image…' : 'Choose image'}
+          <div className="mt-4 flex flex-wrap justify-center gap-2">
+            <Button disabled={uploading} onClick={() => galleryRef.current?.click()}>
+              {uploading ? 'Reading image…' : '📁 Upload from Gallery / Files'}
+            </Button>
+            <Button disabled={uploading} variant="secondary" onClick={() => cameraRef.current?.click()}>
+              📷 Take a Photo
             </Button>
             <input
-              ref={fileRef}
+              ref={galleryRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) doUpload(f);
+                e.target.value = '';
+              }}
+            />
+            <input
+              ref={cameraRef}
               type="file"
               accept="image/*"
               capture="environment"
@@ -144,6 +205,9 @@ export default function OcrReviewPage() {
               }}
             />
           </div>
+          <p className="mt-3 text-xs text-slate-400">
+            On phones, “Take a Photo” opens the camera directly; on a computer it opens the file picker — both go through the same check.
+          </p>
           {uploading && <Spinner label="Extracting names — this can take a few seconds…" />}
         </Card>
       )}
@@ -166,6 +230,19 @@ export default function OcrReviewPage() {
             )}
           </Card>
 
+          <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
+            <Card className="p-4">
+              <h2 className="text-sm font-semibold text-slate-800">Original photo — zoom in to check a name</h2>
+              {imageUrl ? (
+                <div className="mt-2">
+                  <ImageZoom src={imageUrl} alt="Original photo of the student list" />
+                </div>
+              ) : (
+                <p className="mt-2 text-sm text-slate-500">Loading the photo…</p>
+              )}
+            </Card>
+
+            <div>
           {rows.length === 0 ? (
             <EmptyState
               title="No names extracted"
@@ -199,6 +276,11 @@ export default function OcrReviewPage() {
                           value={r.name}
                           onChange={(e) => updateRow(i, { name: e.target.value })}
                           placeholder="Student name" autoComplete="off" />
+                        {r.parent_name && (
+                          <div className="mt-0.5 text-xs text-slate-500" title="Father/guardian name as written on the list (s/o …) — saved as the parent name, not part of the student's name.">
+                            s/o {r.parent_name}
+                          </div>
+                        )}
                       </td>
                       <td className="px-3 py-2">
                         <input
@@ -221,13 +303,25 @@ export default function OcrReviewPage() {
                           className={`w-36 rounded border px-2 py-1 font-mono text-sm ${lowConf ? 'border-red-400 bg-red-50' : 'border-slate-300'}`}
                           value={r.parent_phone ?? ''}
                           onChange={(e) => updateRow(i, { parent_phone: e.target.value })}
-                          placeholder="03XX…" autoComplete="off" />
+                          placeholder="— no number"
+                          title="Leave blank when the list has no parent number — it is saved as “—”, shows under Parents → Missing number, and SMS skips the student. Never guess a number."
+                          autoComplete="off" />
                       </td>
                       <td className="px-3 py-2">
                         {lowConf ? (
                           <Badge tone="red">{Math.round(r.confidence * 100)}% — check</Badge>
                         ) : (
                           <span className="text-xs text-slate-500">{Math.round(r.confidence * 100)}%</span>
+                        )}
+                        {r.verification === 'mismatch' && (
+                          <span title="The second OCR pass (different settings) did not read this name — compare it with the photo.">
+                            <Badge tone="red">2nd pass ✗</Badge>
+                          </span>
+                        )}
+                        {r.verification === 'match' && (
+                          <span title="The second OCR pass read this name too.">
+                            <Badge tone="green">2nd pass ✓</Badge>
+                          </span>
                         )}
                         {r.duplicate && (
                           <span title={duplicateLabel(r.duplicate_reason)}>
@@ -247,10 +341,12 @@ export default function OcrReviewPage() {
               </table>
             </div>
           )}
+            </div>
+          </div>
 
           <div className="flex flex-wrap gap-2">
             <Button variant="secondary" onClick={addRow}>+ Add a missing student</Button>
-            <Button variant="secondary" onClick={() => { setUpload(null); setRows([]); }}>Upload a different photo</Button>
+            <Button variant="secondary" onClick={() => { setUpload(null); setRows([]); setImageUrl(null); }}>Upload a different photo</Button>
             <Button disabled={saving} onClick={confirmSave} className="ml-auto">
               {saving ? 'Saving…' : `Confirm & save ${rows.filter((r) => r.name.trim()).length} students`}
             </Button>

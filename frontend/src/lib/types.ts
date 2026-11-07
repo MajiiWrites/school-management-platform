@@ -1,8 +1,8 @@
 // Shared types — mirror contracts/API.md + contracts/SCHEMA.md (CONTRACT v1.0)
 
 export type Role = 'admin' | 'clerk' | 'principal';
-export type AttendanceStatus = 'present' | 'absent' | 'late' | 'leave';
-export type TeacherStatus = 'present' | 'absent' | 'leave';
+export type AttendanceStatus = 'present' | 'absent';
+export type TeacherStatus = 'present' | 'absent';
 export type FeeStatus = 'unpaid' | 'partial' | 'paid';
 export type MessageStatus = 'queued' | 'sent' | 'failed' | 'cancelled';
 export type MessageType = 'absent' | 'fee_reminder' | 'teacher_reminder' | 'result' | 'announcement' | 'custom';
@@ -156,8 +156,12 @@ export interface OcrRow {
   name: string;
   name_ur?: string;
   roll_no?: number | null;
+  /** Parent name when the list wrote "Ali s/o Ahmed" (father's name, not the student's). */
+  parent_name?: string | null;
   parent_phone?: string;
   confidence: number;
+  /** Second verification pass (different psm): 'match' | 'mismatch' | 'unverified'. */
+  verification?: 'match' | 'mismatch' | 'unverified';
   duplicate?: boolean;
   /** Why the row was flagged: 'duplicate_name' | 'duplicate_roll_no' (R2-D: 'duplicate_phone' no longer occurs). */
   duplicate_reason?: string | null;
@@ -167,6 +171,9 @@ export interface OcrUpload {
   upload_id: string;
   raw_text: string;
   rows: OcrRow[];
+  warnings?: string[];
+  /** Authenticated image endpoint for the zoomable review view. */
+  image_url?: string;
 }
 
 export interface TeacherLinkData {
@@ -257,6 +264,22 @@ export interface SmsStatus {
   last_seen_at?: string | null;
   queued_count: number;
   pending_approval_count?: number;
+  /** FINAL REBUILD (Module C): the saved sender number, masked. */
+  sender_number_masked?: string | null;
+  /** Name of the most-recently-seen linked companion device, if any. */
+  device_name?: string | null;
+  /** True when the linked device was seen in the last 90 s. */
+  device_online?: boolean;
+}
+
+/** FINAL REBUILD (Module C): per-school SMS sender number (admin-only endpoints). */
+export interface SenderNumberSettings {
+  /** Full E.164 number, for the admin's edit field. */
+  sender_number: string | null;
+  sender_number_masked: string | null;
+  device_name: string | null;
+  device_online: boolean;
+  device_last_seen_at?: string | null;
 }
 
 export interface AuditLog {
@@ -288,6 +311,60 @@ export interface AcademicSession {
   is_current: boolean;
   // 6C-1: archived sessions are read-only (flag stored in school settings).
   is_archived?: boolean;
+}
+
+/** Module D promotion rebuild: one admin decision = one batch. */
+export type PromotionOutcome = 'promoted' | 'graduated' | 'held';
+export type PromotionStatus = 'applied' | 'reversed' | 'superseded';
+
+export interface PromotionPreviewRow {
+  student_id: string;
+  student_name: string | null;
+  roll_no_from: number | null;
+  from_class_id: string;
+  to_class_id: string | null;
+  outcome: PromotionOutcome;
+  roll_no_to: number | null;
+  status: 'ready' | 'skipped';
+  skip_reason: string | null;
+}
+
+export interface PromotionPreview {
+  session_id: string;
+  rows: PromotionPreviewRow[];
+  ready: number;
+  skipped: number;
+}
+
+export interface PromotionItem {
+  id: string;
+  student_id: string;
+  student_name: string | null;
+  from_class_id: string;
+  from_class: string | null;
+  to_class_id: string;
+  to_class: string | null;
+  session_id: string;
+  batch_id: string | null;
+  status: PromotionStatus;
+  outcome: PromotionOutcome;
+  roll_no_from: number | null;
+  roll_no_to: number | null;
+  promoted_at: string;
+  promoted_by: string | null;
+}
+
+export interface PromotionBatch {
+  batch_id: string;
+  session_id: string;
+  promoted_at: string;
+  promoted_by: string | null;
+  students: number;
+  applied: number;
+  reversed: number;
+  superseded: number;
+  status: 'applied' | 'partially_reversed' | 'reversed';
+  outcomes: { promoted: number; graduated: number; held: number };
 }
 
 /**
@@ -467,9 +544,18 @@ export interface RecipientItem {
 }
 
 // --- 6C-1: sessions / exams / timetable / staff / payroll -------------------
+/** FINAL REBUILD (Module C): exam types — exactly these three. */
+export type ExamType = 'monthly' | 'midterm' | 'annual';
+export const EXAM_TYPE_LABELS: Record<ExamType, string> = {
+  monthly: 'Monthly Test',
+  midterm: 'Midterm',
+  annual: 'Annual',
+};
+
 export interface ExamItem {
   id: string;
   name: string;
+  type: ExamType;
   session_id: string | null;
   start_date: string | null;
   end_date: string | null;
@@ -511,6 +597,47 @@ export interface TimetableEntryItem {
   room: string | null;
 }
 
+/** One row parsed from a photographed timetable sheet (Point 7). */
+export type TimetablePhotoFlag =
+  | 'missing_teacher'
+  | 'missing_time'
+  | 'missing_subject'
+  | 'period_inferred'
+  | 'teacher_double_booked'
+  | 'class_double_booked'
+  | 'unmatched_teacher'
+  | 'unmatched_class'
+  | 'low_confidence';
+
+export interface TimetablePhotoCell {
+  day_of_week: number | null;
+  day_label: string | null;
+  period_no: number | null;
+  start_time: string | null;
+  end_time: string | null;
+  subject: string | null;
+  teacher_name: string | null;
+  class_label: string | null;
+  confidence: number;
+  flags: TimetablePhotoFlag[];
+  source_text: string;
+  teacher_id: string | null;
+  class_id: string | null;
+}
+
+export interface TimetablePhotoUpload {
+  raw_text: string;
+  cells: TimetablePhotoCell[];
+  unmatched_teachers: string[];
+  unmatched_classes: string[];
+  warnings: string[];
+}
+
+export interface TimetablePhotoConfirmResult {
+  created: number;
+  skipped: { entry: Record<string, unknown>; reason: string }[];
+}
+
 export interface StaffItem {
   id: string;
   name: string;
@@ -531,15 +658,38 @@ export interface StaffAssignmentItem {
   subject: string;
 }
 
-export interface SalaryRecordItem {
+export interface StaffPaymentItem {
   id: string;
   staff_id: string;
   staff_name: string | null;
   month: string;
-  base_salary: number;
-  deductions: number;
-  net_pay: number;
-  paid: boolean;
+  amount: number;
   paid_at: string | null;
-  payslip_no: string | null;
+}
+
+export type PayrollStatus = 'unpaid' | 'partial' | 'paid';
+
+export interface PayrollSummaryItem {
+  staff_id: string;
+  staff_name: string | null;
+  month: string;
+  monthly_salary: number | null;
+  amount_paid: number;
+  remaining: number | null;
+  status: PayrollStatus;
+  payments: StaffPaymentItem[];
+}
+
+export interface SalarySlipData {
+  staff_id: string;
+  school_name: string;
+  logo_url: string | null;
+  staff_name: string;
+  role: string;
+  month: string;
+  monthly_salary: number | null;
+  amount_paid: number;
+  remaining: number | null;
+  status: PayrollStatus;
+  payments: { amount: number; paid_at: string | null }[];
 }

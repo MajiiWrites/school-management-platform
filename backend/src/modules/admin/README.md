@@ -1,6 +1,6 @@
 # Admin module
 
-Dashboard, settings, clerk management, holidays, academic sessions, promotions, leaves, audit logs and notifications.
+Dashboard, settings, clerk management, holidays, academic sessions, promotions, audit logs and notifications.
 
 ## Endpoints (mounted at `/api/v1`, all JWT + tenant-scoped)
 
@@ -19,9 +19,6 @@ Dashboard, settings, clerk management, holidays, academic sessions, promotions, 
 | POST | /sessions | admin | `{name, start_date, end_date}`. |
 | POST | /sessions/:id/make-current | admin | Exactly one current session per school. |
 | POST | /promotions | admin | `{session_id, mappings:[{student_id, to_class_id}]}` — moves students and writes `promotions` rows (transactional). |
-| GET | /leaves | admin/clerk | Leave applications (`?student_id=&status=`). |
-| POST | /leaves | admin | `{student_id, from_date, to_date, reason}`. |
-| PATCH | /leaves/:id | admin | `{status: approved\|rejected}`. |
 | GET | /audit-logs?entity=&action= | admin | Paginated, newest first. |
 | GET | /notifications?unread_only= | admin/clerk | Unread first, newest first. |
 | POST | /notifications/:id/read | admin/clerk | Mark one notification read. |

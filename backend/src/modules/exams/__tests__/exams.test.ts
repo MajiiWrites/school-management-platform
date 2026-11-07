@@ -167,3 +167,65 @@ describe('exams cross-tenant isolation', () => {
     expect((await svc.listExams(db, OTHER_SCHOOL_ID, {})).total).toBe(0);
   });
 });
+
+describe('exam types (FINAL REBUILD, Module C)', () => {
+  let db: Db;
+  const schoolId = 'school-6c1';
+  beforeEach(() => {
+    ({ db } = fresh());
+  });
+
+  it('creates each of the three types; free name is preserved', async () => {
+    const monthly = await svc.createExam(db, schoolId, { name: 'Monthly Test – March', type: 'monthly' }, 'admin-1');
+    expect(monthly.type).toBe('monthly');
+    expect(monthly.name).toBe('Monthly Test – March');
+    const midterm = await svc.createExam(db, schoolId, { name: 'Midterm', type: 'midterm' }, 'admin-1');
+    expect(midterm.type).toBe('midterm');
+    const annual = await svc.createExam(db, schoolId, { name: 'Annual Exams 2026', type: 'annual' }, 'admin-1');
+    expect(annual.type).toBe('annual');
+  });
+
+  it('defaults to monthly when no type is given', async () => {
+    const e = await svc.createExam(db, schoolId, { name: 'Monthly Test – April' }, 'admin-1');
+    expect(e.type).toBe('monthly');
+  });
+
+  it('rejects any type outside monthly | midterm | annual', async () => {
+    for (const bad of ['final', 'quiz', 'unit', '', 'MONTHLY']) {
+      await expect(
+        svc.createExam(db, schoolId, { name: 'Bad Type', type: bad }, 'admin-1'),
+      ).rejects.toThrow("type must be one of 'monthly', 'midterm', 'annual'");
+    }
+  });
+
+  it('update validates the type and writes the change to history', async () => {
+    const e = await svc.createExam(db, schoolId, { name: 'Monthly Test – March', type: 'monthly' }, 'admin-1');
+    const updated = await svc.updateExam(db, schoolId, e.id as string, { type: 'midterm' }, 'admin-1');
+    expect(updated.type).toBe('midterm');
+    expect(updated.name).toBe('Monthly Test – March');
+    const logs = (db as any).changeLog.findMany({ where: { entity: 'exam', entityId: e.id } });
+    expect(logs.some((l: any) => l.field === 'type' && l.oldValue === 'monthly' && l.newValue === 'midterm')).toBe(true);
+    await expect(
+      svc.updateExam(db, schoolId, e.id as string, { type: 'final' }, 'admin-1'),
+    ).rejects.toThrow("type must be one of 'monthly', 'midterm', 'annual'");
+  });
+
+  it('list filters by type', async () => {
+    await svc.createExam(db, schoolId, { name: 'Monthly Test – March', type: 'monthly' }, 'admin-1');
+    await svc.createExam(db, schoolId, { name: 'Monthly Test – April', type: 'monthly' }, 'admin-1');
+    await svc.createExam(db, schoolId, { name: 'Midterm', type: 'midterm' }, 'admin-1');
+    await svc.createExam(db, schoolId, { name: 'Annual Exams', type: 'annual' }, 'admin-1');
+    const monthly = await svc.listExams(db, schoolId, { type: 'monthly' });
+    expect(monthly.total).toBe(2);
+    expect(monthly.items.map((x: any) => x.name).sort()).toEqual(['Monthly Test – April', 'Monthly Test – March']);
+    const midterm = await svc.listExams(db, schoolId, { type: 'midterm' });
+    expect(midterm.total).toBe(1);
+    const annual = await svc.listExams(db, schoolId, { type: 'annual' });
+    expect(annual.total).toBe(1);
+    const all = await svc.listExams(db, schoolId, {});
+    expect(all.total).toBe(4);
+    await expect(svc.listExams(db, schoolId, { type: 'final' })).rejects.toThrow(
+      "type must be one of 'monthly', 'midterm', 'annual'",
+    );
+  });
+});

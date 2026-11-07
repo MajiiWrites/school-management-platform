@@ -93,6 +93,13 @@ export class ApiClientError extends Error {
   }
 }
 
+/** FINAL REBUILD Point 3: true for a fetch aborted via AbortController
+ * (live search cancelling an outdated request) — callers swallow these
+ * silently instead of showing an error banner. */
+export function isAbortError(e: unknown): boolean {
+  return e instanceof DOMException ? e.name === 'AbortError' : (e as { name?: string } | null)?.name === 'AbortError';
+}
+
 interface RequestOptions {
   method?: string;
   body?: unknown;
@@ -101,6 +108,10 @@ interface RequestOptions {
   public?: boolean;
   /** Skip the single 401 refresh retry (used by the refresh call itself). */
   noRetry?: boolean;
+  /** FINAL REBUILD Point 3: abort signal for live search — lets the
+   * caller cancel an outdated request so a slow reply can never
+   * overwrite fresher results. */
+  signal?: AbortSignal;
 }
 
 async function refreshAccess(): Promise<boolean> {
@@ -150,6 +161,7 @@ export async function api<T>(path: string, opts: RequestOptions = {}): Promise<T
     return fetch(`${API_BASE}${path}`, {
       method: opts.method ?? 'GET',
       headers,
+      signal: opts.signal,
       body: isForm ? (opts.body as FormData) : opts.body === undefined ? undefined : JSON.stringify(opts.body),
     });
   };

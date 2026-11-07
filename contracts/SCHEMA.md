@@ -24,11 +24,11 @@ All tables live in PostgreSQL. Every tenant-scoped table has `school_id` (UUID, 
 - Unique: (class_id, date).
 
 ### attendance_records
-- id UUID PK, attendance_day_id UUID FK attendance_days, student_id UUID FK students, status TEXT CHECK IN ('present','absent','late','leave'), marked_at TIMESTAMPTZ, updated_by TEXT
+- id UUID PK, attendance_day_id UUID FK attendance_days, student_id UUID FK students, status TEXT CHECK IN ('present','absent'), marked_at TIMESTAMPTZ, updated_by TEXT
 - Unique: (attendance_day_id, student_id). Index: (student_id, status).
 
 ### teacher_attendance
-- id UUID PK, school_id UUID FK, class_id UUID FK classes, date DATE, status TEXT CHECK IN ('present','absent','leave'), marked_by UUID NULL, note TEXT NULL, created_at
+- id UUID PK, school_id UUID FK, class_id UUID FK classes, date DATE, status TEXT CHECK IN ('present','absent'), marked_by UUID NULL, note TEXT NULL, created_at
 - Unique: (class_id, date). Teacher absence NEVER triggers messages (enforced in messaging service: only student absences generate queue rows).
 
 ### fee_structures
@@ -198,9 +198,11 @@ drift must ALWAYS be stripped from generated migrations (see
   staff, class_id UUID FK classes, subject TEXT, created_at. Unique:
   (staff_id, class_id, subject).
 - `salary_records`: id UUID PK, school_id UUID FK, staff_id UUID FK staff,
-  month TEXT (YYYY-MM), base_salary INT, deductions INT DEFAULT 0,
-  net_pay INT, paid_at TIMESTAMPTZ NULL, payslip_no TEXT NULL, created_at.
-  Unique: (staff_id, month). CHECK: base_salary/deductions/net_pay >= 0.
+  month TEXT (YYYY-MM), amount INT (one payment row; several per staff+month
+  allowed and summed), paid_at TIMESTAMPTZ NULL, created_at. Index:
+  (school_id, staff_id, month). CHECK: amount >= 0. Status (Paid / Partially
+  Paid / Unpaid) and remaining are derived from Staff.salary_monthly minus
+  the month's payments — never stored.
 - `expenses`: id UUID PK, school_id UUID FK, date DATE, category TEXT,
   description TEXT NULL, amount INT (PKR), created_by UUID NULL FK users,
   created_at.
@@ -286,3 +288,9 @@ the Recycle Bin flow applies, per the phase implementing it).
   and Urdu/English Unicode support are frontend concerns; opted-out parents
   (`parent_opt_out` / `parent2_opt_out`) are auto-excluded at queue-build
   time and the build returns a skipped count.
+
+## Final rebuild (2026-11-07)
+- `exams.type` ExamType enum (`monthly` | `midterm` | `annual`, default `monthly`); `schools.smsSenderNumber` TEXT NULL.
+- `promotions`: `batchId`, `status` (`applied`/`reversed`/`superseded`), `outcome` (`promoted`/`graduated`/`held`), `rollNoFrom`, `rollNoTo`; partial unique index: one live promotion per student per session.
+- `certificates`: `leavingReason`, `leavingReasonOption`, `studentSnapshot` JSONB.
+- `leave_applications` table dropped. `attendance_records` / `teacher_attendance` status CHECKs tightened to (`present`, `absent`); `students` status CHECK now (`active`, `left`, `struck_off`, `graduated`).

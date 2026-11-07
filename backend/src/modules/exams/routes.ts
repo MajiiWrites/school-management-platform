@@ -34,7 +34,7 @@ examsRouter.post(
   requireQueueable('exams', 'create'),
   asyncHandler(async (req, res) => {
     const body = parseBody(
-      z.object({ name: z.string().min(2).max(120), session_id: optionalUuid, start_date: dateSchema.optional().nullable(), end_date: dateSchema.optional().nullable() }),
+      z.object({ name: z.string().min(2).max(120), type: z.enum(['monthly', 'midterm', 'annual']).optional(), session_id: optionalUuid, start_date: dateSchema.optional().nullable(), end_date: dateSchema.optional().nullable() }),
       req.body,
     );
     if (await queueIfClerk(req, res, { actionType: 'create', entity: 'exam', payload: body })) return;
@@ -59,7 +59,7 @@ examsRouter.patch(
   asyncHandler(async (req, res) => {
     const { id } = parseBody(z.object({ id: uuidSchema }), req.params);
     const body = parseBody(
-      z.object({ name: z.string().min(2).max(120).optional(), session_id: optionalUuid, start_date: dateSchema.optional().nullable(), end_date: dateSchema.optional().nullable() }),
+      z.object({ name: z.string().min(2).max(120).optional(), type: z.enum(['monthly', 'midterm', 'annual']).optional(), session_id: optionalUuid, start_date: dateSchema.optional().nullable(), end_date: dateSchema.optional().nullable() }),
       req.body,
     );
     if (await queueIfClerk(req, res, { actionType: 'update', entity: 'exam', entityId: id, payload: { id, patch: body } })) return;

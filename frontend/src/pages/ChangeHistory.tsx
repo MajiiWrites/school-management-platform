@@ -25,6 +25,7 @@ const ENTITY_FILTERS = [
   { key: 'class', label: 'Classes' },
   { key: 'fee_record', label: 'Fees' },
   { key: 'result', label: 'Results' },
+  { key: 'certificate', label: 'Certificates' },
   { key: 'exam', label: 'Exams' },
   { key: 'school_settings', label: 'Settings' },
   { key: 'academic_session', label: 'Sessions' },

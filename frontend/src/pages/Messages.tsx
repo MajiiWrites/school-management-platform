@@ -143,6 +143,25 @@ export default function MessagesPage() {
             </span>
           )}
         </div>
+        {/* FINAL REBUILD (Module C): which number/SIM sends the SMS. When
+            a companion device is linked the line names that SIM; otherwise
+            the saved sender number itself is shown. */}
+        <p className="mt-2 text-sm text-slate-600">
+          {sms?.device_name ? (
+            <>
+              Sending from <strong>{sms.device_name}</strong> (SIM {sms.device_online ? 'online' : 'offline'})
+              {sms.sender_number_masked ? <> · <span className="font-mono text-xs">{sms.sender_number_masked}</span></> : ' · sender number not set'}
+            </>
+          ) : sms?.sender_number_masked ? (
+            <>
+              Sending from <span className="font-mono text-xs">{sms.sender_number_masked}</span> · no companion phone linked
+            </>
+          ) : (
+            <>No sender number set — add one in <a className="font-medium text-brand-700 hover:underline" href="/settings">Settings → School &amp; SMS</a>.</>
+          )}
+          {' · '}
+          <a className="font-medium text-brand-700 hover:underline" href="/settings">Change sender number</a>
+        </p>
       </Card>
 
       <Tabs

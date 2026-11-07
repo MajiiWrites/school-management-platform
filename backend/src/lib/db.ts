@@ -50,7 +50,6 @@ export interface Db {
   holiday: Delegate;
   academicSession: Delegate;
   promotion: Delegate;
-  leaveApplication: Delegate;
   ocrUpload: Delegate;
   auditLog: Delegate;
   notification: Delegate;
@@ -98,7 +97,6 @@ const MODEL_KEYS: Array<keyof Omit<Db, '$transaction' | '$disconnect'>> = [
   'holiday',
   'academicSession',
   'promotion',
-  'leaveApplication',
   'ocrUpload',
   'auditLog',
   'notification',
@@ -142,7 +140,6 @@ const PLURAL_FALLBACK: Record<string, string[]> = {
   holiday: ['holidays'],
   academicSession: ['academicSessions'],
   promotion: ['promotions'],
-  leaveApplication: ['leaveApplications'],
   ocrUpload: ['ocrUploads'],
   auditLog: ['auditLogs'],
   notification: ['notifications'],

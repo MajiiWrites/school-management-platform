@@ -12,8 +12,6 @@ type StatusMap = Record<string, AttendanceStatus>;
 const STATUS_LABEL: Record<AttendanceStatus, string> = {
   present: 'Present',
   absent: 'Absent',
-  late: 'Late',
-  leave: 'Leave',
 };
 
 function pendingKey(token: string): string {
@@ -145,7 +143,7 @@ export default function TeacherLinkPage() {
           acc[statuses[s.id] ?? 'present'] += 1;
           return acc;
         },
-        { present: 0, absent: 0, late: 0, leave: 0 } as Record<AttendanceStatus, number>,
+        { present: 0, absent: 0 } as Record<AttendanceStatus, number>,
       )
     : null;
 
@@ -186,7 +184,7 @@ export default function TeacherLinkPage() {
             Class {classLabel} · {data.date}
           </p>
           <p className="mt-3 text-sm text-slate-700">
-            {counts?.present ?? 0} present · {counts?.absent ?? 0} absent · {counts?.late ?? 0} late · {counts?.leave ?? 0} on leave
+            {counts?.present ?? 0} present · {counts?.absent ?? 0} absent
           </p>
           {pendingOffline && (
             <p className="mt-3 rounded-lg bg-amber-100 px-3 py-2 text-sm text-amber-800">
@@ -211,7 +209,7 @@ export default function TeacherLinkPage() {
             </div>
             {counts && (
               <p className="mt-2 text-sm text-slate-600">
-                {counts.present} present · {counts.absent} absent · {counts.late} late · {counts.leave} leave
+                {counts.present} present · {counts.absent} absent
               </p>
             )}
             <div className="mt-3 flex gap-2">
@@ -236,7 +234,7 @@ export default function TeacherLinkPage() {
                       <span className="w-6 text-sm font-medium text-slate-400">{s.roll_no ?? i + 1}</span>
                       <span className="flex-1 text-sm font-medium text-slate-900">{s.name}</span>
                     </div>
-                    <div className="mt-2 grid grid-cols-4 gap-1.5">
+                    <div className="mt-2 grid grid-cols-2 gap-1.5">
                       {(Object.keys(STATUS_LABEL) as AttendanceStatus[]).map((opt) => (
                         <button
                           key={opt}
@@ -246,11 +244,7 @@ export default function TeacherLinkPage() {
                             st === opt
                               ? opt === 'present'
                                 ? 'border-brand-700 bg-brand-700 text-white'
-                                : opt === 'absent'
-                                  ? 'border-red-600 bg-red-600 text-white'
-                                  : opt === 'late'
-                                    ? 'border-amber-500 bg-amber-500 text-white'
-                                    : 'border-blue-600 bg-blue-600 text-white'
+                                : 'border-red-600 bg-red-600 text-white'
                               : 'border-slate-300 bg-white text-slate-600',
                           )}
                         >
@@ -276,7 +270,7 @@ export default function TeacherLinkPage() {
             title="Submit attendance?"
             message={
               counts
-                ? `Are you sure? This will submit attendance for Class ${classLabel} (${data.date}): ${counts.present} present, ${counts.absent} absent, ${counts.late} late, ${counts.leave} on leave. One submission per class per day — it locks afterwards and only the admin can unlock it.`
+                ? `Are you sure? This will submit attendance for Class ${classLabel} (${data.date}): ${counts.present} present, ${counts.absent} absent. One submission per class per day — it locks afterwards and only the admin can unlock it.`
                 : ''
             }
             confirmLabel="Submit attendance"

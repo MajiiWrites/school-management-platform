@@ -37,7 +37,6 @@ const TABLES: Array<[keyof Db, string]> = [
   ['holiday', 'holidays'],
   ['academicSession', 'academic_sessions'],
   ['promotion', 'promotions'],
-  ['leaveApplication', 'leave_applications'],
   ['ocrUpload', 'ocr_uploads'],
   ['auditLog', 'audit_logs'],
   ['notification', 'notifications'],

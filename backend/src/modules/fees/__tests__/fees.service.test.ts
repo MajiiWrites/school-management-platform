@@ -304,10 +304,10 @@ describe('mid-month fee structure backfill (R2-F)', () => {
     });
 
     const list = await listFees(db, 'school-demo', { month: '2026-11', class_id: 'class-7c' }, 'Asia/Karachi');
-    const late = list.items.find((i) => i.student_id === 'stu-7b')!;
-    expect(late.record_exists).toBe(false);
-    expect(late.no_structure).toBe(false);
-    expect(late.amount_due).toBe(2500); // projected from the mid-month structure
+    const stu7b = list.items.find((i) => i.student_id === 'stu-7b')!;
+    expect(stu7b.record_exists).toBe(false);
+    expect(stu7b.no_structure).toBe(false);
+    expect(stu7b.amount_due).toBe(2500); // projected from the mid-month structure
 
     const receipt = await payFee(db, 'school-demo', 'stu-7b', { month: '2026-11', amount_paid: 2500 }, 'admin-1');
     expect(receipt.status).toBe('paid');

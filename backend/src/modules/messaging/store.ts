@@ -77,6 +77,10 @@ export interface SchoolInfo {
   name: string;
   timezone: string;
   smsProvider: 'sim' | 'gateway';
+  /** FINAL REBUILD (Module C): the per-school SMS sender number (E.164,
+   * null = not set). Optional so older store implementations keep
+   * compiling; the Prisma adapter always fills it. */
+  senderNumber?: string | null;
 }
 
 export interface TemplateRow {
@@ -329,6 +333,12 @@ export interface MessagingStore {
   touchDevice(deviceId: string): Promise<void>;
   getDevicesStatus(schoolId: string): Promise<{ lastSeenAt: Date | null; onlineCount: number }>;
   countQueued(schoolId: string): Promise<{ queued: number; pendingApproval: number }>;
+
+  /* ---- FINAL REBUILD (Module C): per-school SMS sender number -------- */
+  /** Persist the sender number (E.164, or null to clear) on the school row. */
+  updateSenderNumber?(schoolId: string, senderNumber: string | null): Promise<void>;
+  /** Most-recently-seen linked device, or null when no device is linked. */
+  getLatestDevice?(schoolId: string): Promise<DeviceRow | null>;
 }
 
 /** Dedupe key formats (SCHEMA.md message_queue). */
@@ -475,6 +485,7 @@ export function createPrismaMessagingStore(prisma: any): MessagingStore {
         name: s.name,
         timezone: s.timezone ?? 'Asia/Karachi',
         smsProvider: settingsProvider(s.settings),
+        senderNumber: s.smsSenderNumber ?? null,
       };
     },
 
@@ -963,6 +974,22 @@ export function createPrismaMessagingStore(prisma: any): MessagingStore {
         if (!lastSeenAt || t > lastSeenAt) lastSeenAt = t;
       }
       return { lastSeenAt, onlineCount };
+    },
+
+    /* ---- FINAL REBUILD (Module C): sender number --------------------- */
+    async updateSenderNumber(schoolId, senderNumber) {
+      await prisma.school.update({
+        where: { id: schoolId },
+        data: { smsSenderNumber: senderNumber },
+      });
+    },
+
+    async getLatestDevice(schoolId) {
+      const d = await prisma.smsDevice.findFirst({
+        where: { schoolId },
+        orderBy: [{ lastSeenAt: 'desc' }],
+      });
+      return d ? mapDeviceRow(d) : null;
     },
 
     async countQueued(schoolId) {

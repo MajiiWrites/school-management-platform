@@ -63,10 +63,10 @@ toppers, report cards) belong to 6B and read exams via these endpoints.
 | `GET /staff/:id/assignments` | any authed | |
 | `POST /staff/:id/assign` | admin; clerk → queue | `{class_id, subject}` |
 | `DELETE /staff/:id/assign/:assignment_id` | admin; clerk → queue | |
-| `GET /payroll?month=&staff_id=&paid=` | any authed | `month` YYYY-MM |
-| `POST /payroll` | admin; clerk → queue | `{staff_id, month, base_salary?, deductions?, payslip_no?}` → `{net_pay}` |
-| `GET /payroll/:id`, `PATCH /payroll/:id`, `DELETE /payroll/:id` | any / admin; clerk → queue | PATCH `{base_salary?, deductions?, paid?}` |
-| `GET /payroll/:id/payslip` | any authed | Printable HTML payslip (Print / Save as PDF) |
+| `GET /payroll?month=&staff_id=&status=` | any authed | `month` YYYY-MM; one summary row per staff member (monthly salary, amount paid, remaining, status Paid / Partially Paid / Unpaid, payment rows) |
+| `POST /payroll` | admin; clerk → queue | `{staff_id, month, amount}` — one payment; partial payments add up |
+| `GET /payroll/:id`, `PATCH /payroll/:id`, `DELETE /payroll/:id` | any / admin; clerk → queue | One payment row; PATCH `{amount}` only |
+| `GET /payroll/slip?staff_id=&month=&format=` | any authed | Salary slip per (staff, month): `format=json` (data), `format=pdf` (real PDF via pdfkit), default printable HTML |
 
 ## Promotion & archive rules
 
@@ -120,13 +120,23 @@ Only staff with `role = 'teacher'` can be put on the timetable.
 - Phones use the unchanged AES-256-GCM + SHA-256 pattern; responses carry
   `phone_masked` only (`+92 3XX XXXX123`); change logs store the masked
   number, never ciphertext.
-- `net_pay = max(0, base_salary − deductions)`; one salary record per
-  `(staff, month)` (409 on duplicate); `base_salary` defaults to the
-  staff profile's `salary_monthly`. Payslip numbers auto-generate as
-  `PS-YYYYMM-NNN` per month. `paid` toggles `paid_at`; paid records cannot
-  be deleted (unmark first).
-- Staff delete is blocked while timetable entries exist or salary records
-  exist (payroll history must not vanish silently); assignments are
+- **Simplified payroll (Module E FINAL REBUILD, 2026-11-07):** one
+  `SalaryRecord` row = ONE payment — month + staff + amount (+ `paidAt`
+  = payment date). The agreed monthly salary lives ONLY on
+  `Staff.salaryMonthly` (the single salary field). Status is DERIVED,
+  never stored: paid 0 → Unpaid, 0 < paid < salary → Partially Paid,
+  paid ≥ salary → Paid; remaining = max(0, salary − paid), null when no
+  salary is set. Several partial payments in one month add up (the old
+  `@@unique([staffId, month])` is gone). No deductions, allowances,
+  bonuses, tax, net pay, or payslip numbers exist anywhere. Salary slip
+  is per (staff, month): school name + logo (`settings.logo_url`),
+  staff name, month, monthly salary, amount paid, each payment date,
+  amount remaining. Migration `20261107152000_simplify_payroll`: paid
+  rows became payments (amount = old net_pay); unpaid rows were only
+  "amount due" placeholders with no money moved, so they were deleted
+  and those months now correctly show Unpaid.
+- Staff delete is blocked while timetable entries exist or payment
+  records exist (payroll history must not vanish silently); assignments are
   removed with the staff row. Changing a teacher's role to `staff` is
   blocked while they are on the timetable.
 
@@ -174,7 +184,8 @@ approves in `/approvals` and the payload is applied via the appliers in
 - `frontend/src/pages/Timetable.tsx` — class-wise / teacher-wise views,
   add/edit entry, conflict errors shown inline.
 - `frontend/src/pages/Staff.tsx` — staff CRUD + assignments, payroll tab
-  (create, mark paid/unpaid, printable payslip modal).
+  (record a payment, per-staff Paid / Partially Paid / Unpaid + remaining,
+  expandable payment list with delete, salary-slip modal + PDF download).
 - Nav entries (Sessions, Exams, Timetable, Staff) in `Layout.tsx`;
   routes in `App.tsx`; types in `lib/types.ts` (6C-1 blocks).
 - All forms `autoComplete="off"`; every add/delete/bulk action goes

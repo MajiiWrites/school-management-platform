@@ -41,9 +41,11 @@ import {
   editQueueBody,
   getDeviceQueue,
   getPendingApproval,
+  getSenderSettings,
   getSmsStatus,
   reportDelivery,
   retryFailed,
+  updateSenderNumber,
   type PhoneCrypto,
   type ServiceDeps,
 } from './service';
@@ -1121,6 +1123,70 @@ export function createMessagingRouter(deps: MessagingRouterDeps): express.Router
         last_seen_at: s.lastSeenAt ? s.lastSeenAt.toISOString() : null,
         queued_count: s.queuedCount,
         pending_approval_count: s.pendingApprovalCount,
+        // FINAL REBUILD (Module C): which number/SIM sends the SMS.
+        sender_number_masked: s.senderNumberMasked,
+        device_name: s.deviceName,
+        device_online: s.deviceOnline,
+      });
+    }),
+  );
+
+  /* ---- FINAL REBUILD (Module C): per-school SMS sender number ------ */
+  /* The admin enters the personal/school number SMS is sent from. It
+   * is stored per school and shown masked on the Messages page (tied to
+   * the linked device when one exists). The full number is returned
+   * here only — this endpoint is admin-only and feeds the edit field. */
+
+  router.get(
+    '/sms/sender-number',
+    deps.requireAuth,
+    deps.requireAdmin,
+    wrap(async (req, res) => {
+      const schoolId = requireSchool(req);
+      const s = await getSenderSettings(serviceDeps, { schoolId });
+      ok(res, {
+        sender_number: s.senderNumber,
+        sender_number_masked: s.senderNumberMasked,
+        device_name: s.deviceName,
+        device_online: s.deviceOnline,
+        device_last_seen_at: s.deviceLastSeenAt ? s.deviceLastSeenAt.toISOString() : null,
+      });
+    }),
+  );
+
+  router.patch(
+    '/sms/sender-number',
+    deps.requireAuth,
+    deps.requireAdmin,
+    wrap(async (req, res) => {
+      const schoolId = requireSchool(req);
+      const before = await getSenderSettings(serviceDeps, { schoolId });
+      const { sender_number } = req.body as { sender_number?: unknown };
+      if (sender_number === undefined) {
+        throw Object.assign(new Error('sender_number is required (null clears it)'), {
+          code: 'VALIDATION',
+        });
+      }
+      const updated = await updateSenderNumber(serviceDeps, {
+        schoolId,
+        senderNumber: sender_number,
+        actorId: req.user?.sub ?? 'unknown',
+      });
+      // Change history: masked values only — full numbers never go to logs.
+      await writeChangeLogs(getDb(), {
+        schoolId,
+        actorId: req.user?.sub ?? null,
+        entity: 'school_settings',
+        entityId: schoolId,
+        before: { sms_sender_number: before.senderNumberMasked },
+        after: { sms_sender_number: updated.senderNumberMasked },
+      });
+      ok(res, {
+        sender_number: updated.senderNumber,
+        sender_number_masked: updated.senderNumberMasked,
+        device_name: updated.deviceName,
+        device_online: updated.deviceOnline,
+        device_last_seen_at: updated.deviceLastSeenAt ? updated.deviceLastSeenAt.toISOString() : null,
       });
     }),
   );

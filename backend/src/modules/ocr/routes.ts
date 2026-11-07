@@ -3,6 +3,7 @@
 //
 //   POST /classes/:id/ocr-upload
 //   GET  /ocr-uploads/:id
+//   GET  /ocr-uploads/:id/image
 //   POST /classes/:id/ocr-upload/:upload_id/confirm
 //
 // Auth/tenant middleware is injected by the caller (backend middleware/auth.ts
@@ -125,6 +126,44 @@ export function createOcrRouter(deps: OcrRouterDeps): Router {
         if (!schoolId) return fail(res, 401, 'UNAUTHORIZED', 'Missing tenant context.');
         const result = await service.getUploadForReview(schoolId, param(req, 'id'));
         return ok(res, result);
+      } catch (err) {
+        return handleError(err, res);
+      }
+    }),
+  );
+
+  // GET /ocr-uploads/:id/image — the original photo for the zoomable review
+  // view. Scoped by school (the service 404s on another school's upload)
+  // and confined to the upload directory (no path traversal via DB values).
+  router.get(
+    '/ocr-uploads/:id/image',
+    deps.auth,
+    asyncHandler(async (req, res) => {
+      try {
+        const schoolId = req.schoolId;
+        if (!schoolId) return fail(res, 401, 'UNAUTHORIZED', 'Missing tenant context.');
+        const { file_path } = await service.getUploadImage(schoolId, param(req, 'id'));
+        const resolved = path.resolve(file_path);
+        if (!resolved.startsWith(uploadDir + path.sep)) {
+          return fail(res, 404, 'NOT_FOUND', 'Image not found.');
+        }
+        const mimeByExt: Record<string, string> = {
+          '.jpg': 'image/jpeg',
+          '.jpeg': 'image/jpeg',
+          '.png': 'image/png',
+          '.webp': 'image/webp',
+          '.heic': 'image/heic',
+          '.heif': 'image/heif',
+        };
+        const mime = mimeByExt[path.extname(resolved).toLowerCase()] ?? 'application/octet-stream';
+        res.setHeader('Content-Type', mime);
+        res.setHeader('Cache-Control', 'private, max-age=3600');
+        const stream = fs.createReadStream(resolved);
+        stream.on('error', () => {
+          if (!res.headersSent) fail(res, 404, 'NOT_FOUND', 'Image file is no longer available.');
+          else res.end();
+        });
+        stream.pipe(res);
       } catch (err) {
         return handleError(err, res);
       }

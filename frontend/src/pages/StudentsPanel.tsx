@@ -6,6 +6,7 @@ import type { ClassItem, Student } from '../lib/types';
 import { displayClass, normalizePkPhone } from '../lib/utils';
 import { Badge, Button, EmptyState, Field, inputCls, Modal, Pager, useToast } from '../components/ui';
 import ConfirmDialog from '../components/ConfirmDialog';
+import LiveSearchInput, { HighlightedText } from '../components/LiveSearchInput';
 
 function errText(e: unknown): string {
   return e instanceof ApiClientError ? e.message : 'Something went wrong.';
@@ -82,6 +83,7 @@ export default function StudentsPanel({
   onFlagFilterChange,
   onPageChange,
   onRefresh,
+  searching,
 }: {
   classId: string;
   students: Student[];
@@ -97,6 +99,9 @@ export default function StudentsPanel({
   onFlagFilterChange?: (f: 'all' | 'missing' | 'invalid' | 'duplicate') => void;
   onPageChange?: (page: number) => void;
   onRefresh?: () => void;
+  /** True while a debounced live-search query is in flight — the search
+   * input shows a spinner instead of the clear button. */
+  searching?: boolean;
 }) {
   const serverPaged = onPageChange !== undefined;
   const [localSearch, setLocalSearch] = useState('');
@@ -136,6 +141,9 @@ export default function StudentsPanel({
       if (!q) return true;
       return (
         s.name.toLowerCase().includes(q) ||
+        (s.name_ur ?? '').toLowerCase().includes(q) ||
+        (s.father_name ?? '').toLowerCase().includes(q) ||
+        (s.admission_no ?? '').toLowerCase().includes(q) ||
         String(s.roll_no ?? '').includes(q) ||
         (s.parent_name ?? '').toLowerCase().includes(q)
       );
@@ -223,11 +231,16 @@ export default function StudentsPanel({
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
-        <input
-          className={`${inputCls} max-w-xs`}
+        {/* FINAL REBUILD Point 3: live search — no button, no reload.
+            Typing updates instantly; the parent debounces (~200 ms) and
+            queries the server with `q`, cancelling the previous request. */}
+        <LiveSearchInput
           value={search}
-          onChange={(e) => (serverPaged ? onSearchChange?.(e.target.value) : setLocalSearch(e.target.value))}
-          placeholder="Search name, roll no, parent…" autoComplete="off" />
+          onChange={(q) => (serverPaged ? onSearchChange?.(q) : setLocalSearch(q))}
+          placeholder="Search name, father's name, roll no., admission no.…"
+          searching={searching}
+          ariaLabel="Search students"
+        />
         <select className={inputCls + ' w-auto'} value={flagFilter} onChange={(e) => (serverPaged ? onFlagFilterChange?.(e.target.value as typeof flagFilter) : setLocalFlagFilter(e.target.value as typeof flagFilter))}>
           <option value="all">All phone statuses</option>
           <option value="missing">Missing number</option>
@@ -271,19 +284,25 @@ export default function StudentsPanel({
 
       {filtered.length === 0 ? (
         <EmptyState
-          title="No students found"
-          body={
-            serverPaged
-              ? (total ?? 0) === 0
-                ? `No students in ${classNameLabel ?? 'this class'} yet — upload a list photo or add them manually.`
-                : 'Try a different search or filter.'
-              : students.length === 0
-                ? `No students in ${classNameLabel ?? 'this class'} yet — upload a list photo or add them manually.`
-                : 'Try a different search or filter.'
+          title={
+            search.trim()
+              ? 'No student found'
+              : 'No students found'
           }
-          actionLabel={(serverPaged ? (total ?? 0) === 0 : students.length === 0) ? 'Add your first student' : undefined}
+          body={
+            search.trim()
+              ? `No student matches "${search.trim()}". Try a different spelling, roll number or admission number.`
+              : serverPaged
+                ? (total ?? 0) === 0
+                  ? `No students in ${classNameLabel ?? 'this class'} yet — upload a list photo or add them manually.`
+                  : 'Try a different search or filter.'
+                : students.length === 0
+                  ? `No students in ${classNameLabel ?? 'this class'} yet — upload a list photo or add them manually.`
+                  : 'Try a different search or filter.'
+          }
+          actionLabel={!search.trim() && (serverPaged ? (total ?? 0) === 0 : students.length === 0) ? 'Add your first student' : undefined}
           onAction={
-            (serverPaged ? (total ?? 0) === 0 : students.length === 0)
+            !search.trim() && (serverPaged ? (total ?? 0) === 0 : students.length === 0)
               ? () => {
                   setEditing(null);
                   setShowForm(true);
@@ -310,11 +329,25 @@ export default function StudentsPanel({
                 <tr key={s.id} className="hover:bg-slate-50">
                   <td className="px-4 py-2.5 font-medium">{s.roll_no ?? '—'}</td>
                   <td className="px-4 py-2.5">
-                    <span className="font-medium text-slate-900">{s.name}</span>
+                    <span className="font-medium text-slate-900">
+                      <HighlightedText text={s.name} query={search} />
+                    </span>
                     {s.name_ur ? <span className="urdu ml-2 text-slate-500">{s.name_ur}</span> : null}
+                    {s.admission_no ? (
+                      <span className="block text-xs text-slate-500">
+                        <HighlightedText text={s.admission_no} query={search} />
+                      </span>
+                    ) : null}
                   </td>
                   <td className="px-4 py-2.5">{statusBadge(s) ?? <span className="text-xs text-slate-400">Active</span>}</td>
-                  <td className="px-4 py-2.5">{s.parent_name ?? '—'}</td>
+                  <td className="px-4 py-2.5">
+                    {s.parent_name ? <HighlightedText text={s.parent_name} query={search} /> : '—'}
+                    {s.father_name && s.father_name !== s.parent_name ? (
+                      <span className="block text-xs text-slate-500">
+                        Father: <HighlightedText text={s.father_name} query={search} />
+                      </span>
+                    ) : null}
+                  </td>
                   <td className="px-4 py-2.5 font-mono text-xs">{s.parent_phone_masked ?? s.parent_phone ?? '—'}</td>
                   <td className="px-4 py-2.5">{phoneBadge(s)}</td>
                   <td className="px-4 py-2.5 text-right">

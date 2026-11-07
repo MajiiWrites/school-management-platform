@@ -9,6 +9,7 @@ import type {
   JobStatus,
   PageResult,
   SchoolSettings,
+  SenderNumberSettings,
   Student,
 } from '../lib/types';
 import { fmtDate, fmtDateTime } from '../lib/utils';
@@ -94,6 +95,7 @@ function SchoolSettingsTab() {
   if (!s) return <ErrorBanner message={error || 'Settings unavailable.'} />;
 
   return (
+    <>
     <Card className="max-w-2xl p-5">
       {error && <ErrorBanner message={error} />}
       <form onSubmit={save} className="space-y-4" autoComplete="off">
@@ -216,6 +218,83 @@ function SchoolSettingsTab() {
         onConfirm={doSave}
         onCancel={() => setConfirming(false)}
       />
+      {view}
+    </Card>
+    {/* FINAL REBUILD (Module C): the number SMS is sent from — saved per
+        school, separate from the settings above (its own endpoint). */}
+    <SenderNumberSection />
+    </>
+  );
+}
+
+/** SMS sender number: the personal/school number parents see SMS coming
+ * from. Saved per school; when a companion phone is linked the Messages
+ * page shows that SIM alongside this number. */
+function SenderNumberSection() {
+  const [s, setS] = useState<SenderNumberSettings | null>(null);
+  const [number, setNumber] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const { push, view } = useToast();
+
+  useEffect(() => {
+    api<SenderNumberSettings>('/sms/sender-number')
+      .then((d) => {
+        setS(d);
+        setNumber(d.sender_number ?? '');
+      })
+      .catch(() => setError('Could not load the sender number.'))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const save = async () => {
+    setBusy(true);
+    setError('');
+    try {
+      const d = await api<SenderNumberSettings>('/sms/sender-number', {
+        method: 'PATCH',
+        body: { sender_number: number.trim() === '' ? null : number.trim() },
+      });
+      setS(d);
+      setNumber(d.sender_number ?? '');
+      push('success', 'Sender number saved — parent SMS will show this number as the sender.');
+    } catch (err) {
+      push('error', errText(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (loading) return <Spinner label="Loading sender number…" />;
+
+  return (
+    <Card className="max-w-2xl p-5">
+      <h2 className="text-base font-semibold">SMS sender number</h2>
+      {error && <ErrorBanner message={error} />}
+      <p className="mt-1 text-sm text-slate-500">
+        The personal or school number that parent SMS are sent from. Saved for this school.
+        {s?.device_name
+          ? ` Companion phone linked: ${s.device_name} (SIM ${s.device_online ? 'online' : 'offline'}) — messages go out through that phone's SIM.`
+          : ' No companion phone is linked yet — the number below is shown as the sender.'}
+      </p>
+      <div className="mt-3 flex flex-wrap items-end gap-3">
+        <Field label="Sender number" hint="A valid Pakistani mobile number, e.g. 03001234567. Leave blank to clear it.">
+          <input
+            className={inputCls}
+            value={number}
+            onChange={(e) => setNumber(e.target.value)}
+            placeholder="e.g. 03001234567"
+            autoComplete="off"
+          />
+        </Field>
+        <Button onClick={() => void save()} disabled={busy}>{busy ? 'Saving…' : 'Save sender number'}</Button>
+      </div>
+      {s?.sender_number_masked && (
+        <p className="mt-2 text-sm text-slate-500">
+          Currently sending from <span className="font-mono text-xs">{s.sender_number_masked}</span>.
+        </p>
+      )}
       {view}
     </Card>
   );

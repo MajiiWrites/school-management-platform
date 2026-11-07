@@ -261,7 +261,6 @@ class FakeDb {
   holiday = new FakeCollection();
   academicSession = new FakeCollection();
   promotion = new FakeCollection();
-  leaveApplication = new FakeCollection();
   ocrUpload = new FakeCollection();
   auditLog = new FakeCollection();
   notification = new FakeCollection();
@@ -399,9 +398,6 @@ function seedTwoSchools(): Fixture {
 
   db.academicSession.create({ data: { id: 'sess-a1', schoolId: 'school-a', name: '2026-27', startDate: new Date('2026-04-01T00:00:00Z'), endDate: new Date('2027-03-31T00:00:00Z'), isCurrent: true } });
   db.academicSession.create({ data: { id: 'sess-b1', schoolId: 'school-b', name: '2026-27', startDate: new Date('2026-04-01T00:00:00Z'), endDate: new Date('2027-03-31T00:00:00Z'), isCurrent: true } });
-
-  db.leaveApplication.create({ data: { id: 'leave-a1', schoolId: 'school-a', studentId: 'stu-a1', fromDate: new Date('2026-11-07T00:00:00Z'), toDate: new Date('2026-11-08T00:00:00Z'), reason: 'Family function', status: 'pending', decidedBy: null } });
-  db.leaveApplication.create({ data: { id: 'leave-b1', schoolId: 'school-b', studentId: 'stu-b1', fromDate: new Date('2026-11-07T00:00:00Z'), toDate: new Date('2026-11-08T00:00:00Z'), reason: 'Sick', status: 'pending', decidedBy: null } });
 
   db.notification.create({ data: { id: 'n-a1', schoolId: 'school-a', type: 'absent_approval', title: 'Alpha notice', body: 'Alpha body', relatedType: null, relatedId: null, isRead: false } });
   db.notification.create({ data: { id: 'n-b1', schoolId: 'school-b', type: 'absent_approval', title: 'Beta notice', body: 'Beta body', relatedType: null, relatedId: null, isRead: false } });
@@ -628,7 +624,7 @@ describe('cross-tenant isolation: School B vs School A', () => {
     });
   });
 
-  describe('admin: users / settings / holidays / sessions / promotions / leaves / logs', () => {
+  describe('admin: users / settings / holidays / sessions / promotions / logs', () => {
     it("B cannot delete A's user; B's user list has no A users", async () => {
       const users = await adminSvc.listUsers(db as any, B);
       expect(users.every((u: any) => u.email.endsWith('@beta.test'))).toBe(true);
@@ -659,14 +655,6 @@ describe('cross-tenant isolation: School B vs School A', () => {
         adminSvc.promoteStudents(db as any, B, { session_id: 'sess-a1', mappings: [{ student_id: 'stu-b1', to_class_id: 'class-b-1a' }] }, ADMIN_B),
       );
       expect(db.student.findUnique({ where: { id: 'stu-a1' } })?.classId).toBe('class-a-5a');
-    });
-    it("B cannot create or decide a leave for A's student", async () => {
-      await expectNotFound(
-        adminSvc.createLeave(db as any, B, { student_id: 'stu-a1', from_date: '2026-11-07', to_date: '2026-11-08', reason: 'x' }, ADMIN_B),
-      );
-      await expectNotFound(adminSvc.decideLeave(db as any, B, 'leave-a1', 'approved', ADMIN_B));
-      const leaves = await adminSvc.listLeaves(db as any, B, { student_id: 'stu-a1' });
-      expect(leaves).toHaveLength(0);
     });
     it("B's audit logs / notifications contain no A rows; B cannot mark A's notification read", async () => {
       const logs = await adminSvc.listAuditLogs(db as any, B, {});
@@ -1107,6 +1095,10 @@ function makeOcrDb(): { db: OcrDb; uploads: Map<string, UploadRecord> } {
     },
     async createStudents() {
       return { created: 0 };
+    },
+    async getUploadFile(schoolId, uploadId) {
+      const u = uploads.get(uploadId) ?? null;
+      return u && u.school_id === schoolId ? { file_path: u.file_path } : null;
     },
     async createAuditLog() {},
   };

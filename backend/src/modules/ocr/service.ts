@@ -4,8 +4,48 @@
 // Multi-tenancy: every call is scoped by schoolId (never trust client input).
 import { parseStudentList, type ParsedRow, type ExistingStudent } from './parser.js';
 import { normalizePkPhone, hashPhone, normalizeName } from './phone.js';
-import { runOcr, OcrUnavailableError } from './ocr-engine.js';
+import { runOcr, inspectImage, runTesseract, OcrUnavailableError } from './ocr-engine.js';
 import { encryptPhone } from './crypto.js';
+
+/**
+ * "No number" markers: a list with no parent phone shows "-" in the Parent
+ * Number field. "-" is NOT a phone — it is never validated, never
+ * encrypted, never hashed, and never treated as a valid SMS number. A
+ * student saved with "-" (or blank) has parentPhoneEnc = null, so the
+ * Students/Parents views flag them 'missing' ("Missing number" list) and
+ * the SMS sender skips them with reason 'missing_phone'. Never invent or
+ * guess a number.
+ */
+export const MISSING_PHONE_TOKENS = new Set(['', '-', '—', '--', 'n/a', 'na', 'nil', 'none', 'no number']);
+
+/** True when the value means "no parent number" (not a phone at all). */
+export function isMissingPhoneValue(raw: string | null | undefined): boolean {
+  if (raw == null) return true;
+  return MISSING_PHONE_TOKENS.has(raw.trim().toLowerCase());
+}
+
+/**
+ * Second verification pass: re-run OCR with a DIFFERENT psm (4 = single
+ * column of text of variable sizes) and compare the names it reads with
+ * the primary pass. Rows whose Latin name the verification pass also read
+ * are 'match'; rows it did not read are 'mismatch' and get their
+ * confidence capped at 0.55 so the review screen highlights them.
+ * Urdu-only rows cannot be verified by the Latin pass and stay
+ * 'unverified'. A failed verification run never fails the upload — every
+ * row is then 'unverified' and the upload carries a warning.
+ */
+export function applyVerification(primary: ParsedRow[], verificationText: string | null): ParsedRow[] {
+  if (verificationText === null) {
+    return primary.map((r) => ({ ...r, verification: 'unverified' as const }));
+  }
+  const verifiedNames = new Set(parseStudentList(verificationText).map((r) => normalizeName(r.name)));
+  return primary.map((r) => {
+    const hasLatinName = /[A-Za-z]/.test(r.name);
+    if (!hasLatinName) return { ...r, verification: 'unverified' as const };
+    if (verifiedNames.has(normalizeName(r.name))) return { ...r, verification: 'match' as const };
+    return { ...r, verification: 'mismatch' as const, confidence: Math.min(r.confidence, 0.55) };
+  });
+}
 
 export { OcrUnavailableError };
 
@@ -23,7 +63,7 @@ export interface NewStudentInput {
   name_ur?: string | null;
   roll_no?: number | null;
   parent_name?: string | null;
-  parent_phone?: string | null; // raw; normalized + hashed by the service
+  parent_phone?: string | null; // raw; normalized + hashed by the service. "-" (or blank) = no number, never validated.
 }
 
 export interface OcrDb {
@@ -36,9 +76,10 @@ export interface OcrDb {
   createStudents(
     schoolId: string,
     classId: string,
-    rows: { name: string; name_ur: string | null; roll_no: number | null; parent_phone_enc: string | null; parent_phone_hash: string | null }[],
+    rows: { name: string; name_ur: string | null; roll_no: number | null; parent_name: string | null; parent_phone_enc: string | null; parent_phone_hash: string | null }[],
   ): Promise<{ created: number }>;
-  createAuditLog(entry: { school_id: string; actor_id: string | null; actor_type: string; action: string; entity: string; entity_id: string | null; details: Record<string, unknown> }): Promise<void>;
+  /** Scoped read of the upload's stored file path (for the image endpoint). */
+  getUploadFile(schoolId: string, uploadId: string): Promise<{ file_path: string } | null>;  createAuditLog(entry: { school_id: string; actor_id: string | null; actor_type: string; action: string; entity: string; entity_id: string | null; details: Record<string, unknown> }): Promise<void>;
 }
 
 export interface UploadResult {
@@ -47,6 +88,8 @@ export interface UploadResult {
   rows: ParsedRow[];
   engine: string;
   warnings: string[];
+  /** Authenticated image endpoint for the zoomable review view. */
+  image_url: string;
 }
 
 export interface ConfirmResult {
@@ -67,6 +110,10 @@ export class OcrService {
       encryptPhone?: (normalized: string) => string;
       /** Override the OCR runner (tests inject a stub; production uses runOcr). */
       runOcr?: (filePath: string) => Promise<{ raw_text: string; engine: string; warnings: string[] }>;
+      /** Override the SECOND verification pass (tests inject a stub). */
+      runVerificationOcr?: (filePath: string) => Promise<{ raw_text: string }>;
+      /** Override the pre-OCR image inspection (rotation warnings). */
+      inspectImage?: (filePath: string) => Promise<string[]>;
     } = {},
   ) {}
 
@@ -76,6 +123,19 @@ export class OcrService {
 
   private async ocr(filePath: string) {
     return this.opts.runOcr ? this.opts.runOcr(filePath) : runOcr(filePath);
+  }
+
+  private async verify(filePath: string): Promise<string | null> {
+    try {
+      // Different psm (4) from the primary pass (6): a genuinely
+      // independent second read, not the same output twice.
+      const res = this.opts.runVerificationOcr
+        ? await this.opts.runVerificationOcr(filePath)
+        : await runTesseract(filePath, 'eng', 120_000, '4');
+      return res.raw_text;
+    } catch {
+      return null; // verification is best-effort; never fails the upload
+    }
   }
 
   async uploadAndParse(
@@ -92,9 +152,23 @@ export class OcrService {
     }
     const upload = await this.db.createUpload({ school_id: schoolId, class_id: classId, file_path: filePath });
     try {
+      const imageWarnings = this.opts.inspectImage
+        ? await this.opts.inspectImage(filePath)
+        : await inspectImage(filePath);
       const ocr = await this.ocr(filePath);
       const existing = await this.db.listStudents(schoolId, classId);
-      const rows = parseStudentList(ocr.raw_text, existing);
+      const parsed = parseStudentList(ocr.raw_text, existing);
+      const verificationText = await this.verify(filePath);
+      const rows = applyVerification(parsed, verificationText);
+      const warnings = [...imageWarnings, ...ocr.warnings];
+      if (verificationText === null) {
+        warnings.push('Second verification pass did not run — check low-confidence rows carefully.');
+      } else {
+        const mismatches = rows.filter((r) => r.verification === 'mismatch').length;
+        if (mismatches > 0) {
+          warnings.push(`${mismatches} name(s) were not confirmed by the second OCR pass — they are highlighted for review.`);
+        }
+      }
       await this.db.updateUpload(schoolId, upload.id, { status: 'review', raw_text: ocr.raw_text });
       await this.db.createAuditLog({
         school_id: schoolId,
@@ -105,11 +179,22 @@ export class OcrService {
         entity_id: upload.id,
         details: { class_id: classId, engine: ocr.engine, rows_found: rows.length },
       });
-      return { upload_id: upload.id, raw_text: ocr.raw_text, rows, engine: ocr.engine, warnings: ocr.warnings };
+      return { upload_id: upload.id, raw_text: ocr.raw_text, rows, engine: ocr.engine, warnings, image_url: `/ocr-uploads/${upload.id}/image` };
     } catch (err) {
       await this.db.updateUpload(schoolId, upload.id, { status: 'failed' }).catch(() => undefined);
       throw err;
     }
+  }
+
+  /** Scoped file path for the image endpoint (404 when not this school's upload). */
+  async getUploadImage(schoolId: string, uploadId: string): Promise<{ file_path: string }> {
+    const upload = await this.db.getUploadFile(schoolId, uploadId);
+    if (!upload) {
+      const err = new Error('OCR upload not found') as Error & { status?: number; code?: string };
+      err.status = 404; err.code = 'NOT_FOUND';
+      throw err;
+    }
+    return { file_path: upload.file_path };
   }
 
   async getUploadForReview(schoolId: string, uploadId: string): Promise<UploadResult & { class_id: string; status: string }> {
@@ -126,9 +211,12 @@ export class OcrService {
       class_id: upload.class_id,
       status: upload.status,
       raw_text: upload.raw_text ?? '',
-      rows,
+      // Re-parsed from stored raw text: verification is not persisted (no
+      // schema change), so a re-opened review shows 'unverified'.
+      rows: rows.map((r) => ({ ...r, verification: 'unverified' as const })),
       engine: 'tesseract',
       warnings: [],
+      image_url: `/ocr-uploads/${upload.id}/image`,
     };
   }
 
@@ -164,7 +252,7 @@ export class OcrService {
 
     const seenNames = new Set<string>();
     const seenRolls = new Set<number>();
-    const toCreate: { name: string; name_ur: string | null; roll_no: number | null; parent_phone_enc: string | null; parent_phone_hash: string | null }[] = [];
+    const toCreate: { name: string; name_ur: string | null; roll_no: number | null; parent_name: string | null; parent_phone_enc: string | null; parent_phone_hash: string | null }[] = [];
     const skipped: { row: NewStudentInput; reason: string }[] = [];
 
     for (const [i, row] of rows.entries()) {
@@ -173,9 +261,12 @@ export class OcrService {
         skipped.push({ row, reason: `row ${i}: name is required` });
         continue;
       }
+      // "-" (or blank / "n/a" / ...) means NO parent number: save the
+      // student with no phone (parentPhoneEnc null) — never validate "-"
+      // as a phone, never encrypt it, never skip the row for it.
       let phoneNorm: string | null = null;
-      if (row.parent_phone) {
-        phoneNorm = normalizePkPhone(row.parent_phone);
+      if (!isMissingPhoneValue(row.parent_phone)) {
+        phoneNorm = normalizePkPhone(row.parent_phone!);
         if (!phoneNorm) {
           skipped.push({ row, reason: `row ${i}: invalid parent phone "${row.parent_phone}"` });
           continue;
@@ -204,6 +295,7 @@ export class OcrService {
         name,
         name_ur: row.name_ur?.trim() || null,
         roll_no: roll,
+        parent_name: row.parent_name?.trim() || null,
         parent_phone_enc: phoneNorm ? this.encrypt(phoneNorm) : null,
         parent_phone_hash: phoneHash,
       });

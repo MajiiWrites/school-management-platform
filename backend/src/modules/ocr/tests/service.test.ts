@@ -37,6 +37,10 @@ function makeFakeDb(existing: { name: string; roll_no?: number | null; parent_ph
       created.push(...rows);
       return { created: rows.length };
     },
+    async getUploadFile(schoolId, uploadId) {
+      const u = uploads.get(uploadId) ?? null;
+      return u && u.school_id === schoolId ? { file_path: u.file_path } : null;
+    },
     async createAuditLog(entry) {
       audits.push(entry);
     },
@@ -110,4 +114,123 @@ test('confirmRows rejects empty rows and unknown class/upload', async () => {
     () => svc.confirmRows('school-1', 'class-1', 'no-such-upload', 'admin-1', [{ name: 'X' }]),
     /not found/,
   );
+});
+
+// --- FINAL REBUILD Point 2: "-" phone handling + verification pass -----
+import { isMissingPhoneValue, applyVerification } from '../service.js';
+
+test('isMissingPhoneValue: "-" and friends mean NO number, never a phone', () => {
+  for (const v of ['-', '—', '--', '', '  ', 'n/a', 'N/A', 'nil', 'none', 'no number', null, undefined]) {
+    assert.equal(isMissingPhoneValue(v), true, JSON.stringify(v));
+  }
+  for (const v of ['0301-2345678', '0322 7654321', '0', '123']) {
+    assert.equal(isMissingPhoneValue(v), false, JSON.stringify(v));
+  }
+});
+
+test('confirmRows saves "-" rows with NO phone (never validated, never encrypted, never skipped)', async () => {
+  const { db, created } = makeFakeDb();
+  const svc = new OcrService(db, {
+    // Prove "-" is never passed to encryption: throw if it ever is.
+    encryptPhone: (v) => {
+      assert.notEqual(v, '-');
+      assert.ok(!v.includes('-') || v.startsWith('+92'), `encrypt called with ${v}`);
+      return `enc(${v})`;
+    },
+  });
+  const up = await db.createUpload({ school_id: 'school-1', class_id: 'class-1', file_path: '/tmp/x.png' });
+  const res = await svc.confirmRows('school-1', 'class-1', up.id, 'admin-1', [
+    { name: 'No Number One', roll_no: 1, parent_phone: '-' },
+    { name: 'No Number Two', roll_no: 2, parent_phone: '' },
+    { name: 'No Number Three', roll_no: 3 }, // no phone field at all
+    { name: 'Has Number', roll_no: 4, parent_phone: '0301-2345678' },
+  ]);
+  assert.equal(res.saved, 4);
+  assert.equal(res.skipped_duplicates, 0);
+  assert.equal(created.length, 4);
+  // "-" rows: null enc + null hash — that is what makes them show up in
+  // the Students/Parents "Missing number" list (phone_flag 'missing').
+  for (const c of created.slice(0, 3) as { parent_phone_enc: string | null; parent_phone_hash: string | null }[]) {
+    assert.equal(c.parent_phone_enc, null);
+    assert.equal(c.parent_phone_hash, null);
+  }
+  const withPhone = created[3] as { parent_phone_enc: string; parent_phone_hash: string };
+  assert.equal(withPhone.parent_phone_enc, 'enc(+923012345678)');
+  assert.equal(withPhone.parent_phone_hash, hashPhone('+923012345678'));
+});
+
+test('confirmRows still rejects a REAL invalid phone (only "-" is exempt)', async () => {
+  const { db, created } = makeFakeDb();
+  const svc = new OcrService(db, {});
+  const up = await db.createUpload({ school_id: 'school-1', class_id: 'class-1', file_path: '/tmp/x.png' });
+  const res = await svc.confirmRows('school-1', 'class-1', up.id, 'admin-1', [
+    { name: 'Bad Phone', roll_no: 1, parent_phone: '051-1234567' },
+    { name: 'Dash Phone', roll_no: 2, parent_phone: '-' },
+  ]);
+  assert.equal(res.saved, 1);
+  assert.equal(res.skipped_duplicates, 1);
+  assert.equal((created[0] as { name: string }).name, 'Dash Phone');
+});
+
+test('confirmRows passes parent_name (s/o tail) through to the student', async () => {
+  const { db, created } = makeFakeDb();
+  const svc = new OcrService(db, {});
+  const up = await db.createUpload({ school_id: 'school-1', class_id: 'class-1', file_path: '/tmp/x.png' });
+  await svc.confirmRows('school-1', 'class-1', up.id, 'admin-1', [
+    { name: 'Ali', roll_no: 1, parent_name: 'Ahmed', parent_phone: '-' },
+  ]);
+  assert.equal((created[0] as { parent_name: string }).parent_name, 'Ahmed');
+});
+
+test('uploadAndParse applies the verification pass and caps mismatched rows', async () => {
+  const { db } = makeFakeDb();
+  const svc = new OcrService(db, {
+    runOcr: async () => ({ raw_text: '1. Ahmed Raza 0301-2345678\n2. Fatima Khan\n3. Bilal Ahmed', engine: 'tesseract', warnings: [] }),
+    // Second pass (different psm) reads Ahmed + Bilal but NOT Fatima.
+    runVerificationOcr: async () => ({ raw_text: '1. Ahmed Raza 0301-2345678\n3. Bilal Ahmed' }),
+    inspectImage: async () => [],
+  });
+  const res = await svc.uploadAndParse('school-1', 'class-1', 'admin-1', '/tmp/x.png');
+  assert.equal(res.rows[0].verification, 'match');
+  assert.equal(res.rows[1].verification, 'mismatch');
+  assert.ok(res.rows[1].confidence <= 0.55, 'mismatched row confidence capped');
+  assert.equal(res.rows[2].verification, 'match');
+  assert.ok(res.warnings.some((w) => /not confirmed by the second OCR pass/.test(w)));
+  assert.equal(res.image_url, `/ocr-uploads/${res.upload_id}/image`);
+});
+
+test('uploadAndParse marks rows unverified (not failed) when the second pass fails', async () => {
+  const { db } = makeFakeDb();
+  const svc = new OcrService(db, {
+    runOcr: async () => ({ raw_text: '1. Ahmed Raza', engine: 'tesseract', warnings: [] }),
+    runVerificationOcr: async () => {
+      throw new Error('tesseract timed out');
+    },
+    inspectImage: async () => [],
+  });
+  const res = await svc.uploadAndParse('school-1', 'class-1', 'admin-1', '/tmp/x.png');
+  assert.equal(res.rows[0].verification, 'unverified');
+  assert.ok(res.warnings.some((w) => /verification pass did not run/.test(w)));
+});
+
+test('uploadAndParse surfaces rotation warnings from image inspection', async () => {
+  const { db } = makeFakeDb();
+  const svc = new OcrService(db, {
+    runOcr: async () => ({ raw_text: '1. Ahmed Raza', engine: 'tesseract', warnings: [] }),
+    runVerificationOcr: async () => ({ raw_text: '1. Ahmed Raza' }),
+    inspectImage: async () => ['This photo is stored rotated 90° (EXIF orientation 6) — test warning.'],
+  });
+  const res = await svc.uploadAndParse('school-1', 'class-1', 'admin-1', '/tmp/x.png');
+  assert.ok(res.warnings.some((w) => /rotated 90/.test(w)));
+});
+
+test('applyVerification leaves Urdu-only rows unverified (Latin pass cannot read them)', () => {
+  const rows = applyVerification(
+    [
+      { name: 'احمد رضا', name_ur: 'احمد رضا', roll_no: 1, parent_phone: null, parent_phone_masked: null, parent_name: null, confidence: 0.9 },
+    ],
+    '1. Ahmed Raza',
+  );
+  assert.equal(rows[0].verification, 'unverified');
+  assert.equal(rows[0].confidence, 0.9); // not capped
 });

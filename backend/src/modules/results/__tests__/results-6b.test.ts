@@ -187,7 +187,7 @@ function makeDb(): any {
     'school', 'user', 'class', 'student', 'attendanceDay', 'attendanceRecord',
     'teacherAttendance', 'feeStructure', 'feeRecord', 'messageTemplate',
     'messageQueue', 'messageDelivery', 'smsDevice', 'holiday', 'academicSession',
-    'promotion', 'leaveApplication', 'ocrUpload', 'auditLog', 'notification',
+    'promotion', 'ocrUpload', 'auditLog', 'notification',
     'rolePermission', 'approvalRequest', 'deletedRecord', 'changeLog', 'exam',
     'gradingScale', 'resultSheet', 'result', 'timetableEntry', 'staff',
     'staffClassAssignment', 'salaryRecord', 'expense', 'announcement', 'event',
@@ -895,5 +895,91 @@ describe('R2-B (Phase 9 re-test E1): save → filter/table/exports with no reloa
     const students = await studentsSvc.listStudentsSchoolWide(db, SCHOOL_A, { admission_no: 'ADM-007' });
     const card = await resultsSvc.getReportCard(db, SCHOOL_A, students.items[0].id, out.exam_id);
     expect(card.student.father_name).toBe('Imran Test');
+  });
+});
+
+describe('exam types (FINAL REBUILD, Module C)', () => {
+  const stubOcr = async () => ({
+    raw_text: 'Roll No Name English Math\n1 Ahmed Raza 85 90\n',
+    engine: 'stub',
+    warnings: [] as string[],
+  });
+
+  it('upsertExam stores the picked type and keeps the free name', async () => {
+    const exam = await resultsSvc.upsertExam(db, SCHOOL_A, { name: 'Monthly Test – March', type: 'monthly' });
+    expect(exam.type).toBe('monthly');
+    expect(exam.name).toBe('Monthly Test – March');
+    const midterm = await resultsSvc.upsertExam(db, SCHOOL_A, { name: 'Midterm', type: 'midterm' });
+    expect(midterm.type).toBe('midterm');
+    // A second upsert of the same name returns the existing exam (type unchanged).
+    const again = await resultsSvc.upsertExam(db, SCHOOL_A, { name: 'Monthly Test – March', type: 'annual' });
+    expect(again.id).toBe(exam.id);
+    expect(again.type).toBe('monthly');
+  });
+
+  it('upsertExam rejects any type outside monthly | midterm | annual', async () => {
+    await expect(
+      resultsSvc.upsertExam(db, SCHOOL_A, { name: 'Final', type: 'final' }),
+    ).rejects.toThrow("type must be one of 'monthly', 'midterm', 'annual'");
+  });
+
+  it('manual entry creates the exam with the picked type', async () => {
+    await seedClasses();
+    await seedStudent();
+    const out = await resultsSvc.saveManualResults(db, SCHOOL_A, {
+      exam_name: 'Monthly Test – March',
+      exam_type: 'monthly',
+      class_id: classA.id,
+      rows: [{ roll_no: 1, student_name: 'Ahmed Raza', obtained_marks: 90, total_marks: 100 }],
+    }, ADMIN);
+    const exam = await examsSvc.getExam(db, SCHOOL_A, out.exam_id);
+    expect(exam.type).toBe('monthly');
+    expect(exam.name).toBe('Monthly Test – March');
+    expect(out.saved).toBe(1);
+  });
+
+  it('OCR upload creates the exam with the picked type', async () => {
+    await seedClasses();
+    await seedStudent();
+    const up = await resultsSvc.uploadResultSheet(db, SCHOOL_A, classA.id, {
+      exam_name: 'Midterm', exam_type: 'midterm', file_path: '/tmp/sheet.png',
+    }, ADMIN, { runOcr: stubOcr });
+    const exam = await examsSvc.getExam(db, SCHOOL_A, up.exam_id);
+    expect(exam.type).toBe('midterm');
+    expect(exam.name).toBe('Midterm');
+  });
+
+  it('listResults filters by exam_type and intersects with exam_id', async () => {
+    await seedClasses();
+    await seedStudent();
+    await studentsSvc.createStudent(db, SCHOOL_A, classA.id, { name: 'Fatima Khan', roll_no: 2, parent_phone: '03003334444', admission_no: 'ADM-002' }, ADMIN);
+    const monthly = await resultsSvc.saveManualResults(db, SCHOOL_A, {
+      exam_name: 'Monthly Test – March', exam_type: 'monthly', class_id: classA.id,
+      rows: [{ roll_no: 1, student_name: 'Ahmed Raza', obtained_marks: 90, total_marks: 100 }],
+    }, ADMIN);
+    const midterm = await resultsSvc.saveManualResults(db, SCHOOL_A, {
+      exam_name: 'Midterm', exam_type: 'midterm', class_id: classA.id,
+      rows: [{ roll_no: 2, student_name: 'Fatima Khan', obtained_marks: 80, total_marks: 100 }],
+    }, ADMIN);
+
+    const monthlyOnly = await resultsSvc.listResults(db, SCHOOL_A, { class_id: classA.id, exam_type: 'monthly' });
+    expect(monthlyOnly.total).toBe(1);
+    expect((monthlyOnly.items[0] as any).exam_id).toBe(monthly.exam_id);
+
+    const midtermOnly = await resultsSvc.listResults(db, SCHOOL_A, { class_id: classA.id, exam_type: 'midterm' });
+    expect(midtermOnly.total).toBe(1);
+    expect((midtermOnly.items[0] as any).exam_id).toBe(midterm.exam_id);
+
+    // exam_id of another type + exam_type intersect to zero rows.
+    const clash = await resultsSvc.listResults(db, SCHOOL_A, { class_id: classA.id, exam_id: monthly.exam_id, exam_type: 'midterm' });
+    expect(clash.total).toBe(0);
+
+    // Same exam + its own type still returns the row.
+    const match = await resultsSvc.listResults(db, SCHOOL_A, { class_id: classA.id, exam_id: monthly.exam_id, exam_type: 'monthly' });
+    expect(match.total).toBe(1);
+
+    await expect(
+      resultsSvc.listResults(db, SCHOOL_A, { class_id: classA.id, exam_type: 'final' }),
+    ).rejects.toThrow("type must be one of 'monthly', 'midterm', 'annual'");
   });
 });

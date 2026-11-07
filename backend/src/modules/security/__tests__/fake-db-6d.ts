@@ -155,7 +155,7 @@ const DELEGATES = [
   'school', 'user', 'class', 'student', 'attendanceDay', 'attendanceRecord',
   'teacherAttendance', 'feeStructure', 'feeRecord', 'messageTemplate',
   'messageQueue', 'messageDelivery', 'smsDevice', 'holiday', 'academicSession',
-  'promotion', 'leaveApplication', 'ocrUpload', 'auditLog', 'notification',
+  'promotion', 'ocrUpload', 'auditLog', 'notification',
   'rolePermission', 'approvalRequest', 'deletedRecord', 'changeLog', 'exam',
   'gradingScale', 'resultSheet', 'result', 'timetableEntry', 'staff',
   'staffClassAssignment', 'salaryRecord', 'expense', 'announcement', 'event',

@@ -4,7 +4,8 @@
 // saved until the admin confirms the review table.
 import { useEffect, useRef, useState } from 'react';
 import { api, apiDownload, getAccessToken, ApiClientError, API_BASE } from '../lib/api';
-import type { ClassItem, ExamItem, PageResult, ResultRow, ResultSheetReviewRow, Student } from '../lib/types';
+import type { ClassItem, ExamItem, ExamType, PageResult, ResultRow, ResultSheetReviewRow, Student } from '../lib/types';
+import { EXAM_TYPE_LABELS } from '../lib/types';
 import { displayClass } from '../lib/utils';
 import { Badge, Button, EmptyState, Field, inputCls, Modal, Pager, Spinner, useToast } from '../components/ui';
 import ConfirmDialog from '../components/ConfirmDialog';
@@ -167,6 +168,9 @@ export default function ResultsPage() {
   const [exams, setExams] = useState<ExamItem[]>([]);
   const [classId, setClassId] = useState('');
   const [examId, setExamId] = useState('');
+  // FINAL REBUILD (Module C): filter the view (and the exam dropdown) by
+  // exam type — Monthly Test | Midterm | Annual.
+  const [examTypeFilter, setExamTypeFilter] = useState<'' | ExamType>('');
   const [results, setResults] = useState<ResultRow[]>([]);
   const [total, setTotal] = useState(0);
   const [toppers, setToppers] = useState<ResultRow[]>([]);
@@ -188,6 +192,7 @@ export default function ResultsPage() {
   const [students, setStudents] = useState<Student[]>([]);
   // Upload + review
   const [examName, setExamName] = useState('');
+  const [uploadExamType, setUploadExamType] = useState<ExamType>('monthly');
   const [uploading, setUploading] = useState(false);
   const [review, setReview] = useState<ReviewData | null>(null);
   const [reviewRows, setReviewRows] = useState<ResultSheetReviewRow[]>([]);
@@ -202,6 +207,7 @@ export default function ResultsPage() {
     { roll_no: '', student_name: '', father_name: '', obtained_marks: '', total_marks: '', remarks: '' },
   ]);
   const [manualExamName, setManualExamName] = useState('');
+  const [manualExamType, setManualExamType] = useState<ExamType>('monthly');
   const [manualSaving, setManualSaving] = useState(false);
   // Row edit / link / delete
   const [editing, setEditing] = useState<ResultRow | null>(null);
@@ -269,6 +275,7 @@ export default function ResultsPage() {
     try {
       const q = new URLSearchParams({ class_id: clsId, page: String(page), limit: '50' });
       if (exId) q.set('exam_id', exId);
+      if (examTypeFilter) q.set('exam_type', examTypeFilter);
       if (debouncedSearch.trim()) q.set('search', debouncedSearch.trim());
       const d = await api<PageResult<ResultRow>>(`/results?${q.toString()}`);
       setResults(d.items);
@@ -301,7 +308,7 @@ export default function ResultsPage() {
   useEffect(() => {
     void loadResults(classId, examId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [classId, examId, page, debouncedSearch]);
+  }, [classId, examId, examTypeFilter, page, debouncedSearch]);
 
   // Debounce the search so each keystroke does not fire an API request.
   useEffect(() => {
@@ -333,7 +340,7 @@ export default function ResultsPage() {
       setExams((prev) =>
         prev.some((e) => e.id === target)
           ? prev
-          : [...prev, { id: target, name: out.exam_name ?? examName, session_id: null, start_date: null, end_date: null, created_at: new Date().toISOString() }],
+          : [...prev, { id: target, name: out.exam_name ?? examName, type: 'monthly', session_id: null, start_date: null, end_date: null, created_at: new Date().toISOString() }],
       );
       setExamId(target);
       storeExam(classId, target);
@@ -365,6 +372,7 @@ export default function ResultsPage() {
       const form = new FormData();
       form.append('image', file);
       form.append('exam_name', examName.trim());
+      form.append('exam_type', uploadExamType);
       const up = await api<UploadResponse>(`/classes/${classId}/results/upload`, { method: 'POST', body: form });
       const data = await api<ReviewData>(`/result-sheets/${up.result_sheet_id}`);
       setReview(data);
@@ -459,7 +467,7 @@ export default function ResultsPage() {
     try {
       const out = await api<SaveResultsResponse>(`/results/manual`, {
         method: 'POST',
-        body: { exam_id: examId || undefined, exam_name: examId ? undefined : name, class_id: classId, rows },
+        body: { exam_id: examId || undefined, exam_name: examId ? undefined : name, exam_type: examId ? undefined : manualExamType, class_id: classId, rows },
       });
       const applied = await refreshAfterSave(out, name);
       if (!applied) return;
@@ -505,6 +513,8 @@ export default function ResultsPage() {
 
   if (loading) return <Spinner label="Loading results…" />;
   const cls = classes.find((c) => c.id === classId);
+  // FINAL REBUILD (Module C): the exam dropdown follows the type filter.
+  const visibleExams = examTypeFilter ? exams.filter((e) => (e.type ?? 'monthly') === examTypeFilter) : exams;
   const lowCount = reviewRows.filter((r) => rowConfidence(r) < LOW_CONFIDENCE).length;
   const flaggedCount = reviewRows.filter((r) => r.flags.length > 0).length;
 
@@ -530,9 +540,30 @@ export default function ResultsPage() {
             <label className="text-sm font-medium text-slate-700" htmlFor="exam-select">Exam:</label>
             <select id="exam-select" className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" value={examId} onChange={(e) => { setExamId(e.target.value); storeExam(classId, e.target.value); setPage(1); }}>
               <option value="">All exams</option>
-              {exams.map((e) => (
-                <option key={e.id} value={e.id}>{e.name}</option>
+              {visibleExams.map((e) => (
+                <option key={e.id} value={e.id}>{e.name} ({EXAM_TYPE_LABELS[e.type ?? 'monthly']})</option>
               ))}
+            </select>
+            <label className="text-sm font-medium text-slate-700" htmlFor="exam-type-select">Type:</label>
+            <select
+              id="exam-type-select"
+              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+              value={examTypeFilter}
+              onChange={(e) => {
+                const t = e.target.value as '' | ExamType;
+                setExamTypeFilter(t);
+                // A selected exam of another type stops matching the filter.
+                if (t && examId && (exams.find((x) => x.id === examId)?.type ?? 'monthly') !== t) {
+                  setExamId('');
+                  storeExam(classId, '');
+                }
+                setPage(1);
+              }}
+            >
+              <option value="">All types</option>
+              <option value="monthly">Monthly Test</option>
+              <option value="midterm">Midterm</option>
+              <option value="annual">Annual</option>
             </select>
             <input
               className={`${inputCls} max-w-xs`}
@@ -572,7 +603,14 @@ export default function ResultsPage() {
 
           <div className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3">
             <Field label="Exam name for the upload">
-              <input className={inputCls} value={examName} onChange={(e) => setExamName(e.target.value)} placeholder="e.g. Midterm" autoComplete="off" />
+              <input className={inputCls} value={examName} onChange={(e) => setExamName(e.target.value)} placeholder="e.g. Monthly Test – March" autoComplete="off" />
+            </Field>
+            <Field label="Exam type">
+              <select className={inputCls} value={uploadExamType} onChange={(e) => setUploadExamType(e.target.value as ExamType)}>
+                <option value="monthly">Monthly Test</option>
+                <option value="midterm">Midterm</option>
+                <option value="annual">Annual</option>
+              </select>
             </Field>
             <div className="pt-5">
               <Button variant="secondary" disabled={uploading || !classId} onClick={() => fileRef.current?.click()}>
@@ -785,9 +823,19 @@ export default function ResultsPage() {
           <div className="space-y-3">
             <Field label="Exam">
               {examId ? (
-                <p className="text-sm font-medium">{exams.find((e) => e.id === examId)?.name ?? ''}</p>
+                <p className="text-sm font-medium">{exams.find((e) => e.id === examId)?.name ?? ''} ({EXAM_TYPE_LABELS[(exams.find((e) => e.id === examId)?.type ?? 'monthly')]})</p>
               ) : (
-                <input className={inputCls} value={manualExamName} onChange={(e) => setManualExamName(e.target.value)} placeholder="e.g. Monthly Test (creates the exam if new)" autoComplete="off" />
+                <>
+                  <input className={inputCls} value={manualExamName} onChange={(e) => setManualExamName(e.target.value)} placeholder="e.g. Monthly Test (creates the exam if new)" autoComplete="off" />
+                  <div className="mt-2">
+                    <label className="mb-1 block text-xs font-medium text-slate-600" htmlFor="manual-exam-type">Exam type</label>
+                    <select id="manual-exam-type" className={inputCls} value={manualExamType} onChange={(e) => setManualExamType(e.target.value as ExamType)}>
+                      <option value="monthly">Monthly Test</option>
+                      <option value="midterm">Midterm</option>
+                      <option value="annual">Annual</option>
+                    </select>
+                  </div>
+                </>
               )}
             </Field>
             {manualRows.map((r, i) => (

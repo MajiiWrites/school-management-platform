@@ -16,6 +16,16 @@ import { writeAudit } from '../../lib/audit';
 import { writeChangeLogs, logCreate, logDelete } from '../hardening/helpers';
 import { paginatedResponse, parsePagination } from '../../lib/pagination';
 import type { Db } from '../../lib/db';
+import { unlink } from 'node:fs/promises';
+import { runTesseractTsv } from '../ocr/ocr-engine.js';
+import {
+  parseTimetableWords,
+  parseTimetableText,
+  matchTimetableCells,
+  flagTimetableConflicts,
+  type MatchedTimetableCell,
+  type TimetableWord,
+} from './photo.js';
 
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 export const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -212,4 +222,176 @@ export async function deleteTimetableEntry(db: Db, schoolId: string, id: string,
     before: { class_id: row.classId, teacher_id: row.teacherId, day_of_week: row.dayOfWeek, period_no: row.periodNo, subject: row.subject, start_time: row.startTime, end_time: row.endTime, room: row.room },
   });
   await writeAudit(db, { schoolId, actorId, actorType: 'user', action: 'timetable.delete', entity: 'timetable_entry', entityId: id, details: { subject: row.subject } });
+}
+
+// ---------------------------------------------------------------------------
+// Timetable from photo (FINAL REBUILD, Point 7)
+// ---------------------------------------------------------------------------
+
+export interface TimetablePhotoUploadResult {
+  raw_text: string;
+  cells: MatchedTimetableCell[];
+  unmatched_teachers: string[];
+  unmatched_classes: string[];
+  warnings: string[];
+}
+
+export interface TimetablePhotoConfirmEntry {
+  class_id: string;
+  teacher_id?: string | null;
+  day_of_week: number;
+  period_no: number;
+  subject: string;
+  start_time: string;
+  end_time: string;
+  room?: string | null;
+}
+
+/** Rebuild plain text from TSV words (for the review screen + fallback parser). */
+function wordsToText(words: TimetableWord[]): string {
+  const sorted = [...words].sort((a, b) => a.top - b.top || a.left - b.left);
+  const lines: { top: number; words: TimetableWord[] }[] = [];
+  for (const w of sorted) {
+    const line = lines.find((l) => Math.abs(w.top - l.top) <= 20);
+    if (line) line.words.push(w);
+    else lines.push({ top: w.top, words: [w] });
+  }
+  return lines
+    .sort((a, b) => a.top - b.top)
+    .map((l) => l.words.sort((a, b) => a.left - b.left).map((w) => w.text).join(' '))
+    .join('\n');
+}
+
+/**
+ * Parse a photographed timetable sheet into reviewable cells.
+ * School-scoped throughout: teachers/classes/entries are all this school's.
+ * The uploaded photo is a TRANSIENT input — it is deleted after parsing
+ * (the admin still has the original on their phone, and the frontend shows
+ * its own local preview next to the review table). Nothing is saved until
+ * the admin confirms via confirmTimetablePhoto.
+ */
+export async function uploadTimetablePhoto(
+  db: Db,
+  schoolId: string,
+  filePath: string,
+  actorId: string,
+  opts: {
+    class_id?: string | null;
+    runTsv?: (filePath: string) => Promise<TimetableWord[]>;
+  } = {},
+): Promise<TimetablePhotoUploadResult> {
+  let sheetClassLabel: string | null = null;
+  if (opts.class_id) {
+    const cls = await db.class.findFirst({ where: { id: opts.class_id, schoolId, deletedAt: null } });
+    if (!cls) throw ApiError.notFound('Class not found');
+    sheetClassLabel = `${cls.name}-${cls.section}`;
+  }
+  try {
+    const words = opts.runTsv
+      ? await opts.runTsv(filePath)
+      : (await runTesseractTsv(filePath, process.env.OCR_LANGS ?? 'eng+urd', '6')).map((w) => ({
+          text: w.text,
+          conf: w.conf,
+          left: w.left,
+          top: w.top,
+          width: w.width,
+          height: w.height,
+        }));
+    const raw_text = wordsToText(words);
+    let cells = parseTimetableWords(words, sheetClassLabel);
+    const warnings: string[] = [];
+    if (cells.length === 0) {
+      // No grid detected — fall back to plain-text line parsing.
+      cells = parseTimetableText(raw_text, sheetClassLabel);
+      if (cells.length > 0) {
+        warnings.push('No timetable grid was detected in the photo, so rows were parsed from the plain text instead — check every row before saving.');
+      }
+    }
+    if (cells.length === 0) {
+      warnings.push('No timetable rows could be read from this photo. Try a clearer, straight-on photo, or add the timetable manually below.');
+    }
+    const [teachers, classes] = await Promise.all([
+      db.staff.findMany({ where: { schoolId, role: 'teacher' } }),
+      db.class.findMany({ where: { schoolId, deletedAt: null } }),
+    ]);
+    const matched = matchTimetableCells(
+      cells,
+      teachers.map((t: any) => ({ id: t.id, name: t.name })),
+      classes.map((c: any) => ({ id: c.id, name: c.name, section: c.section })),
+    );
+    const days = [...new Set(matched.cells.map((c) => c.day_of_week).filter((d): d is number => d !== null))];
+    const existing =
+      days.length > 0
+        ? await db.timetableEntry.findMany({ where: { schoolId, dayOfWeek: { in: days } } })
+        : [];
+    const flagged = flagTimetableConflicts(
+      matched.cells,
+      existing.map((e: any) => ({
+        class_id: e.classId,
+        teacher_id: e.teacherId ?? null,
+        day_of_week: e.dayOfWeek,
+        period_no: e.periodNo,
+        start_time: e.startTime,
+        end_time: e.endTime,
+        subject: e.subject,
+      })),
+    );
+    await writeAudit(db, {
+      schoolId,
+      actorId,
+      actorType: 'user',
+      action: 'timetable.photo_upload',
+      entity: 'timetable_entry',
+      entityId: null,
+      details: { class_id: opts.class_id ?? null, cells_found: flagged.length, unmatched_teachers: matched.unmatched_teachers.length, unmatched_classes: matched.unmatched_classes.length },
+    });
+    return {
+      raw_text,
+      cells: flagged,
+      unmatched_teachers: matched.unmatched_teachers,
+      unmatched_classes: matched.unmatched_classes,
+      warnings,
+    };
+  } finally {
+    // Transient input: remove the uploaded photo after parsing (best-effort).
+    await unlink(filePath).catch(() => undefined);
+  }
+}
+
+/**
+ * Save admin-reviewed photo rows as timetable entries. Each row goes
+ * through createTimetableEntry, so the live conflict rules, change
+ * history and audit logging all apply exactly as for manual adds.
+ * Conflicting rows are SKIPPED with their reason (never silently dropped
+ * and never forced in); the rest are saved.
+ */
+export async function confirmTimetablePhoto(
+  db: Db,
+  schoolId: string,
+  entries: TimetablePhotoConfirmEntry[],
+  actorId: string,
+): Promise<{ created: number; skipped: { entry: TimetablePhotoConfirmEntry; reason: string }[] }> {
+  if (!Array.isArray(entries) || entries.length === 0) {
+    throw ApiError.validation('entries must be a non-empty array');
+  }
+  const skipped: { entry: TimetablePhotoConfirmEntry; reason: string }[] = [];
+  let created = 0;
+  for (const entry of entries) {
+    try {
+      await createTimetableEntry(db, schoolId, entry, actorId);
+      created += 1;
+    } catch (err) {
+      skipped.push({ entry, reason: err instanceof Error ? err.message : 'Could not save this row.' });
+    }
+  }
+  await writeAudit(db, {
+    schoolId,
+    actorId,
+    actorType: 'user',
+    action: 'timetable.photo_confirm',
+    entity: 'timetable_entry',
+    entityId: null,
+    details: { created, skipped: skipped.length },
+  });
+  return { created, skipped };
 }

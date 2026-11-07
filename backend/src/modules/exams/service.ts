@@ -18,6 +18,26 @@ import { getArchivedSessionIds } from '../sessions/service';
 
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 
+/* FINAL REBUILD (Module C): exam types — exactly these three. The free
+ * exam name is untouched ("Monthly Test – March" stays that name); the
+ * type is a separate field the admin picks. */
+export const EXAM_TYPES = ['monthly', 'midterm', 'annual'] as const;
+export type ExamType = (typeof EXAM_TYPES)[number];
+export const EXAM_TYPE_LABELS: Record<ExamType, string> = {
+  monthly: 'Monthly Test',
+  midterm: 'Midterm',
+  annual: 'Annual',
+};
+
+/** Validate an exam type; undefined defaults to 'monthly'. Anything else is a 400. */
+export function validateExamType(value: unknown): ExamType {
+  if (value === undefined || value === null) return 'monthly';
+  if (typeof value === 'string' && (EXAM_TYPES as readonly string[]).includes(value)) {
+    return value as ExamType;
+  }
+  throw ApiError.validation("type must be one of 'monthly', 'midterm', 'annual'");
+}
+
 function assertTimeRange(start: string, end: string, label = 'start_time'): void {
   if (!TIME_RE.test(start) || !TIME_RE.test(end)) throw ApiError.validation(`${label} and end_time must be HH:MM (24h)`);
   if (start >= end) throw ApiError.validation('start_time must be before end_time');
@@ -29,7 +49,7 @@ function timesOverlap(aStart: string, aEnd: string, bStart: string, bEnd: string
 
 export function toPublicExam(e: any): Record<string, unknown> {
   return {
-    id: e.id, school_id: e.schoolId, name: e.name, session_id: e.sessionId ?? null,
+    id: e.id, school_id: e.schoolId, name: e.name, type: e.type ?? 'monthly', session_id: e.sessionId ?? null,
     start_date: e.startDate ? (e.startDate instanceof Date ? e.startDate.toISOString().slice(0, 10) : e.startDate) : null,
     end_date: e.endDate ? (e.endDate instanceof Date ? e.endDate.toISOString().slice(0, 10) : e.endDate) : null,
     created_at: e.createdAt,
@@ -74,6 +94,7 @@ export async function listExams(
   const { page, limit, skip } = parsePagination(query);
   const where: Record<string, unknown> = { schoolId, deletedAt: null };
   if (query.session_id) where.sessionId = String(query.session_id);
+  if (query.type) where.type = validateExamType(String(query.type));
   if (query.search) where.name = { contains: String(query.search), mode: 'insensitive' };
   let rows = await db.exam.findMany({ where, orderBy: [{ createdAt: 'desc' }] });
   // Archived sessions' exams are excluded from current lists (viewable by
@@ -88,18 +109,19 @@ export async function listExams(
 
 export async function createExam(
   db: Db, schoolId: string,
-  input: { name: string; session_id?: string | null; start_date?: string | null; end_date?: string | null },
+  input: { name: string; type?: string | null; session_id?: string | null; start_date?: string | null; end_date?: string | null },
   actorId: string,
 ): Promise<any> {
   const name = input.name?.trim();
   if (!name) throw ApiError.validation('name is required');
+  const type = validateExamType(input.type ?? undefined);
   await assertSessionUsable(db, schoolId, input.session_id ?? null);
   if (input.start_date && !isValidDateString(input.start_date)) throw ApiError.validation('start_date must be YYYY-MM-DD');
   if (input.end_date && !isValidDateString(input.end_date)) throw ApiError.validation('end_date must be YYYY-MM-DD');
   if (input.start_date && input.end_date && input.start_date > input.end_date) throw ApiError.validation('start_date must be on or before end_date');
   const created = await db.exam.create({
     data: {
-      schoolId, name, sessionId: input.session_id ?? null,
+      schoolId, name, type, sessionId: input.session_id ?? null,
       startDate: input.start_date ? dateOnly(input.start_date) : null,
       endDate: input.end_date ? dateOnly(input.end_date) : null,
     },
@@ -109,9 +131,9 @@ export async function createExam(
     actorId,
     entity: 'exam',
     entityId: created.id,
-    after: { name: created.name, session_id: created.sessionId, start_date: created.startDate, end_date: created.endDate },
+    after: { name: created.name, type: created.type, session_id: created.sessionId, start_date: created.startDate, end_date: created.endDate },
   });
-  await writeAudit(db, { schoolId, actorId, actorType: 'user', action: 'exam.create', entity: 'exam', entityId: created.id, details: { name } });
+  await writeAudit(db, { schoolId, actorId, actorType: 'user', action: 'exam.create', entity: 'exam', entityId: created.id, details: { name, type } });
   return toPublicExam(created);
 }
 
@@ -121,7 +143,7 @@ export async function getExam(db: Db, schoolId: string, id: string): Promise<any
 
 export async function updateExam(
   db: Db, schoolId: string, id: string,
-  patch: { name?: string; session_id?: string | null; start_date?: string | null; end_date?: string | null },
+  patch: { name?: string; type?: string | null; session_id?: string | null; start_date?: string | null; end_date?: string | null },
   actorId: string,
 ): Promise<any> {
   const e = await getExamRow(db, schoolId, id);
@@ -129,13 +151,14 @@ export async function updateExam(
     throw ApiError.conflict('This exam belongs to an archived session and is read-only.');
   }
   await assertSessionUsable(db, schoolId, patch.session_id !== undefined ? patch.session_id : e.sessionId);
-  const before = { name: e.name, session_id: e.sessionId, start_date: e.startDate, end_date: e.endDate };
+  const before = { name: e.name, type: e.type ?? 'monthly', session_id: e.sessionId, start_date: e.startDate, end_date: e.endDate };
   const data: Record<string, unknown> = {};
   if (patch.name !== undefined) {
     const name = patch.name.trim();
     if (!name) throw ApiError.validation('name is required');
     data.name = name;
   }
+  if (patch.type !== undefined) data.type = validateExamType(patch.type);
   if (patch.session_id !== undefined) data.sessionId = patch.session_id;
   if (patch.start_date !== undefined) {
     if (patch.start_date && !isValidDateString(patch.start_date)) throw ApiError.validation('start_date must be YYYY-MM-DD');
@@ -150,8 +173,8 @@ export async function updateExam(
   if (start && end && start > end) throw ApiError.validation('start_date must be on or before end_date');
   if (Object.keys(data).length === 0) return toPublicExam(e);
   const updated = await db.exam.update({ where: { id }, data });
-  await writeChangeLogs(db, { schoolId, actorId, entity: 'exam', entityId: id, before, after: { name: updated.name, session_id: updated.sessionId, start_date: updated.startDate, end_date: updated.endDate } });
-  await writeAudit(db, { schoolId, actorId, actorType: 'user', action: 'exam.update', entity: 'exam', entityId: id, details: { name: updated.name } });
+  await writeChangeLogs(db, { schoolId, actorId, entity: 'exam', entityId: id, before, after: { name: updated.name, type: updated.type ?? 'monthly', session_id: updated.sessionId, start_date: updated.startDate, end_date: updated.endDate } });
+  await writeAudit(db, { schoolId, actorId, actorType: 'user', action: 'exam.update', entity: 'exam', entityId: id, details: { name: updated.name, type: updated.type ?? 'monthly' } });
   return toPublicExam(updated);
 }
 

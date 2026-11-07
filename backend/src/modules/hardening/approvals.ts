@@ -533,7 +533,13 @@ export async function applyApproval(db: Db, schoolId: string, req: any, adminId:
   if (entity === 'certificate' && actionType === 'create') {
     const studentId = payload.student_id as string;
     if (!studentId) throw ApiError.validation('payload.student_id is required for certificate.create');
-    const created = await certificatesSvc.issueCertificate(db, schoolId, studentId, String(payload.type ?? ''), adminId);
+    // Module F (Point 9): forward the leaving reason + reviewed details
+    // the clerk submitted, so an approved leaving certificate keeps them.
+    const created = await certificatesSvc.issueCertificate(db, schoolId, studentId, String(payload.type ?? ''), adminId, {
+      leaving_reason_option: (payload as any).leaving_reason_option,
+      leaving_reason_other: (payload as any).leaving_reason_other,
+      details: (payload as any).details,
+    });
     return { certificate_id: created.id, certificate_no: created.certificate_no };
   }
 
@@ -587,7 +593,7 @@ export async function applyApproval(db: Db, schoolId: string, req: any, adminId:
       const examName = String(payload.exam_name ?? '');
       const filePath = payload.file_path as string;
       if (!classId || !examName || !filePath) throw ApiError.validation('payload.class_id, exam_name and file_path are required for result_sheet.create');
-      const out = await resultsSvc.uploadResultSheet(db, schoolId, classId, { exam_name: examName, session_id: (payload.session_id as string) ?? null, file_path: filePath }, adminId);
+      const out = await resultsSvc.uploadResultSheet(db, schoolId, classId, { exam_name: examName, exam_type: (payload.exam_type as string) ?? null, session_id: (payload.session_id as string) ?? null, file_path: filePath }, adminId);
       return { result_sheet_id: out.result_sheet_id, rows_found: out.rows.length };
     }
     if (actionType === 'delete') {

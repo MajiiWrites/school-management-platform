@@ -4,10 +4,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import { api, ApiClientError } from '../lib/api';
-import type { AcademicSession, ClassItem, DatesheetItem, ExamItem, GradingScaleItem, PageResult } from '../lib/types';
+import type { AcademicSession, ClassItem, DatesheetItem, ExamItem, ExamType, GradingScaleItem, PageResult } from '../lib/types';
 import { fmtDate, todayISO } from '../lib/utils';
 import { Badge, Button, Card, EmptyState, ErrorBanner, Field, inputCls, Spinner, Tabs, useToast } from '../components/ui';
 import ConfirmDialog from '../components/ConfirmDialog';
+import { EXAM_TYPE_LABELS } from '../lib/types';
 
 function errText(e: unknown): string {
   return e instanceof ApiClientError ? e.message : 'Something went wrong.';
@@ -23,8 +24,10 @@ export default function ExamsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [sessionFilter, setSessionFilter] = useState('');
+  const [typeFilter, setTypeFilter] = useState<'' | ExamType>('');
   const [scaleClass, setScaleClass] = useState('');
   const [name, setName] = useState('');
+  const [examType, setExamType] = useState<ExamType>('monthly');
   const [examSession, setExamSession] = useState('');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
@@ -42,7 +45,7 @@ export default function ExamsPage() {
   const load = useCallback(() => {
     setLoading(true);
     Promise.all([
-      api<PageResult<ExamItem>>(`/exams?limit=100${sessionFilter ? `&session_id=${sessionFilter}` : ''}`),
+      api<PageResult<ExamItem>>(`/exams?limit=100${sessionFilter ? `&session_id=${sessionFilter}` : ''}${typeFilter ? `&type=${typeFilter}` : ''}`),
       api<PageResult<AcademicSession>>('/sessions?limit=100'),
       api<PageResult<ClassItem>>('/classes?limit=200'),
       api<{ items: GradingScaleItem[] }>(`/grading-scales${scaleClass ? `?class_id=${scaleClass}` : ''}`),
@@ -58,7 +61,7 @@ export default function ExamsPage() {
       })
       .catch(() => setError('Could not load exams.'))
       .finally(() => setLoading(false));
-  }, [sessionFilter, scaleClass]);
+  }, [sessionFilter, typeFilter, scaleClass]);
 
   useEffect(load, [load]);
 
@@ -84,11 +87,12 @@ export default function ExamsPage() {
     try {
       const r = await api('/exams', {
         method: 'POST',
-        body: { name: name.trim(), session_id: examSession || null, start_date: startDate || null, end_date: endDate || null },
+        body: { name: name.trim(), type: examType, session_id: examSession || null, start_date: startDate || null, end_date: endDate || null },
       });
       if ((r as { status?: string })?.status === 'pending') push('success', 'Submitted for admin approval — nothing was applied yet.');
       else push('success', 'Exam created.');
       setName('');
+      setExamType('monthly');
       setExamSession('');
       setStartDate('');
       setEndDate('');
@@ -185,9 +189,17 @@ export default function ExamsPage() {
         <>
           <Card className="p-5">
             <h2 className="text-base font-semibold">New exam</h2>
-            <form onSubmit={createExam} autoComplete="off" className="mt-3 grid gap-3 sm:grid-cols-5">
+            <form onSubmit={createExam} autoComplete="off" className="mt-3 grid gap-3 sm:grid-cols-6">
               <Field label="Name">
-                <input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Midterm" autoComplete="off" required />
+                <input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Monthly Test – March" autoComplete="off" required />
+              </Field>
+              {/* FINAL REBUILD (Module C): exactly three exam types. */}
+              <Field label="Type">
+                <select className={inputCls} value={examType} onChange={(e) => setExamType(e.target.value as ExamType)}>
+                  <option value="monthly">Monthly Test</option>
+                  <option value="midterm">Midterm</option>
+                  <option value="annual">Annual</option>
+                </select>
               </Field>
               <Field label="Session (optional)">
                 <select className={inputCls} value={examSession} onChange={(e) => setExamSession(e.target.value)}>
@@ -216,6 +228,12 @@ export default function ExamsPage() {
                 <option key={s.id} value={s.id}>{s.name}{s.is_archived ? ' (archived)' : ''}</option>
               ))}
             </select>
+            <select className={inputCls + ' w-auto'} value={typeFilter} onChange={(e) => setTypeFilter(e.target.value as '' | ExamType)}>
+              <option value="">All types</option>
+              <option value="monthly">Monthly Test</option>
+              <option value="midterm">Midterm</option>
+              <option value="annual">Annual</option>
+            </select>
           </div>
 
           {exams.length === 0 ? (
@@ -226,6 +244,7 @@ export default function ExamsPage() {
                 <Card key={ex.id} className="p-5">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="font-medium">{ex.name}</span>
+                    <Badge tone={ex.type === 'annual' ? 'blue' : ex.type === 'midterm' ? 'amber' : 'slate'}>{EXAM_TYPE_LABELS[ex.type ?? 'monthly']}</Badge>
                     <span className="text-sm text-slate-500">
                       {sessions.find((s) => s.id === ex.session_id)?.name ?? 'No session'}
                       {ex.start_date ? ` · ${fmtDate(ex.start_date)} → ${ex.end_date ? fmtDate(ex.end_date) : '…'}` : ''}

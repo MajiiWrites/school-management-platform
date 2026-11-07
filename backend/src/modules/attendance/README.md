@@ -9,7 +9,7 @@ Public tokenized teacher links + admin attendance management + teacher attendanc
 | Method | Path | Description |
 |---|---|---|
 | GET | /t/:token | Validates the link → `{class, date, non_school_day, already_submitted, students:[{id, name, roll_no, status?}]}`. 404 if the token is invalid, revoked or expired. |
-| POST | /t/:token/submit | `{records:[{student_id, status}]}` — statuses `present/absent/late/leave`. Students missing from `records` default to `present`. 201 on success. |
+| POST | /t/:token/submit | `{records:[{student_id, status}]}` — statuses `present/absent`. Students missing from `records` default to `present`. 201 on success. |
 
 ### Admin (JWT + tenant) — mounted at `/api/v1`
 
@@ -33,4 +33,4 @@ Public tokenized teacher links + admin attendance management + teacher attendanc
 
 ## Offline
 
-The teacher page is PWA-style (frontend): if offline on submit, the browser stores the payload in localStorage and retries when online. The backend accepts late same-day submissions (the day's `date` is always the school-local today).
+The teacher page is PWA-style (frontend): if offline on submit, the browser stores the payload in localStorage and retries when online. The backend accepts same-day submissions (the day's `date` is always the school-local today).

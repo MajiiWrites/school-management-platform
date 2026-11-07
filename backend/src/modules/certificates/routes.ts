@@ -38,7 +38,14 @@ certificatesRouter.post(
   requireQueueable('certificates', 'create'),
   asyncHandler(async (req, res) => {
     if (await queueIfClerk(req, res, { actionType: 'create', entity: 'certificate', payload: { student_id: req.params.id, ...(req.body as object) } })) return;
-    const data = await issueCertificate(getDb(), schoolIdOf(req), req.params.id, (req.body as any)?.type, req.user?.sub ?? 'unknown');
+    const body = (req.body as any) ?? {};
+    // Module F (Point 9): pre-filled student details (admin-reviewed edits),
+    // and the leaving reason for School Leaving Certificates.
+    const data = await issueCertificate(getDb(), schoolIdOf(req), req.params.id, body?.type, req.user?.sub ?? 'unknown', {
+      leaving_reason_option: body?.leaving_reason_option,
+      leaving_reason_other: body?.leaving_reason_other,
+      details: body?.details,
+    });
     res.status(201).json({ ok: true, data: { ...data, certificate_url: `/api/v1/certificates/${data.id}` } });
   }),
 );

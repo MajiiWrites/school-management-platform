@@ -22,7 +22,14 @@ export interface ParsedRow {
   roll_no: number | null;
   parent_phone: string | null; // E.164 normalized, or null
   parent_phone_masked: string | null;
+  /** Father/guardian name when the list writes it as "Ali s/o Ahmed" — the
+   * tail is the PARENT's name, never part of the student's name. */
+  parent_name: string | null;
   confidence: number; // 0..1
+  /** Second verification pass (different psm): 'match' = the name was also
+   * read by the verification pass; 'mismatch' = it was not (check it);
+   * 'unverified' = no second read was possible for this row. */
+  verification?: 'match' | 'mismatch' | 'unverified';
   duplicate?: boolean;
   duplicate_reason?: string | null;
 }
@@ -73,13 +80,28 @@ export function extractUrduName(line: string): string | null {
   return joined || null;
 }
 
+/**
+ * EXACT-SPELLING RULE (FINAL REBUILD, Point 2): a student name is kept
+ * EXACTLY as OCR read it — never corrected, translated, shortened,
+ * reordered, merged or "improved". The only changes are collapsing runs
+ * of whitespace and trimming the ends (OCR line noise, not spelling).
+ * Titles (Mr/Miss/Mrs), odd spellings ("McDonald", "O'Brien", "Muhd"),
+ * apostrophes, hyphens and digits are all preserved verbatim. The ONE
+ * exception is a "s/o | d/o | w/o ..." tail: that is the FATHER's name,
+ * not the student's — splitParentTail extracts it into parent_name
+ * instead of dropping it or gluing it onto the student name.
+ */
+export function splitParentTail(text: string): { name: string; parent_name: string | null } {
+  const m = text.match(/^(.*?)\b(?:s\/o|d\/o|w\/o)\s+(.+)$/i);
+  if (!m) return { name: text, parent_name: null };
+  const name = m[1]!.trim();
+  const parent_name = m[2]!.trim();
+  if (!name) return { name: text, parent_name: null };
+  return { name, parent_name: parent_name || null };
+}
+
 function cleanLatinName(text: string): string {
-  return text
-    .replace(/\b(s\/o|d\/o|w\/o)\b.*$/i, '') // drop "s/o ..." tails
-    .replace(/\b(mr|miss|mrs|ms)\.?\s+/gi, '')
-    .replace(/[^A-Za-z .'\-]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return text.replace(/\s+/g, ' ').trim();
 }
 
 /**
@@ -104,8 +126,9 @@ export function parseLine(line: string): Omit<ParsedRow, 'duplicate' | 'duplicat
   rest = rest.replace(URDU_RUN, ' ');
   rest = rest.replace(/[,;|]/g, ' ');
   const nameLatin = cleanLatinName(rest);
+  const { name: nameNoTail, parent_name } = splitParentTail(nameLatin);
 
-  let name = nameLatin;
+  let name = nameNoTail;
   if (!name && name_ur) {
     // Urdu-only row: keep the Urdu name as the display name too.
     name = name_ur;
@@ -128,6 +151,7 @@ export function parseLine(line: string): Omit<ParsedRow, 'duplicate' | 'duplicat
     roll_no,
     parent_phone: parent_phone ?? null,
     parent_phone_masked: parent_phone ? maskOf(parent_phone) : null,
+    parent_name: parent_name ?? null,
     confidence: Math.round(conf * 100) / 100,
   };
 }

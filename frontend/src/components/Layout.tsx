@@ -26,12 +26,11 @@ const NAV: { to: string; labelKey: string; icon: string; roles: Role[] }[] = [
   { to: '/exams', labelKey: 'exams', icon: '📝', roles: ['admin', 'clerk', 'principal'] },
   { to: '/timetable', labelKey: 'timetable', icon: '🕘', roles: ['admin', 'clerk', 'principal'] },
   { to: '/staff', labelKey: 'staff-payroll', icon: '👩‍🏫', roles: ['admin', 'clerk', 'principal'] },
-  // 6C-2: expenses, announcements, events, certificates, leave/late, notifications.
+  // 6C-2: expenses, announcements, events, certificates, notifications.
   { to: '/expenses', labelKey: 'expenses', icon: '🧾', roles: ['admin', 'clerk', 'principal'] },
   { to: '/announcements', labelKey: 'announcements', icon: '📢', roles: ['admin', 'clerk', 'principal'] },
   { to: '/events', labelKey: 'events', icon: '📅', roles: ['admin', 'clerk', 'principal'] },
   { to: '/certificates', labelKey: 'certificates', icon: '🎓', roles: ['admin', 'clerk', 'principal'] },
-  { to: '/leaves', labelKey: 'leaves', icon: '🗓', roles: ['admin', 'clerk', 'principal'] },
   { to: '/notifications', labelKey: 'notifications', icon: '🔔', roles: ['admin', 'clerk', 'principal'] },
   // P8-TOUR: Help page (guided tour + how-tos + glossary).
   { to: '/help', labelKey: 'help', icon: '?', roles: ['admin', 'clerk', 'principal'] },

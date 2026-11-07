@@ -26,6 +26,7 @@ export interface PrismaLike {
         name: string;
         nameUr: string | null;
         rollNo: number | null;
+        parentName: string | null;
         parentPhoneEnc: string | null;
         parentPhoneHash: string | null;
       }[];
@@ -116,12 +117,17 @@ export function prismaOcrDb(prisma: PrismaLike): OcrDb {
           name: r.name,
           nameUr: r.name_ur,
           rollNo: r.roll_no,
+          parentName: r.parent_name ?? null,
           parentPhoneEnc: r.parent_phone_enc,
           parentPhoneHash: r.parent_phone_hash,
         })),
         skipDuplicates: true,
       });
       return { created: res.count };
+    },
+    async getUploadFile(schoolId, uploadId) {
+      const row = await prisma.ocrUpload.findFirst({ where: { id: uploadId, schoolId } });
+      return row ? { file_path: row.filePath } : null;
     },
     async createAuditLog(entry) {
       await prisma.auditLog.create({

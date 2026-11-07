@@ -42,6 +42,10 @@ model School {
   timezone  String   @default("Asia/Karachi")
   country   String   @default("PK")
   settings  Json     @default("{}") @db.JsonB
+  // FINAL REBUILD (Module C): the personal/school number SMS is sent from.
+  // NULL = not set yet. Plain TEXT (school's own sending number, shown
+  // back to its admin); parent numbers stay encrypted.
+  smsSenderNumber String?
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
 
@@ -58,7 +62,6 @@ model School {
   holidays          Holiday[]
   academicSessions  AcademicSession[]
   promotions        Promotion[]
-  leaveApplications LeaveApplication[]
   ocrUploads        OcrUpload[]
   auditLogs         AuditLog[]
   notifications     Notification[]
@@ -207,7 +210,6 @@ model Student {
   attendanceRecords AttendanceRecord[]
   feeRecords        FeeRecord[]
   messageQueue      MessageQueue[]
-  leaveApplications LeaveApplication[]
   promotions        Promotion[]
 
   // v2 relations
@@ -469,24 +471,24 @@ model Promotion {
   session     AcademicSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   promotedAt  DateTime        @db.Timestamptz(6)
   promotedBy  String?         @db.Uuid
+  // Module D (2026-11-07) — promotion rebuild. One admin decision = one
+  // batch: every row created by a single confirm shares batchId, so the
+  // whole decision can be undone or audited as a unit. status: 'applied' |
+  // 'reversed' | 'superseded' (only 'applied' rows are live — enforced by
+  // the partial unique index in migration 20261107151000, so a student can
+  // have at most one live promotion per session). outcome: 'promoted' |
+  // 'graduated' | 'held'. For graduated/held rows toClassId == fromClassId
+  // (no class move) and the outcome carries the meaning. rollNoFrom/To
+  // snapshot the roll numbers so undo restores them exactly.
+  batchId     String
+  status      String          @default("applied")
+  outcome     String          @default("promoted")
+  rollNoFrom  Int?
+  rollNoTo    Int?
 
+  @@index([schoolId, batchId])
+  @@index([schoolId, sessionId, status])
   @@map("promotions")
-}
-
-model LeaveApplication {
-  id        String   @id @default(uuid()) @db.Uuid
-  schoolId  String   @db.Uuid
-  school    School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
-  studentId String   @db.Uuid
-  student   Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
-  fromDate  DateTime @db.Date
-  toDate    DateTime @db.Date
-  reason    String
-  status    String   @default("pending")
-  decidedBy String?  @db.Uuid
-  createdAt DateTime @default(now()) @db.Timestamptz(6)
-
-  @@map("leave_applications")
 }
 
 model OcrUpload {
@@ -617,11 +619,19 @@ model ChangeLog {
   @@map("change_logs")
 }
 
+// FINAL REBUILD (Module C): exam types — exactly these three.
+enum ExamType {
+  monthly
+  midterm
+  annual
+}
+
 model Exam {
   id        String           @id @default(uuid()) @db.Uuid
   schoolId  String           @db.Uuid
   school    School           @relation(fields: [schoolId], references: [id], onDelete: Cascade)
   name      String
+  type      ExamType         @default(monthly)
   sessionId String?          @db.Uuid
   session   AcademicSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
   startDate DateTime?        @db.Date
@@ -773,21 +783,24 @@ model StaffClassAssignment {
 }
 
 model SalaryRecord {
+  // SIMPLIFIED PAYROLL (20261107152000): one row = ONE payment. A payment
+  // has only month + staff + amount (+ paidAt = payment date). The monthly
+  // salary lives on Staff.salaryMonthly; the month status (Paid / Partially
+  // Paid / Unpaid) and the remaining amount are DERIVED from the payments
+  // (see modules/staff/service.ts computePayrollStatus). No deductions,
+  // allowances, bonuses, tax, net pay, or payslip numbers exist any more.
   id         String    @id @default(uuid()) @db.Uuid
   schoolId   String    @db.Uuid
   school     School    @relation(fields: [schoolId], references: [id], onDelete: Cascade)
   staffId    String    @db.Uuid
   staff      Staff     @relation(fields: [staffId], references: [id], onDelete: Cascade)
   month      String
-  baseSalary Int
-  deductions Int       @default(0)
-  netPay     Int
+  amount     Int
   paidAt     DateTime? @db.Timestamptz(6)
-  payslipNo  String?
   createdAt  DateTime  @default(now()) @db.Timestamptz(6)
 
-  @@unique([staffId, month])
   @@index([schoolId, month])
+  @@index([schoolId, staffId, month])
   @@map("salary_records")
 }
 
@@ -851,6 +864,17 @@ model Certificate {
   issuedAt  DateTime @default(now()) @db.Timestamptz(6)
   issuedBy  String?  @db.Uuid
   issuer    User?    @relation(fields: [issuedBy], references: [id], onDelete: SetNull)
+  // Module F (Point 9): leaving reason for School Leaving Certificates —
+  // leavingReasonOption is one of 'completed_primary' | 'completed_middle' |
+  // 'completed_class_10' | 'other'; leavingReason is the exact text printed
+  // on the certificate (the option label, or the admin's free text for
+  // 'other'). studentSnapshot freezes the student details used on the
+  // certificate (name, father_name, class, section, roll_no, admission_no,
+  // date_of_birth, admission_date) as issued — the admin reviews/edits
+  // them before generating, and the record is never re-typed or guessed.
+  leavingReason       String?
+  leavingReasonOption String?
+  studentSnapshot     Json?
 
   @@index([schoolId, studentId, type])
   @@map("certificates")

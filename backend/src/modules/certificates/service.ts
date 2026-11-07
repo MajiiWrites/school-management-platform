@@ -5,6 +5,12 @@
 // real PDF (pdfkit, same pattern as fee receipts). School name/logo come
 // from the school row + settings (`logo_url`, see settings extension);
 // student details + issue date come from the row.
+// Module F (Point 9): issuing pre-fills every detail from the SAVED
+// student record (the admin reviews/edits before generating) and freezes
+// it on the row as studentSnapshot; School Leaving Certificates carry a
+// leaving reason (exactly 4 options, 'Other' with free text) that is
+// printed on the certificate. Every issue is logged to change history +
+// audit, so the certificate is visible in the student's history.
 // CERTIFICATE NUMBER: the v2 `certificates` table has NO certificate_no
 // column, so the number is DERIVED deterministically from the row —
 // `{SLUG}-{TYPE3}-{first 8 of id, upper}` (e.g. DEMO-LEA-3F9A1C2E) —
@@ -38,6 +44,66 @@ const TYPE_CODE: Record<CertificateType, string> = {
   bonafide: 'BON',
 };
 
+// Module F (Point 9) — reason for leaving, School Leaving Certificate
+// only. EXACTLY these four options; 'other' takes the admin's free text,
+// which is what gets printed on the certificate.
+export type LeavingReasonOption = 'completed_primary' | 'completed_middle' | 'completed_class_10' | 'other';
+
+export const LEAVING_REASON_OPTIONS: Array<{ key: LeavingReasonOption; label: string }> = [
+  { key: 'completed_primary', label: 'Completed 5th Grade (Primary)' },
+  { key: 'completed_middle', label: 'Completed Middle School' },
+  { key: 'completed_class_10', label: 'Completed 10th Class' },
+  { key: 'other', label: 'Other' },
+];
+
+export const LEAVING_REASON_LABEL: Record<LeavingReasonOption, string> = {
+  completed_primary: 'Completed 5th Grade (Primary)',
+  completed_middle: 'Completed Middle School',
+  completed_class_10: 'Completed 10th Class',
+  other: 'Other',
+};
+
+/**
+ * Editable student details the admin reviews (pre-filled from the SAVED
+ * student record) before a certificate is generated. Only these fields
+ * can be overridden; class/section always come from the class record.
+ * Everything here is saved data or an admin edit of it — never guessed.
+ */
+export interface CertificateDetailsInput {
+  name?: string | null;
+  father_name?: string | null;
+  roll_no?: number | null;
+  admission_no?: string | null;
+  date_of_birth?: string | null;
+  admission_date?: string | null;
+}
+
+export interface IssueCertificateOptions {
+  /** Required for type 'leaving'; forbidden for the other types. */
+  leaving_reason_option?: string;
+  /** Required when leaving_reason_option is 'other' — the free-text reason. */
+  leaving_reason_other?: string;
+  /** Admin-reviewed edits to the pre-filled student details. */
+  details?: CertificateDetailsInput;
+}
+
+/**
+ * Frozen student details as printed on the certificate — taken from the
+ * saved student record at issue time, plus any admin-reviewed edits.
+ * Stored on the row so a re-print never drifts from what was issued,
+ * even if the student record is edited later.
+ */
+export interface StudentSnapshot {
+  name: string;
+  father_name: string | null;
+  class_name: string;
+  section: string | null;
+  roll_no: number | null;
+  admission_no: string | null;
+  date_of_birth: string | null;
+  admission_date: string | null;
+}
+
 export interface CertificateView {
   id: string;
   certificate_no: string;
@@ -49,6 +115,12 @@ export interface CertificateView {
   roll_no: number | null;
   admission_no: string | null;
   class_name: string;
+  section: string | null;
+  date_of_birth: string | null;
+  admission_date: string | null;
+  /** School Leaving Certificate only: the exact reason printed on it. */
+  leaving_reason: string | null;
+  leaving_reason_option: LeavingReasonOption | null;
   school_name: string;
   school_address: string | null;
   logo_url: string | null;
@@ -97,21 +169,70 @@ function settingsOf(school: any): Record<string, unknown> {
   return (school.settings as Record<string, unknown>) ?? {};
 }
 
+function toISODate(d: Date | string | null | undefined): string | null {
+  if (!d) return null;
+  return new Date(d).toISOString().slice(0, 10);
+}
+
+function snapshotOf(row: any): StudentSnapshot | null {
+  const s = row.studentSnapshot as StudentSnapshot | null | undefined;
+  if (!s || typeof s !== 'object' || typeof (s as any).name !== 'string') return null;
+  return s as StudentSnapshot;
+}
+
+/**
+ * Build the frozen snapshot from the SAVED student record (+ the class
+ * record for class/section), applying the admin's reviewed edits on top.
+ * No field is ever invented: an edit may only replace a saved value, and
+ * blanking a field stores null, not a guess.
+ */
+function buildSnapshot(student: any, klass: any, details?: CertificateDetailsInput): StudentSnapshot {
+  const d = details ?? {};
+  const trim = (v: string | null | undefined): string | null => {
+    const t = typeof v === 'string' ? v.trim() : v;
+    return t === '' || t === undefined ? null : (t as string);
+  };
+  return {
+    name: trim(d.name ?? undefined) ?? student.name,
+    father_name: d.father_name !== undefined ? trim(d.father_name) : (student.fatherName ?? student.parentName ?? null),
+    class_name: klass ? classDisplayName(klass.name, klass.section) : '(unknown)',
+    section: klass ? klass.section : null,
+    roll_no: d.roll_no !== undefined ? d.roll_no : (student.rollNo ?? null),
+    admission_no: d.admission_no !== undefined ? trim(d.admission_no) : (student.admissionNo ?? null),
+    date_of_birth: d.date_of_birth !== undefined ? trim(d.date_of_birth) : toISODate(student.dateOfBirth),
+    admission_date: d.admission_date !== undefined ? trim(d.admission_date) : toISODate(student.admissionDate),
+  };
+}
+
+/** Resolve the printed leaving reason: preset label, or the admin's text for 'other'. */
+function resolveLeavingReason(option: LeavingReasonOption, otherText?: string): string {
+  if (option === 'other') return (otherText ?? '').trim();
+  return LEAVING_REASON_LABEL[option];
+}
+
 async function toCertificateView(db: Db, schoolId: string, school: any, row: any): Promise<CertificateView> {
   const student = await loadStudent(db, schoolId, row.studentId);
   const klass: any = await db.class.findFirst({ where: { id: student.classId, schoolId } });
   const settings = settingsOf(school);
+  // Frozen snapshot wins (what was actually printed); rows issued before
+  // the Module F migration have no snapshot and fall back to the live record.
+  const snap = snapshotOf(row) ?? buildSnapshot(student, klass);
   return {
     id: row.id,
     certificate_no: certificateNo(school.slug, row.type as CertificateType, row.id),
     type: row.type as CertificateType,
     type_label: TYPE_LABEL[row.type as CertificateType],
     student_id: student.id,
-    student_name: student.name,
-    father_name: student.fatherName ?? student.parentName ?? null,
-    roll_no: student.rollNo ?? null,
-    admission_no: student.admissionNo ?? null,
-    class_name: klass ? classDisplayName(klass.name, klass.section) : '(unknown)',
+    student_name: snap.name,
+    father_name: snap.father_name,
+    roll_no: snap.roll_no,
+    admission_no: snap.admission_no,
+    class_name: snap.class_name,
+    section: snap.section,
+    date_of_birth: snap.date_of_birth,
+    admission_date: snap.admission_date,
+    leaving_reason: (row.leavingReason as string | null) ?? null,
+    leaving_reason_option: (row.leavingReasonOption as LeavingReasonOption | null) ?? null,
     school_name: school.name,
     school_address: (settings.school_address as string | null) ?? null,
     logo_url: (settings.logo_url as string | null) ?? null,
@@ -127,21 +248,68 @@ export async function issueCertificate(
   studentId: string,
   type: string,
   actorId: string,
+  opts: IssueCertificateOptions = {},
 ): Promise<CertificateView> {
   if (!CERT_TYPES.includes(type as CertificateType)) {
     throw ApiError.validation("type must be one of 'leaving', 'character', 'bonafide'");
   }
+  // Leaving reason: required for School Leaving Certificates, forbidden
+  // for the other types (a reason on a bonafide/character certificate
+  // would be meaningless and must not be stored).
+  const certType = type as CertificateType;
+  let leavingReason: string | null = null;
+  let leavingReasonOption: LeavingReasonOption | null = null;
+  if (certType === 'leaving') {
+    const option = opts.leaving_reason_option as LeavingReasonOption | undefined;
+    if (!option || !LEAVING_REASON_OPTIONS.some((o) => o.key === option)) {
+      throw ApiError.validation(
+        "leaving_reason_option is required for a School Leaving Certificate: one of 'completed_primary', 'completed_middle', 'completed_class_10', 'other'",
+      );
+    }
+    if (option === 'other' && !(opts.leaving_reason_other ?? '').trim()) {
+      throw ApiError.validation("leaving_reason_other is required when the leaving reason is 'Other'");
+    }
+    leavingReasonOption = option;
+    leavingReason = resolveLeavingReason(option, opts.leaving_reason_other);
+  } else if (opts.leaving_reason_option !== undefined || opts.leaving_reason_other !== undefined) {
+    throw ApiError.validation('a leaving reason applies only to School Leaving Certificates');
+  }
+  // Name is required (the pre-filled saved name) — an admin edit may not
+  // blank it; roll_no, when given, must be an integer.
+  if (opts.details?.name !== undefined && !opts.details.name?.trim()) {
+    throw ApiError.validation('student name cannot be blank');
+  }
+  if (opts.details?.roll_no !== undefined && opts.details.roll_no !== null && !Number.isInteger(opts.details.roll_no)) {
+    throw ApiError.validation('roll_no must be an integer');
+  }
   const school = await loadSchool(db, schoolId);
   const student = await loadStudent(db, schoolId, studentId);
+  const klass: any = await db.class.findFirst({ where: { id: student.classId, schoolId } });
+  const snapshot = buildSnapshot(student, klass, opts.details);
   const created: any = await db.certificate.create({
-    data: { schoolId, studentId: student.id, type, issuedBy: actorId },
+    data: {
+      schoolId,
+      studentId: student.id,
+      type,
+      issuedBy: actorId,
+      leavingReason,
+      leavingReasonOption,
+      studentSnapshot: snapshot,
+    },
   });
+  const certNo = certificateNo(school.slug, certType, created.id);
   await logCreate(db, {
     schoolId,
     actorId,
     entity: 'certificate',
     entityId: created.id,
-    after: { student_id: student.id, type, certificate_no: certificateNo(school.slug, type as CertificateType, created.id) },
+    after: {
+      student_id: student.id,
+      student_name: snapshot.name,
+      type,
+      certificate_no: certNo,
+      ...(leavingReason ? { leaving_reason: leavingReason } : {}),
+    },
   });
   await writeAudit(db, {
     schoolId,
@@ -150,7 +318,7 @@ export async function issueCertificate(
     action: 'certificate.issue',
     entity: 'certificate',
     entityId: created.id,
-    details: { student_id: student.id, type, certificate_no: certificateNo(school.slug, type as CertificateType, created.id) },
+    details: { student_id: student.id, type, certificate_no: certNo, ...(leavingReason ? { leaving_reason: leavingReason } : {}) },
   });
   return toCertificateView(db, schoolId, school, created);
 }
@@ -242,9 +410,18 @@ export function renderCertificateHtml(c: CertificateView): string {
   // which showed the issue date a day behind in PKT.
   const tz = c.timezone ?? 'Asia/Karachi';
   const issuedDate = new Date(c.issued_at).toLocaleDateString('en-GB', { timeZone: tz });
+  // Module F (Point 9): the leaving reason MUST be printed on a School
+  // Leaving Certificate, and the frozen student details (DOB, admission
+  // date) print on every certificate.
+  const detailLine = [
+    c.date_of_birth ? `Date of Birth: <strong>${esc(c.date_of_birth)}</strong>` : '',
+    c.admission_date ? `Admission Date: <strong>${esc(c.admission_date)}</strong>` : '',
+  ]
+    .filter(Boolean)
+    .join(' &nbsp;·&nbsp; ');
   const bodyText =
     c.type === 'leaving'
-      ? `This is to certify that <strong>${esc(c.student_name)}</strong>, son/daughter of <strong>${esc(c.father_name ?? '—')}</strong>, was a student of this school in Class <strong>${esc(c.class_name)}</strong>${c.roll_no !== null ? ` (Roll No. ${c.roll_no})` : ''}${c.admission_no ? `, Admission No. ${esc(c.admission_no)}` : ''}. The student has left the school and is hereby issued this School Leaving Certificate.`
+      ? `This is to certify that <strong>${esc(c.student_name)}</strong>, son/daughter of <strong>${esc(c.father_name ?? '—')}</strong>, was a student of this school in Class <strong>${esc(c.class_name)}</strong>${c.roll_no !== null ? ` (Roll No. ${c.roll_no})` : ''}${c.admission_no ? `, Admission No. ${esc(c.admission_no)}` : ''}. The student has left the school and is hereby issued this School Leaving Certificate.${c.leaving_reason ? ` <strong>Reason for leaving: ${esc(c.leaving_reason)}.</strong>` : ''}`
       : c.type === 'character'
         ? `This is to certify that <strong>${esc(c.student_name)}</strong>, son/daughter of <strong>${esc(c.father_name ?? '—')}</strong>, was a student of this school in Class <strong>${esc(c.class_name)}</strong>${c.roll_no !== null ? ` (Roll No. ${c.roll_no})` : ''}. During the student's time at this school, their conduct and character were found to be good.`
         : `This is to certify that <strong>${esc(c.student_name)}</strong>, son/daughter of <strong>${esc(c.father_name ?? '—')}</strong>, is a bonafide student of this school, studying in Class <strong>${esc(c.class_name)}</strong>${c.roll_no !== null ? ` (Roll No. ${c.roll_no})` : ''}${c.admission_no ? `, Admission No. ${esc(c.admission_no)}` : ''}.`;
@@ -275,6 +452,7 @@ export function renderCertificateHtml(c: CertificateView): string {
   ${c.school_address ? `<p class="meta">${esc(c.school_address)}</p>` : ''}
   <h2>${esc(c.type_label)}</h2>
   <p class="body">${bodyText}</p>
+  ${detailLine ? `<p class="meta">${detailLine}</p>` : ''}
   <p class="meta">Certificate No: <strong>${esc(c.certificate_no)}</strong> &nbsp;·&nbsp; Issued on ${esc(issuedDate)}</p>
   <div class="sig"><span>Principal / Head</span><span>Office Seal</span></div>
 </div>
@@ -313,6 +491,21 @@ export async function renderCertificatePdf(c: CertificateView): Promise<Buffer> 
       `${c.admission_no ? `, Admission No. ${c.admission_no}` : ''}.`,
     { align: 'justify' },
   );
+  // Module F (Point 9): leaving reason + frozen details print on the PDF too.
+  if (c.type === 'leaving' && c.leaving_reason) {
+    doc.moveDown(0.5);
+    doc.fontSize(12).fillColor('#111').text(`Reason for leaving: ${c.leaving_reason}`, { align: 'justify' });
+  }
+  const pdfDetails = [
+    c.date_of_birth ? `Date of Birth: ${c.date_of_birth}` : '',
+    c.admission_date ? `Admission Date: ${c.admission_date}` : '',
+  ]
+    .filter(Boolean)
+    .join('  ·  ');
+  if (pdfDetails) {
+    doc.moveDown(0.5);
+    doc.fontSize(11).fillColor('#555').text(pdfDetails);
+  }
   doc.moveDown();
   doc.fontSize(11).fillColor('#555').text(`Certificate No: ${c.certificate_no}`);
   doc.text(`Issued on ${issuedDate}`);

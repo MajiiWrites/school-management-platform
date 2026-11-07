@@ -29,8 +29,8 @@ Base: `/api/v1`. Envelope: success `{ok:true, data:...}`; error `{ok:false, erro
 
 ## Teacher attendance link (PUBLIC, token auth — no JWT)
 - GET /t/:token — validates token (not revoked/expired) → {class, date, students:[{id, name, roll_no, status?}], already_submitted}
-- POST /t/:token/submit {records:[{student_id, status}]} — statuses present/absent/late/leave; default present. One submission per class per day; 409 if already submitted (unless admin unlocked). On success: creates attendance_day + records, audit log, dashboard badge data, and (if any absent and not Sunday/holiday) creates a pending-approval notification + draft queue rows in status `queued` BUT held — see Messaging.
-- Offline: page is a PWA-style cacheable page; if offline on submit, the browser stores the payload in localStorage and retries when online (frontend implements; backend accepts late same-day submissions).
+- POST /t/:token/submit {records:[{student_id, status}]} — statuses present/absent; default present. One submission per class per day; 409 if already submitted (unless admin unlocked). On success: creates attendance_day + records, audit log, dashboard badge data, and (if any absent and not Sunday/holiday) creates a pending-approval notification + draft queue rows in status `queued` BUT held — see Messaging.
+- Offline: page is a PWA-style cacheable page; if offline on submit, the browser stores the payload in localStorage and retries when online (frontend implements; backend accepts same-day submissions).
 
 ## Teacher attendance (admin-marked)
 - POST /teacher-attendance {class_id, date, status, note?} (admin). GET /teacher-attendance?date=&class_id=
@@ -61,11 +61,14 @@ Base: `/api/v1`. Envelope: success `{ok:true, data:...}`; error `{ok:false, erro
 - Monthly 1st (school tz, skips Sundays/holidays): for each unpaid fee_record of the new month → queue fee_reminder (auto-send if settings.fee_auto_send, else await approval). Follow-up on settings.fee_followup_day if enabled.
 - Daily (settings.teacher_reminder_time, school tz): classes with no submission → teacher_reminder queue rows (SIM) + notification. Never on Sundays/holidays.
 
-## Academic sessions, holidays, promotion, leave, audit, notifications
+## Academic sessions, holidays, promotion, audit, notifications
 - POST /sessions {name, start_date, end_date} + POST /sessions/:id/make-current (admin). GET /sessions.
 - POST /promotions {session_id, mappings:[{student_id, to_class_id}]} (admin).
+- Promotion rebuild: POST /promotions/preview (mapping + skips + roll preview) → POST /promotions (apply as one batch), GET /promotion-batches, POST /promotion-batches/:batchId/undo, PATCH /promotions/:promotionId (move one student). Left/struck-off/graduated students never move; highest class graduates or is held; old-session history preserved.
+- Exams: POST /exams {name, type: monthly|midterm|annual, ...}; GET /exams?type=; results accept exam_type.
+- Messages: GET/PATCH /sms/sender-number (per-school SMS sender number, masked in audit); absent messages only for status='absent'.
+- Attendance is only present/absent (students and teachers); late/leave removed entirely (tables, routes, UI, tests, docs).
 - GET /holidays, POST /holidays {date, name}, DELETE /holidays/:id (admin).
-- POST /leaves {student_id, from_date, to_date, reason} + PATCH /leaves/:id {status} (admin).
 - GET /audit-logs?entity=&action=, GET /notifications, POST /notifications/:id/read.
 
 ## Rules every agent must enforce
@@ -128,7 +131,7 @@ any mutating call).
 - GET /timetable?class_id=&day=, POST /timetable {class_id, teacher_id?, day_of_week, period_no, subject, start_time, end_time, room?}, PATCH /timetable/:id, DELETE /timetable/:id.
 - GET /staff?role=, POST /staff {name, role, phone?, email?, joining_date?, subjects?, salary_monthly?}, GET /staff/:id, PATCH /staff/:id, DELETE /staff/:id.
 - POST /staff/:id/assign {class_id, subject}, DELETE /staff/:id/assign/:assignment_id.
-- GET /payroll?month=&staff_id=, POST /payroll {staff_id, month, base_salary, deductions?, payslip_no?} → {net_pay}, GET /payroll/:id/payslip — printable payslip (HTML → PDF).
+- GET /payroll?month=&staff_id=&status= (summary rows: paid / remaining / status Paid|Partially Paid|Unpaid), POST /payroll {staff_id, month, amount} — one payment row (multiple partial payments per month sum), GET /payroll/:id, PATCH /payroll/:id {amount}, DELETE /payroll/:id, GET /payroll/slip?staff_id=&month=&format=pdf|json — salary slip PDF (school name + logo). No deductions, allowances, bonuses, or tax.
 
 ## Fees (extensions)
 - POST /fees/structures — now accepts admission_fee, sibling_discount_pct.
@@ -218,11 +221,11 @@ Full rules in `backend/src/modules/sessions/FEATURES-6C1.md`.
   `GET /staff/:id`, `PATCH /staff/:id`, `DELETE /staff/:id` (blocked while
   on the timetable or with salary records), `GET /staff/:id/assignments`,
   `POST /staff/:id/assign`, `DELETE /staff/:id/assign/:assignment_id`,
-  `GET /payroll?month=&staff_id=&paid=`, `POST /payroll`
-  `{staff_id, month, base_salary?, deductions?, payslip_no?}` → net_pay
-  = max(0, base − deductions), `GET /payroll/:id`, `PATCH /payroll/:id`
-  `{base_salary?, deductions?, paid?}`, `DELETE /payroll/:id` (paid records
-  cannot be deleted), `GET /payroll/:id/payslip` (printable HTML).
+  `GET /payroll?month=&staff_id=&status=` (summary rows), `POST /payroll`
+  `{staff_id, month, amount}` (one payment; partials sum), `GET /payroll/:id`,
+  `PATCH /payroll/:id` `{amount}`, `DELETE /payroll/:id` (re-derives the month
+  total), `GET /payroll/slip?staff_id=&month=&format=pdf|json` (salary slip
+  PDF/HTML: name, month, monthly salary, paid, dates, remaining).
 
 ---
 
@@ -285,9 +288,6 @@ through the approval queue (202) unless noted; every edit writes a
   /students/:id/certificates`, `GET /certificates/:id` (HTML;
   `?format=pdf`), `POST /students/:id/issue-id-card`, `GET
   /students/:id/id-card` (printable HTML).
-- Leave + late: `GET /leaves`, `POST /leaves`, `PATCH /leaves/:id
-  {status: approved|rejected}` (existing; 6C-2 adds change history),
-  `GET /leaves/late?date=&month=&class_id=`.
 - Reports (all support `?format=pdf|xlsx|csv`): `GET
   /reports/fees/defaulters?month=&class_id=`, `GET
   /reports/results/summary?exam_id=&class_id=`, `GET

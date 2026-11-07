@@ -109,9 +109,9 @@ describe('runMonthlyFeeReminders', () => {
     expect(res.ran).toBe(false);
     expect(res.reason).toContain('holiday');
 
-    const late = await runMonthlyFeeReminders(db, school, new Date('2026-11-04T03:00:00Z'));
-    expect(late.ran).toBe(false);
-    expect(late.reason).toBe('not-first-days-of-month');
+    const nov4 = await runMonthlyFeeReminders(db, school, new Date('2026-11-04T03:00:00Z'));
+    expect(nov4.ran).toBe(false);
+    expect(nov4.reason).toBe('not-first-days-of-month');
   });
 });
 

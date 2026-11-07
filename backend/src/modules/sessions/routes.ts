@@ -105,14 +105,85 @@ sessionsRouter.post(
   }),
 );
 
+const promotionMappingSchema = z.object({
+  student_id: uuidSchema,
+  to_class_id: uuidSchema.nullable().optional(),
+  outcome: z.enum(['promoted', 'graduated', 'held']).optional(),
+});
+
 sessionsRouter.post(
   '/sessions/:id/promote',
   requireAdmin,
   asyncHandler(async (req, res) => {
     const { id } = parseBody(z.object({ id: uuidSchema }), req.params);
-    const body = parseBody(z.object({ from_class_id: uuidSchema, to_class_id: uuidSchema }), req.body);
+    const body = parseBody(
+      z.object({
+        from_class_id: uuidSchema,
+        to_class_id: uuidSchema.nullable().optional(),
+        student_ids: z.array(uuidSchema).optional(),
+        outcome: z.enum(['promoted', 'graduated', 'held']).optional(),
+      }),
+      req.body,
+    );
     const result = await service.promoteClassSection(getDb(), schoolIdOf(req), id, body, req.user!.sub);
     res.json({ ok: true, data: result });
+  }),
+);
+
+// Promotion rebuild (Module D): preview before confirm, explicit per-student
+// mappings, batch undo, single-student edit, batch history.
+sessionsRouter.post(
+  '/sessions/:id/promotions/preview',
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const { id } = parseBody(z.object({ id: uuidSchema }), req.params);
+    const body = parseBody(z.object({ mappings: z.array(promotionMappingSchema).min(1) }), req.body);
+    const data = await service.previewPromotion(getDb(), schoolIdOf(req), id, body);
+    res.json({ ok: true, data });
+  }),
+);
+
+sessionsRouter.post(
+  '/sessions/:id/promotions',
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const { id } = parseBody(z.object({ id: uuidSchema }), req.params);
+    const body = parseBody(z.object({ mappings: z.array(promotionMappingSchema).min(1) }), req.body);
+    const data = await service.applyPromotion(getDb(), schoolIdOf(req), id, body, req.user!.sub);
+    res.json({ ok: true, data });
+  }),
+);
+
+sessionsRouter.get(
+  '/sessions/:id/promotion-batches',
+  asyncHandler(async (req, res) => {
+    const { id } = parseBody(z.object({ id: uuidSchema }), req.params);
+    const data = await service.listPromotionBatches(getDb(), schoolIdOf(req), id);
+    res.json({ ok: true, data: { items: data, total: data.length, page: 1, pages: 1 } });
+  }),
+);
+
+sessionsRouter.post(
+  '/sessions/:id/promotion-batches/:batchId/undo',
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const { id, batchId } = parseBody(z.object({ id: uuidSchema, batchId: z.string().min(1).max(80) }), req.params);
+    const data = await service.undoPromotion(getDb(), schoolIdOf(req), batchId, req.user!.sub);
+    res.json({ ok: true, data });
+  }),
+);
+
+sessionsRouter.patch(
+  '/sessions/:id/promotions/:promotionId',
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const { id, promotionId } = parseBody(z.object({ id: uuidSchema, promotionId: uuidSchema }), req.params);
+    const body = parseBody(
+      z.object({ to_class_id: uuidSchema.nullable().optional(), outcome: z.enum(['promoted', 'graduated', 'held']).optional() }),
+      req.body,
+    );
+    const data = await service.editPromotion(getDb(), schoolIdOf(req), promotionId, body, req.user!.sub);
+    res.json({ ok: true, data });
   }),
 );
 

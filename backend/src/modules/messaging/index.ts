@@ -15,8 +15,11 @@ export {
   getDeviceQueue,
   reportDelivery,
   getSmsStatus,
+  getSenderSettings,
+  updateSenderNumber,
+  normalizeSenderNumber,
 } from './service';
-export type { ServiceDeps, DraftResult } from './service';
+export type { ServiceDeps, DraftResult, SenderSettings } from './service';
 // --- Section 11 (Custom Messages) --------------------------------------
 export {
   approveDraftForSending,

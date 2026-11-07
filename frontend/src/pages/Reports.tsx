@@ -27,14 +27,12 @@ function num(v: unknown): number {
 function toAttendanceRow(r: Record<string, unknown>, studentName?: string): AttendanceRow {
   const present = num(r.present);
   const absent = num(r.absent);
-  const late = num(r.late);
-  const leave = num(r.leave);
   return {
     class: typeof r.display_name === 'string' ? r.display_name : undefined,
     student: studentName,
     present,
     absent,
-    total: present + absent + late + leave,
+    total: present + absent,
     rate: typeof r.attendance_rate === 'number' ? r.attendance_rate : null,
   };
 }
@@ -192,7 +190,7 @@ export default function ReportsPage() {
       path = `/reports/attendance/monthly?${qs}`;
     }
     // Backend shape: { date|week_start|month, present, absent, ...,
-    // by_class: [{ class_id, display_name, present, absent, late, leave,
+    // by_class: [{ class_id, display_name, present, absent,
     // attendance_rate }], by_student: [{ student_id, name, display_name,
     // ... }] } — there is NO `items` array. Daily shows one row per class
     // (by_class); weekly/monthly show one row per student (by_student).

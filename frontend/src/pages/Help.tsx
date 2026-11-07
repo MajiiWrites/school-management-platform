@@ -37,7 +37,7 @@ const HOW_TOS: { title: string; steps: string[] }[] = [
     steps: [
       'Open Classes and open the class.',
       'Copy the attendance link and share it with the teacher (for example on WhatsApp).',
-      'The teacher opens the link on their phone, marks present / absent / late, and submits.',
+      'The teacher opens the link on their phone, marks present / absent, and submits.',
       'Absent students appear in Messages under "Pending approval" — nothing is sent to parents until you approve it there.',
     ],
   },

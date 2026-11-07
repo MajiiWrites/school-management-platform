@@ -60,10 +60,12 @@ export class FakeStore implements MessagingStore {
   holidays = new Set<string>();
   deliveries: Array<Record<string, unknown>> = [];
   audits: AuditLogInput[] = [];
+  /** FINAL REBUILD (Module C): per-school sender number. */
+  senderNumber: string | null = null;
   private seq = 0;
 
   async getSchool() {
-    return SCHOOL;
+    return { ...SCHOOL, senderNumber: this.senderNumber };
   }
   async getStudentsByIds(ids: string[], schoolId: string) {
     // Fake mirrors the fixed Prisma store: only this school's students.
@@ -261,7 +263,26 @@ export class FakeStore implements MessagingStore {
     }
   }
   async getDevicesStatus() {
-    return { lastSeenAt: null, onlineCount: 0 };
+    // Mirrors the Prisma adapter: online = seen in the last 90 s.
+    const now = Date.now();
+    let lastSeenAt: Date | null = null;
+    let onlineCount = 0;
+    for (const d of this.devices.values()) {
+      if (d.lastSeenAt) {
+        if (!lastSeenAt || d.lastSeenAt > lastSeenAt) lastSeenAt = d.lastSeenAt;
+        if (now - d.lastSeenAt.getTime() <= 90_000) onlineCount += 1;
+      }
+    }
+    return { lastSeenAt, onlineCount };
+  }
+  /* FINAL REBUILD (Module C): sender number storage. */
+  async updateSenderNumber(_schoolId: string, senderNumber: string | null) {
+    this.senderNumber = senderNumber;
+  }
+  async getLatestDevice(_schoolId: string) {
+    const all = [...this.devices.values()];
+    all.sort((a, b) => (b.lastSeenAt?.getTime() ?? 0) - (a.lastSeenAt?.getTime() ?? 0));
+    return all[0] ?? null;
   }
   async countQueued(schoolId: string) {
     const queued = this.queue.filter(
@@ -344,10 +365,8 @@ describe('buildAbsentDrafts', () => {
       records: [
         { studentId: 's1', status: 'absent' },
         { studentId: 's2', status: 'present' },
-        { studentId: 's3', status: 'late' },
-        { studentId: 's4', status: 'leave' },
       ],
-      students: [student('s1'), student('s2'), student('s3'), student('s4')],
+      students: [student('s1'), student('s2')],
     });
     expect(res.created).toBe(1);
     expect(store.queue).toHaveLength(1);
@@ -356,6 +375,26 @@ describe('buildAbsentDrafts', () => {
     expect(store.queue[0].body).toContain('Student s1');
     expect(store.queue[0].body).toContain('5-A');
     expect(res.skipped.map((s) => s.reason)).toContain('not_absent');
+  });
+
+  it('never drafts for a non-absent record — present is skipped as not_absent, queue holds only the absent student', async () => {
+    // FINAL REBUILD (Module C) proof: the absent-message trigger selects
+    // status='absent' ONLY (AttendanceRecordInput is now 'present' |
+    // 'absent' — there is no other status to send for). Every other
+    // record is skipped with reason 'not_absent'.
+    const res = await buildAbsentDrafts(deps, {
+      ...base,
+      records: [
+        { studentId: 's1', status: 'absent' },
+        { studentId: 's2', status: 'present' },
+      ],
+      students: [student('s1'), student('s2')],
+    });
+    expect(res.created).toBe(1);
+    expect(store.queue.map((q) => q.studentId)).toEqual(['s1']);
+    expect(store.queue.every((q) => q.type === 'absent')).toBe(true);
+    const byId = new Map(res.skipped.map((s) => [s.studentId, s.reason]));
+    expect(byId.get('s2')).toBe('not_absent');
   });
 
   it('dedupes: same student/day built twice creates one row', async () => {

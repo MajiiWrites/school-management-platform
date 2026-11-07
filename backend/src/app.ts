@@ -93,7 +93,7 @@ app.use('/api/v1', sessionsRouter);
 app.use('/api/v1', studentsRouter); // /classes/:id/students, /students/:id
 app.use('/api/v1/parents', parentsRouter);
 app.use('/api/v1/reports', reportsRouter);
-app.use('/api/v1', adminRouter); // /dashboard, /settings, /users, /holidays, /sessions, /promotions, /leaves, /audit-logs, /notifications
+app.use('/api/v1', adminRouter); // /dashboard, /settings, /users, /holidays, /sessions, /promotions, /audit-logs, /notifications
 
 // --- Phase 3 (integration) -------------------------------------------------
 // authenticate alone only sets req.user; the OCR router also needs
