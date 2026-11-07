@@ -12,7 +12,7 @@ import IdleTimeout from './IdleTimeout'; // 6D component (added by its agent; im
 import GuidedTour, { startGuidedTour } from './GuidedTour';
 
 const NAV: { to: string; labelKey: string; icon: string; roles: Role[] }[] = [
-  { to: '/', labelKey: 'dashboard', icon: '▦', roles: ['admin', 'clerk', 'principal'] },
+  { to: '/dashboard', labelKey: 'dashboard', icon: '▦', roles: ['admin', 'clerk', 'principal'] },
   { to: '/classes', labelKey: 'classes', icon: '▤', roles: ['admin', 'clerk', 'principal'] },
   { to: '/students', labelKey: 'students', icon: '👥', roles: ['admin', 'clerk', 'principal'] },
   { to: '/parents', labelKey: 'parents', icon: '☎', roles: ['admin', 'clerk', 'principal'] },
@@ -73,7 +73,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
           <NavLink
             key={n.to}
             to={n.to}
-            end={n.to === '/'}
+            end={n.to === '/dashboard'}
             onClick={onNavigate}
             className={({ isActive }) =>
               cx(

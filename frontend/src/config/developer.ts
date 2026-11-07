@@ -20,7 +20,7 @@ export interface DeveloperInfo {
 
 export const DEVELOPER: DeveloperInfo = {
   name: 'Majid Ali',
-  tagline: 'CS Student, The Islamia University of Bahawalpur — Freelance Web Designer, Pakistan',
+  tagline: 'CS Student, The Islamia University of Bahawalpur (IUB), Pakistan',
   phone: '03242699437',
   whatsappUrl: 'https://wa.me/923242699437',
   email: 'majidalioffical0@gmail.com',

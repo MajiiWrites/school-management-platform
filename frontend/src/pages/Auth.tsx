@@ -43,7 +43,7 @@ export function LoginPage() {
     setBusy(true);
     try {
       await login(email.trim(), password);
-      navigate('/');
+      navigate('/dashboard');
     } catch (err) {
       setError(errText(err));
     } finally {
@@ -109,7 +109,7 @@ export function SignupPage() {
       // the session is live immediately — land straight on the dashboard.
       // The dashboard shows a dismissible verification reminder instead
       // of parking the new admin on the /verify-email interstitial.
-      navigate('/', { state: { justSignedUp: true } });
+      navigate('/dashboard', { state: { justSignedUp: true } });
     } catch (err) {
       setError(errText(err));
     } finally {

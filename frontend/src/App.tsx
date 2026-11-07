@@ -7,6 +7,7 @@ import ErrorBoundary from './components/ErrorBoundary';
 import { Spinner } from './components/ui';
 import { ForgotPasswordPage, LoginPage, ResetPasswordPage, SignupPage, VerifyEmailPage } from './pages/Auth';
 import TeacherLinkPage from './pages/TeacherLink';
+import HomePage from './pages/Home'; // public landing page at `/` (entry chunk — first paint for logged-out visitors)
 import { LanguageProvider } from './lib/i18n';
 // R2-E (round 2): route-level code splitting. The whole portal used to
 // ship as one 596 kB JS chunk, so a cold first paint waited on all of it.
@@ -72,7 +73,7 @@ function RequireAuth({ children }: { children: ReactNode }) {
 
 function RequireAdmin({ children }: { children: ReactNode }) {
   const { user } = useAuth();
-  if (user?.role !== 'admin') return <Navigate to="/" replace />;
+  if (user?.role !== 'admin') return <Navigate to="/dashboard" replace />;
   return <>{children}</>;
 }
 
@@ -81,7 +82,7 @@ function NotFound() {
     <div className="rounded-xl border border-dashed border-slate-300 bg-white px-4 py-16 text-center">
       <p className="text-lg font-semibold text-slate-800">Page not found</p>
       <p className="mt-1 text-sm text-slate-500">The link may be wrong, or the page was moved.</p>
-      <a href="/" className="mt-4 inline-block font-medium text-brand-700 hover:underline">
+      <a href="/dashboard" className="mt-4 inline-block font-medium text-brand-700 hover:underline">
         Go to the dashboard
       </a>
     </div>
@@ -95,6 +96,11 @@ export default function App() {
       <ErrorBoundary>
         <Routes>
         {/* Public */}
+        {/* Homepage: `/` shows the landing page to logged-out visitors;
+            HomePage itself redirects signed-in users to /dashboard. The
+            portal below is a pathless layout route with no index child, so
+            it does not match `/` — this route wins unambiguously. */}
+        <Route path="/" element={<HomePage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/signup" element={<SignupPage />} />
         <Route path="/verify-email" element={<VerifyEmailPage />} />
@@ -127,7 +133,8 @@ export default function App() {
             </RequireAuth>
           }
         >
-          <Route index element={<DashboardPage />} />
+          {/* Dashboard — lives at /dashboard now that `/` is the public homepage. */}
+          <Route path="dashboard" element={<DashboardPage />} />
           <Route path="classes" element={<ClassesPage />} />
           <Route path="classes/:id" element={<ClassDetailPage />} />
           <Route path="classes/:id/ocr" element={<OcrReviewPage />} />

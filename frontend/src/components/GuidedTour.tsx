@@ -37,7 +37,7 @@ interface TourStep {
 
 const TOUR_STEPS: TourStep[] = [
   {
-    to: '/',
+    to: '/dashboard',
     title: 'Welcome — this is your home page',
     body: 'The boxes show today at a glance: how many classes sent attendance, how many students are present or absent, and how much fee money came in this month versus how much is still pending. A red or amber number needs your attention.',
   },
@@ -109,13 +109,13 @@ export default function GuidedTour() {
   // so a fresh admin opening /calendar, /holidays (or any deep
   // link) was yanked to the dashboard and the redirect looked broken.
   // The tour is dashboard onboarding: it only auto-opens on the dashboard
-  // itself. On any other page it stays unseen until the admin visits '/'.
+  // itself. On any other page it stays unseen until the admin visits '/dashboard'.
   useEffect(() => {
     if (!user || autoOpened.current) return;
-    // Wait for a dashboard visit: the flag is only consumed on '/', so a
+    // Wait for a dashboard visit: the flag is only consumed on '/dashboard', so a
     // fresh admin who deep-links elsewhere first still gets the tour when
     // they reach the dashboard later in the same session.
-    if (location.pathname !== '/') return;
+    if (location.pathname !== '/dashboard') return;
     autoOpened.current = true;
     let seen = false;
     try {
@@ -136,10 +136,10 @@ export default function GuidedTour() {
   // below would mistake the relaunch navigation for the user leaving.
   useEffect(() => {
     const onStart = () => {
-      tourNavRef.current = '/';
+      tourNavRef.current = '/dashboard';
       setStep(0);
       setOpen(true);
-      navigate('/', { replace: true });
+      navigate('/dashboard', { replace: true });
     };
     window.addEventListener(TOUR_START_EVENT, onStart);
     return () => window.removeEventListener(TOUR_START_EVENT, onStart);
