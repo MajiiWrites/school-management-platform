@@ -11,7 +11,11 @@ function errText(e: unknown): string {
   return e instanceof ApiClientError ? e.message : 'Something went wrong.';
 }
 
-function statusBadge(s: FeeRow['status']) {
+/** D3: rows with no_structure === true are NOT paid — their class has no
+ * fee structure and no record, so the backend's GENERATED 'paid' status
+ * (balance 0 <= 0) is a phantom. Show a neutral badge instead. */
+function statusBadge(s: FeeRow['status'], noStructure?: boolean) {
+  if (noStructure) return <Badge tone="slate">No fee structure</Badge>;
   if (s === 'paid') return <Badge tone="green">Paid</Badge>;
   if (s === 'partial') return <Badge tone="amber">Partial</Badge>;
   return <Badge tone="red">Unpaid</Badge>;
@@ -58,7 +62,14 @@ export default function FeesPage() {
 
   useEffect(load, [load]);
 
-  const filtered = fees.filter((f) => (statusFilter === 'all' ? true : f.status === statusFilter));
+  // D3: no_structure rows carry the backend's GENERATED 'paid' status but
+  // are not paid — exclude them from the Paid filter (they stay visible
+  // under "All statuses" with the "No fee structure" badge).
+  const filtered = fees.filter((f) =>
+    statusFilter === 'all' ? true : statusFilter === 'paid' ? f.status === 'paid' && !f.no_structure : f.status === statusFilter,
+  );
+  // D3: no_structure rows contribute 0 to both totals (amount_due,
+  // amount_paid and discount are all 0), so Collected/Pending stay honest.
   const collected = fees.reduce((a, f) => a + (f.amount_paid ?? 0), 0);
   const pending = fees.reduce((a, f) => a + ((f.amount_due ?? 0) - (f.amount_paid ?? 0) - (f.discount ?? 0)), 0);
 
@@ -91,11 +102,17 @@ export default function FeesPage() {
         </Card>
         <Card className="p-4">
           <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Paid students</p>
-          <p className="mt-1 text-2xl font-bold text-slate-900">{fees.filter((f) => f.status === 'paid').length} / {fees.length}</p>
+          {/* D3: no_structure rows are excluded from the Paid count (their
+              GENERATED 'paid' status is a phantom). Denominator stays the
+              total row count so paid + unpaid + partial + no-structure = all
+              students shown. */}
+          <p className="mt-1 text-2xl font-bold text-slate-900">{fees.filter((f) => f.status === 'paid' && !f.no_structure).length} / {fees.length}</p>
         </Card>
         <Card className="p-4">
           <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Unpaid students</p>
-          <p className="mt-1 text-2xl font-bold text-red-600">{fees.filter((f) => f.status === 'unpaid').length}</p>
+          {/* D3: no_structure rows are excluded here too (defensive — the
+              backend synthesises them as 'paid', never 'unpaid'). */}
+          <p className="mt-1 text-2xl font-bold text-red-600">{fees.filter((f) => f.status === 'unpaid' && !f.no_structure).length}</p>
         </Card>
       </div>
 
@@ -148,7 +165,7 @@ export default function FeesPage() {
                       <td className="px-4 py-2.5">{f.class_name}</td>
                       <td className="px-4 py-2.5">{fmtPKR(f.amount_due ?? 0)}</td>
                       <td className="px-4 py-2.5">{fmtPKR(f.amount_paid ?? 0)}</td>
-                      <td className="px-4 py-2.5">{statusBadge(f.status)}</td>
+                      <td className="px-4 py-2.5">{statusBadge(f.status, f.no_structure)}</td>
                       <td className="px-4 py-2.5 font-mono text-xs">{f.receipt_no ?? '—'}</td>
                       <td className="px-4 py-2.5 text-right">
                         <button

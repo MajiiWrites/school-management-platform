@@ -66,6 +66,22 @@ export async function getDashboard(db: Db, schoolId: string): Promise<Record<str
   };
 }
 
+/** Snake_case audit-log view (the contract the frontend uses) — see
+ * listAuditLogs for why the raw Prisma row cannot be returned. */
+export function toAuditLogView(l: any): Record<string, unknown> {
+  return {
+    id: l.id,
+    school_id: l.schoolId ?? null,
+    actor_id: l.actorId ?? null,
+    actor_type: l.actorType,
+    action: l.action,
+    entity: l.entity,
+    entity_id: l.entityId ?? null,
+    details: l.details ?? {},
+    created_at: l.createdAt ? new Date(l.createdAt).toISOString() : new Date().toISOString(),
+  };
+}
+
 /** Snake_case notification view (the contract the frontend uses) — see
  * listNotifications for why the raw Prisma row cannot be returned. */
 export function toNotificationView(n: any): Record<string, unknown> {
@@ -581,7 +597,13 @@ export async function listAuditLogs(db: Db, schoolId: string, query: Record<stri
     db.auditLog.findMany({ where, orderBy: [{ createdAt: 'desc' }], skip, take: limit }),
     db.auditLog.count({ where }),
   ]);
-  return paginatedResponse(items, total, { page, limit, skip });
+  // D4 fix: the raw Prisma row is camelCase (schoolId/createdAt) but the
+  // frontend AuditLog reads snake_case (school_id/created_at) — so
+  // `l.created_at` was undefined and fmtDateTime rendered '—' in the WHEN
+  // column for every row. Serialize to the contract, same pattern as
+  // listNotifications / toNotificationView above.
+  const views = (items as any[]).map(toAuditLogView);
+  return paginatedResponse(views, total, { page, limit, skip });
 }
 
 export async function listNotifications(db: Db, schoolId: string, query: Record<string, any>): Promise<{ items: any[]; total: number; page: number; pages: number }> {

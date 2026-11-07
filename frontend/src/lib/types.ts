@@ -192,6 +192,11 @@ export interface FeeRow {
   record_exists?: boolean;
   arrears?: number;
   scholarship_discount?: number;
+  /** D3: true when the student's class has no fee structure and no fee
+   * record exists — backend synthesises such rows with amount 0 and a
+   * GENERATED status of 'paid'. The frontend must NOT present them as
+   * paid; they are "No fee structure". */
+  no_structure?: boolean;
 }
 
 export interface FeeStructure {

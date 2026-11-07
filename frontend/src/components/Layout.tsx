@@ -124,6 +124,13 @@ export default function Layout() {
 
   useEffect(loadNotifications, [loadNotifications, location.pathname]);
 
+  // D5: close the bell dropdown on navigation — it used to stay open
+  // across page changes until clicked again. (Separate from the refetch
+  // above; closing here must not touch the notification list.)
+  useEffect(() => {
+    setBellOpen(false);
+  }, [location.pathname]);
+
   useEffect(() => {
     if (bellOpen) loadNotifications();
   }, [bellOpen, loadNotifications]);

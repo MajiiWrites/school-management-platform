@@ -1,6 +1,18 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { signup, verifyEmail, login, forgotPassword, resetPassword } from './service';
 import { ApiError } from '../../lib/errors';
+
+/** Round-3: the auth tests control mail delivery instead of hitting the
+ * dev-mode console logger — a failing send must not fail forgot-password. */
+const mockedSendMail = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock('../../lib/mail', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('../../lib/mail')>();
+  return { ...orig, sendMail: mockedSendMail };
+});
+
+beforeEach(() => {
+  mockedSendMail.mockClear();
+});
 
 /** Minimal in-memory fake of the Db surface the auth service uses. */
 function fakeDb() {
@@ -118,6 +130,20 @@ describe('auth service', () => {
     expect(reset.user.email).toBe('a@b.pk');
     const logged = await login(db as any, { email: 'a@b.pk', password: 'NewSecret1' });
     expect('access' in logged && logged.access).toBeTruthy();
+  });
+
+  it('forgot-password still succeeds when the mail send fails (round 3)', async () => {
+    // Live re-test: a stalled SMTP send 500'd the request after ~2 min.
+    // The endpoint must never reveal account existence OR mail state — the
+    // failure is logged server-side and the caller gets success; the token
+    // was already stored, so the reset still works once mail is back.
+    const db = fakeDb();
+    await signup(db as any, { school_name: 'School', email: 'a@b.pk', password: 'Secret123' });
+    mockedSendMail.mockRejectedValueOnce(new Error('SMTP connection timed out'));
+    const result = await forgotPassword(db as any, 'a@b.pk');
+    expect(result.dev_token).toBeTruthy();
+    const reset = await resetPassword(db as any, result.dev_token!, 'NewSecret1');
+    expect(reset.user.email).toBe('a@b.pk');
   });
 
   it('verify-email rejects a bad token', async () => {

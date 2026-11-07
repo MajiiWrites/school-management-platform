@@ -92,6 +92,37 @@ function pickExamForClass(classId: string, list: ExamItem[]): string {
   return '';
 }
 
+/** Selected class, kept in sessionStorage like the per-class exam above,
+ * so a reload right after a save does not drop the class back to the
+ * first one (the live re-test showed the class resetting to 4-A with
+ * 0 results until re-selected). Best-effort: private mode just means
+ * no persistence. */
+const CLASS_STORAGE_KEY = 'smp:results:class';
+function readStoredClass(): string {
+  try {
+    return sessionStorage.getItem(CLASS_STORAGE_KEY) ?? '';
+  } catch {
+    return '';
+  }
+}
+function storeClass(classId: string): void {
+  try {
+    if (classId) sessionStorage.setItem(CLASS_STORAGE_KEY, classId);
+    else sessionStorage.removeItem(CLASS_STORAGE_KEY);
+  } catch {
+    /* storage unavailable — selection just won't survive a reload */
+  }
+}
+/** Class to select: the stored one if it still exists, else the first. */
+function pickClassForList(list: ClassItem[]): ClassItem | undefined {
+  const stored = readStoredClass();
+  if (stored) {
+    const found = list.find((c) => c.id === stored);
+    if (found) return found;
+  }
+  return list[0];
+}
+
 export default function ResultsPage() {
   const [classes, setClasses] = useState<ClassItem[]>([]);
   const [exams, setExams] = useState<ExamItem[]>([]);
@@ -152,11 +183,14 @@ export default function ResultsPage() {
       .then(([c, e]) => {
         setClasses(c.items);
         if (c.items.length > 0) {
-          const first = c.items[0]!;
+          const first = pickClassForList(c.items)!;
           // Set class + exam together (one batched render) so the results
           // effect runs once, already filtered — and so a reload restores
-          // the previously selected exam (or the only exam) instead of
-          // dropping back to "All exams".
+          // the previously selected class and exam (or the only exam)
+          // instead of dropping back to the first class / "All exams".
+          // storeClass also clears a stale stored id when the class no
+          // longer exists and we fell back to the first class.
+          storeClass(first.id);
           setClassId(first.id);
           setExamId(pickExamForClass(first.id, e));
         }
@@ -418,7 +452,7 @@ export default function ResultsPage() {
         <>
           <div className="flex flex-wrap items-center gap-2">
             <label className="text-sm font-medium text-slate-700" htmlFor="class-select">Class:</label>
-            <select id="class-select" className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" value={classId} onChange={(e) => { const id = e.target.value; setClassId(id); setExamId(pickExamForClass(id, exams)); }}>
+            <select id="class-select" className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" value={classId} onChange={(e) => { const id = e.target.value; storeClass(id); setClassId(id); setExamId(pickExamForClass(id, exams)); }}>
               {classes.map((c) => (
                 <option key={c.id} value={c.id}>Class {displayClass(c)} — {c.teacher_name}</option>
               ))}

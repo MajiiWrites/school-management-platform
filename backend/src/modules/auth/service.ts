@@ -231,7 +231,19 @@ export async function forgotPassword(db: Db, email: string): Promise<{ dev_token
   });
   const school = await db.school.findUnique({ where: { id: user.schoolId } });
   const mail = resetPasswordEmailBody(school?.name ?? 'School', token);
-  await sendMail({ to: normalized, ...mail });
+  // Round-3 fix: a stalled/failed SMTP send used to throw here and 500 the
+  // whole request — the live re-test saw "Sending…" for ~2 min, then
+  // "Internal server error", twice. This endpoint must never reveal whether
+  // the account exists OR whether mail was delivered, so a failed send is
+  // logged server-side (the Render log is the ops signal) and the caller
+  // still gets the standard success response. The stored token stays valid,
+  // so the user can request a fresh link once mail is back.
+  try {
+    await sendMail({ to: normalized, ...mail });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error(`[auth] forgot-password mail failed for ${normalized}: ${(err as Error).message}`);
+  }
   if (config.nodeEnv !== 'production') return { dev_token: token };
   return {};
 }
