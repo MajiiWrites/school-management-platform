@@ -31,6 +31,7 @@ const studentSchema = z.object({
   name_ur: z.string().max(120).optional().nullable(),
   roll_no: z.number().int().positive().optional().nullable(),
   parent_name: z.string().max(120).optional().nullable(),
+  parent_name_ur: z.string().max(120).optional().nullable(),
   parent_phone: z.string().optional().nullable(),
   parent_opt_out: z.boolean().optional(),
   // v2 extended profile (contracts/SCHEMA.md §1)
@@ -50,6 +51,7 @@ const studentPatchSchema = studentSchema.partial().extend({
 });
 const parentSchema = z.object({
   parent_name: z.string().max(120).optional().nullable(),
+  parent_name_ur: z.string().max(120).optional().nullable(),
   parent_phone: z.string().optional().nullable(),
   opt_out: z.boolean().optional(),
 });

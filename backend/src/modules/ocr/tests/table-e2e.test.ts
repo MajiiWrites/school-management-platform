@@ -11,7 +11,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseTableWords } from '../table.js';
 import { parseStudentList } from '../parser.js';
-import { runTesseractTsv, runTesseract } from '../ocr-engine.js';
+import { runTesseractTsv, runTesseract, preprocessImage } from '../ocr-engine.js';
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const IMAGE = path.join(DIR, 'fixtures', 'student-table-3col.jpg');
@@ -84,5 +84,64 @@ test('3-column table photo: table path recovers all 20 rows exactly', { skip: !h
   for (const row of res.rows) {
     assert.ok(!parentNames.has(row.name), `row named as a parent: ${row.name}`);
     assert.ok(!/Imran Khan|Tariq Malik|Zahid Hussain/.test(row.name));
+  }
+});
+
+// Urdu names: every row carries the transliterated Urdu student + parent
+// name (dictionary + letter fallback; Sana → ثناء is the documented
+// ambiguous choice — see transliterate.test.ts).
+const EXPECTED_URDU: Array<[string, string]> = [
+  ['احمد خان', 'عمران خان'],
+  ['عائشہ ملک', 'طارق ملک'],
+  ['بلال حسین', 'زاہد حسین'],
+  ['فاطمہ نور', 'نور محمد'],
+  ['حمزہ علی', 'علی رضا'],
+  ['حنا شاہ', 'ساجد شاہ'],
+  ['عثمان طارق', 'طارق محمود'],
+  ['ثناء اقبال', 'اقبال احمد'],
+  ['زین عباس', 'عباس رضا'],
+  ['مریم سعید', 'سعید انور'],
+  ['حسن رضا', 'رضا حسین'],
+  ['اقراء جاوید', 'جاوید اختر'],
+  ['عمر فاروق', 'فروگ احمد'], // OCR reads the parent as "Faroog Ahmed" (known misread) — transliteration follows what OCR read; the admin corrects it to فاروق احمد on review.
+  ['لائبہ صدیقی', 'صدیق خان'],
+  ['طلحہ محمود', 'محمود علی'],
+  ['نور فاطمہ', 'خالد محمود'],
+  ['دانیال بٹ', 'راشد بٹ'],
+  ['اریبہ خان', 'نوید خان'],
+  ['سعد قریشی', 'اسلم قریشی'],
+  ['ماہ نور اسلم', 'اسلم پرویز'],
+];
+
+test('3-column table photo: Urdu names are transliterated for all 20 rows', { skip: !hasTesseract }, async () => {
+  const words = await runTesseractTsv(IMAGE, 'eng', '11', 180_000);
+  const res = parseTableWords(words);
+  assert.equal(res.rows.length, 20);
+  for (let i = 0; i < EXPECTED_URDU.length; i++) {
+    const [ur, parentUr] = EXPECTED_URDU[i]!;
+    assert.equal(res.rows[i]!.name_ur, ur, `row ${i + 1} Urdu name`);
+    assert.equal(res.rows[i]!.parent_name_ur, parentUr, `row ${i + 1} Urdu parent`);
+  }
+});
+
+test('3-column table photo: 1000px downscaled fast path still recovers all 20 rows', { skip: !hasTesseract }, async () => {
+  const prep = await preprocessImage(IMAGE, { maxWidth: 1000 });
+  try {
+    const words = await runTesseractTsv(prep.path, 'eng', '11', 180_000, { preparedPath: prep.path });
+    const res = parseTableWords(words);
+    assert.equal(res.detected, true);
+    assert.equal(res.rows.length, 20, `expected 20 rows, got ${res.rows.length}`);
+    for (let i = 0; i < EXPECTED.length; i++) {
+      assert.equal(res.rows[i]!.name, EXPECTED[i]![0], `row ${i + 1} name`);
+      assert.equal(res.rows[i]!.parent_phone, EXPECTED[i]![2], `row ${i + 1} phone`);
+    }
+    // The fast path must also be a CLEAN read (min confidence high enough
+    // for the early-exit rule to skip the verification pass).
+    assert.ok(
+      res.rows.every((r) => r.confidence >= 0.85),
+      `min row confidence ${Math.min(...res.rows.map((r) => r.confidence))} must be >= 0.85`,
+    );
+  } finally {
+    await prep.cleanup();
   }
 });

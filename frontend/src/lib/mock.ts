@@ -156,7 +156,26 @@ export async function mockRequest<T>(path: string, method: string, body?: unknow
     return { id: `st-${Date.now()}`, class_id: seg[1], roll_no: b.roll_no ?? null, name: b.name ?? 'New Student', parent_name: b.parent_name ?? null, parent_phone: b.parent_phone ?? null, status: 'active', phone_flag: null } as T;
   }
   if (seg[0] === 'classes' && seg[2] === 'ocr-upload' && method === 'POST') {
-    return { upload_id: 'ocr-1', raw_text: '1 Ahmed Raza 03001234567\n2 Fatima Noor 03007654321', rows: STUDENTS.slice(0, 3).map((s) => ({ name: s.name, name_ur: s.name_ur, roll_no: s.roll_no, parent_phone: s.parent_phone ?? undefined, confidence: 0.93, duplicate: false })) } as T;
+    // Async flow: 202 immediately, the review page polls GET /ocr-uploads/:id.
+    return { upload_id: 'ocr-1', status: 'processing' } as T;
+  }
+  if (seg[0] === 'ocr-uploads' && method === 'GET') {
+    return {
+      upload_id: 'ocr-1',
+      status: 'review',
+      raw_text: '1 Ahmed Raza 03001234567\n2 Fatima Noor 03007654321',
+      rows: STUDENTS.slice(0, 3).map((s) => ({
+        name: s.name,
+        name_ur: s.name_ur,
+        roll_no: s.roll_no,
+        parent_name: s.parent_name,
+        parent_name_ur: s.parent_name === 'Muhammad Raza' ? 'محمد رضا' : s.parent_name === 'Abdul Noor' ? 'عبد النور' : null,
+        parent_phone: s.parent_phone ?? undefined,
+        confidence: 0.93,
+        duplicate: false,
+      })),
+      warnings: [],
+    } as T;
   }
   if (seg[0] === 'classes' && seg[3] === 'confirm' && method === 'POST') {
     return { saved: (body as { rows: unknown[] }).rows.length, skipped_duplicates: 0 } as T;

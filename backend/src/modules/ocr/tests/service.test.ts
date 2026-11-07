@@ -250,7 +250,12 @@ const TABLE_WORDS: OcrWord[] = [
   tw('Parents', 300, 10), tw('Name', 380, 10),
   tw('Parents', 600, 10), tw('Number', 680, 10),
   tw('Ahmed', 10, 50), tw('Khan', 80, 50),
-  tw('Imran', 300, 50), tw('Khan', 370, 50), tw('0300-1234501', 600, 50, 150),
+  // Row 1's phone word reads at conf 50 on purpose: the early-exit rule
+  // skips the verification pass when EVERY row is ≥85% confident, so at
+  // least one row here must stay low-confidence or the tests below that
+  // exercise the verification pass would silently stop running it (the
+  // dedicated early-exit test uses its own all-96 fixture instead).
+  tw('Imran', 300, 50), tw('Khan', 370, 50), tw('0300-1234501', 600, 50, 150, 24, 50),
   tw('Ayesha', 10, 90), tw('Malik', 80, 90),
   tw('Tariq', 300, 90), tw('Malik', 370, 90), tw('0301-2345602', 600, 90, 150),
 ];
@@ -340,4 +345,91 @@ test('uploadAndParse marks table rows unverified when the table verification pas
   assert.equal(res.rows.length, 2);
   assert.ok(res.rows.every((r) => r.verification === 'unverified'));
   assert.ok(res.warnings.some((w) => /Second verification pass did not run/.test(w)));
+});
+
+// ---- SPEED: early-exit + English-first text path ----
+
+test('uploadAndParse SKIPS the table verification pass on a clean high-confidence read', async () => {
+  const { db } = makeFakeDb();
+  const svc = new OcrService(db, {
+    // All words at conf 96 → every row ≥85% with phones → early-exit.
+    runTableOcr: async () => TABLE_WORDS.map((w) => ({ ...w, conf: 96 })),
+    runTableVerifyOcr: async () => {
+      throw new Error('verification pass must not run on a clean high-confidence read');
+    },
+    runOcr: async () => {
+      throw new Error('text path must not run when the table path succeeds');
+    },
+  });
+  const res = await svc.uploadAndParse('school-1', 'class-1', 'admin-1', '/tmp/x.png');
+  assert.equal(res.rows.length, 2);
+  assert.ok(res.rows.every((r) => r.verification === 'unverified'));
+  assert.ok(res.warnings.some((w) => /High-confidence read/.test(w)));
+  assert.ok(res.warnings.some((w) => /Table layout detected/.test(w)));
+});
+
+test('uploadAndParse SKIPS the Urdu pass for an English-only list', async () => {
+  const { db } = makeFakeDb();
+  let urdCalled = false;
+  const svc = new OcrService(db, {
+    runOcr: async () => ({
+      raw_text: '1. Ahmed Raza 0301-2345678\n2. Fatima Khan\n3. Bilal Ahmed',
+      engine: 'tesseract',
+      warnings: [],
+    }),
+    runUrdOcr: async () => {
+      urdCalled = true;
+      return { raw_text: '' };
+    },
+    runVerificationOcr: async () => ({ raw_text: '1. Ahmed Raza 0301-2345678\n2. Fatima Khan\n3. Bilal Ahmed' }),
+  });
+  const res = await svc.uploadAndParse('school-1', 'class-1', 'admin-1', '/tmp/x.png');
+  assert.equal(res.rows.length, 3);
+  assert.equal(urdCalled, false);
+});
+
+test('uploadAndParse RUNS the Urdu pass when the English pass leaves rows unparsed (mixed list)', async () => {
+  const { db } = makeFakeDb();
+  let urdCalled = false;
+  const svc = new OcrService(db, {
+    // English pass reads the Latin row; the Urdu rows come back as garbage.
+    runOcr: async () => ({
+      raw_text: '1. Ahmed Raza 0301-2345678\n2. xxx\n3. yyy',
+      engine: 'tesseract',
+      warnings: [],
+    }),
+    runUrdOcr: async () => {
+      urdCalled = true;
+      return { raw_text: '1. Ahmed Raza 0301-2345678\n2. احمد رضا 0301-1122334\n3. فاطمہ خان' };
+    },
+    runVerificationOcr: async () => ({ raw_text: '1. Ahmed Raza 0301-2345678' }),
+  });
+  const res = await svc.uploadAndParse('school-1', 'class-1', 'admin-1', '/tmp/x.png');
+  assert.equal(urdCalled, true);
+  assert.equal(res.rows.length, 3);
+  assert.equal(res.rows[1].name_ur, 'احمد رضا');
+  assert.equal(res.rows[2].name, 'فاطمہ خان');
+});
+
+test('uploadAndParse transliterates Latin names to Urdu (table path)', async () => {
+  const { db } = makeFakeDb();
+  const svc = new OcrService(db, {
+    runTableOcr: async () => TABLE_WORDS,
+    runTableVerifyOcr: async () => TABLE_WORDS,
+  });
+  const res = await svc.uploadAndParse('school-1', 'class-1', 'admin-1', '/tmp/x.png');
+  assert.equal(res.rows[0].name_ur, 'احمد خان');
+  assert.equal(res.rows[0].parent_name_ur, 'عمران خان');
+  assert.equal(res.rows[1].name_ur, 'عائشہ ملک');
+  assert.equal(res.rows[1].parent_name_ur, 'طارق ملک');
+});
+
+test('confirmRows passes parent_name_ur through to the student', async () => {
+  const { db, created } = makeFakeDb();
+  const svc = new OcrService(db, {});
+  const up = await db.createUpload({ school_id: 'school-1', class_id: 'class-1', file_path: '/tmp/x.png' });
+  await svc.confirmRows('school-1', 'class-1', up.id, 'admin-1', [
+    { name: 'Ali', roll_no: 1, parent_name: 'Ahmed', parent_name_ur: 'احمد', parent_phone: '-' },
+  ]);
+  assert.equal((created[0] as { parent_name_ur: string }).parent_name_ur, 'احمد');
 });

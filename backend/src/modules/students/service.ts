@@ -11,6 +11,7 @@ export interface StudentInput {
   name_ur?: string | null;
   roll_no?: number | null;
   parent_name?: string | null;
+  parent_name_ur?: string | null;
   parent_phone?: string | null;
   parent_opt_out?: boolean;
   // v2 extended profile (contracts/SCHEMA.md §1)
@@ -70,6 +71,7 @@ export function toPublicStudent(s: any): Record<string, unknown> {
     name: s.name,
     name_ur: s.nameUr ?? null,
     parent_name: s.parentName ?? null,
+    parent_name_ur: s.parentNameUr ?? null,
     parent_phone: parentMasked,
     parent_phone_masked: parentMasked,
     parent_has_phone: Boolean(s.parentPhoneEnc),
@@ -233,6 +235,7 @@ export async function createStudent(db: Db, schoolId: string, classId: string, i
         nameUr: input.name_ur?.trim() || null,
         rollNo: input.roll_no ?? null,
         parentName: input.parent_name?.trim() || null,
+        parentNameUr: input.parent_name_ur?.trim() || null,
         parentPhoneEnc: phone.enc,
         parentPhoneHash: phone.hash,
         parentOptOut: input.parent_opt_out ?? false,
@@ -388,6 +391,7 @@ export async function updateStudent(db: Db, schoolId: string, id: string, patch:
   if (patch.name_ur !== undefined) data.nameUr = patch.name_ur?.trim() || null;
   if (patch.roll_no !== undefined) data.rollNo = patch.roll_no ?? null;
   if (patch.parent_name !== undefined) data.parentName = patch.parent_name?.trim() || null;
+  if (patch.parent_name_ur !== undefined) data.parentNameUr = patch.parent_name_ur?.trim() || null;
   if (patch.parent_opt_out !== undefined) data.parentOptOut = patch.parent_opt_out;
   if (patch.status !== undefined) {
     if (!['active', 'left', 'struck_off', 'graduated'].includes(patch.status)) throw ApiError.validation('Invalid status');
@@ -541,12 +545,13 @@ export async function updateParent(
   db: Db,
   schoolId: string,
   id: string,
-  input: { parent_name?: string | null; parent_phone?: string | null; opt_out?: boolean },
+  input: { parent_name?: string | null; parent_name_ur?: string | null; parent_phone?: string | null; opt_out?: boolean },
   actorId?: string,
 ): Promise<any> {
   const existing = await getStudent(db, schoolId, id);
   const data: Record<string, unknown> = {};
   if (input.parent_name !== undefined) data.parentName = input.parent_name?.trim() || null;
+  if (input.parent_name_ur !== undefined) data.parentNameUr = input.parent_name_ur?.trim() || null;
   if (input.opt_out !== undefined) data.parentOptOut = input.opt_out;
   if (input.parent_phone !== undefined) {
     const phone = parentPhoneFields(input.parent_phone);

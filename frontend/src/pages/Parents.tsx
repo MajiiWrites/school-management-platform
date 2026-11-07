@@ -171,7 +171,9 @@ export default function ParentsPage() {
                 <tr key={s.id} className="hover:bg-slate-50">
                   <td className="px-4 py-2.5 font-medium text-slate-900">{s.name}</td>
                   <td className="px-4 py-2.5">{s.class_name ?? '—'}</td>
-                  <td className="px-4 py-2.5">{s.parent_name ?? '—'}</td>
+                  <td className="px-4 py-2.5">{s.parent_name ?? '—'}
+                    {s.parent_name_ur ? <span className="urdu ml-2 text-slate-500">{s.parent_name_ur}</span> : null}
+                  </td>
                   <td className="px-4 py-2.5 font-mono text-xs">{s.parent_phone ?? '—'}</td>
                   <td className="px-4 py-2.5">
                     <Badge tone={flag === 'missing' ? 'red' : 'amber'}>{flagLabel[flag]}</Badge>

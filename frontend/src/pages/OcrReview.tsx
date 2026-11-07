@@ -34,6 +34,16 @@ export default function OcrReviewPage() {
   const [showRaw, setShowRaw] = useState(false);
   const [confirmingSave, setConfirmingSave] = useState(false);
   const [pendingRemoveRow, setPendingRemoveRow] = useState<number | null>(null);
+  // Live progress while an upload runs: the server returns 202 immediately
+  // and processes in the background, so the page polls the upload status
+  // (reading → verifying → review) instead of showing a dead spinner.
+  const [stage, setStage] = useState<'uploading' | 'reading' | 'verifying' | null>(null);
+  const [elapsed, setElapsed] = useState(0);
+  // Stops the poll loop if the admin navigates away mid-upload.
+  const pollCancelled = useRef(false);
+  useEffect(() => () => {
+    pollCancelled.current = true;
+  }, []);
   const galleryRef = useRef<HTMLInputElement>(null);
   const cameraRef = useRef<HTMLInputElement>(null);
   const { push, view } = useToast();
@@ -65,10 +75,55 @@ export default function OcrReviewPage() {
     if (!classId) return;
     setUploading(true);
     setError('');
+    setStage('uploading');
+    setElapsed(0);
+    const started = Date.now();
+    const timer = window.setInterval(() => setElapsed(Math.floor((Date.now() - started) / 1000)), 1000);
     try {
       const form = new FormData();
       form.append('image', file);
-      const data = await api<OcrUpload>(`/classes/${classId}/ocr-upload`, { method: 'POST', body: form });
+      // 202 immediately — the server reads the list in the background.
+      const startedRes = await api<{ upload_id: string; status: string }>(`/classes/${classId}/ocr-upload`, {
+        method: 'POST',
+        body: form,
+      });
+      const uploadId = startedRes.upload_id;
+      // Poll the upload status until the review is ready (or it fails).
+      // 5-minute ceiling: on the free tier a cold server + a long list can
+      // take a couple of minutes; the row stays 'processing' server-side
+      // if we give up, so the admin can simply upload again.
+      const deadline = Date.now() + 300_000;
+      let data: OcrUpload | null = null;
+      let consecutiveErrors = 0;
+      while (Date.now() < deadline) {
+        if (pollCancelled.current) return; // navigated away — stop polling silently
+        let current: OcrUpload;
+        try {
+          current = await api<OcrUpload>(`/ocr-uploads/${uploadId}`);
+          consecutiveErrors = 0;
+        } catch {
+          // Transient network blip on a phone connection: retry the poll
+          // a few times before giving up (the server keeps processing).
+          consecutiveErrors++;
+          if (consecutiveErrors >= 3) {
+            throw new Error('Lost connection while reading — check your network and upload the photo again.');
+          }
+          await new Promise((r) => setTimeout(r, 2000));
+          continue;
+        }
+        if (current.status === 'review') {
+          data = current;
+          break;
+        }
+        if (current.status === 'failed') {
+          throw new Error('Reading failed on the server — try a clearer, well-lit photo.');
+        }
+        setStage(current.status === 'verifying' ? 'verifying' : 'reading');
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+      if (!data) {
+        throw new Error('Reading is taking too long — the server may still be working. Wait a minute and upload the photo again.');
+      }
       setUpload(data);
       setRows(data.rows);
       void loadImage(data.upload_id);
@@ -76,7 +131,9 @@ export default function OcrReviewPage() {
     } catch (e) {
       setError(errText(e));
     } finally {
+      window.clearInterval(timer);
       setUploading(false);
+      setStage(null);
     }
   };
 
@@ -177,7 +234,7 @@ export default function OcrReviewPage() {
           </p>
           <div className="mt-4 flex flex-wrap justify-center gap-2">
             <Button disabled={uploading} onClick={() => galleryRef.current?.click()}>
-              {uploading ? 'Reading image…' : '📁 Upload from Gallery / Files'}
+              {uploading ? 'Working…' : '📁 Upload from Gallery / Files'}
             </Button>
             <Button disabled={uploading} variant="secondary" onClick={() => cameraRef.current?.click()}>
               📷 Take a Photo
@@ -209,7 +266,38 @@ export default function OcrReviewPage() {
           <p className="mt-3 text-xs text-slate-400">
             On phones, “Take a Photo” opens the camera directly; on a computer it opens the file picker — both go through the same check.
           </p>
-          {uploading && <Spinner label="Extracting names — this can take a few seconds…" />}
+          {uploading && (
+            <div className="mx-auto mt-4 max-w-sm space-y-2 text-left">
+              <Spinner
+                label={
+                  stage === 'verifying'
+                    ? 'Verifying names against a second read…'
+                    : stage === 'reading'
+                      ? 'Reading your list…'
+                      : 'Uploading photo…'
+                }
+              />
+              <div className="flex items-center gap-1" aria-label="Upload progress">
+                {(['Upload', 'Reading', 'Verifying', 'Review'] as const).map((label, i) => {
+                  const step = i + 1;
+                  const current = stage === 'uploading' ? 1 : stage === 'reading' ? 2 : stage === 'verifying' ? 3 : 1;
+                  const done = step < current;
+                  const active = step === current;
+                  return (
+                    <div key={label} className="flex flex-1 flex-col items-center gap-1">
+                      <div
+                        className={`h-2 w-full rounded-full ${done ? 'bg-brand-600' : active ? 'bg-brand-400' : 'bg-slate-200'}`}
+                      />
+                      <span className={`text-[10px] ${active ? 'font-semibold text-brand-700' : 'text-slate-400'}`}>{label}</span>
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="text-center text-xs text-slate-400">
+                {elapsed}s elapsed — lists with many students take longer on the first upload while the server wakes up.
+              </p>
+            </div>
+          )}
         </Card>
       )}
 
@@ -286,6 +374,14 @@ export default function OcrReviewPage() {
                           onChange={(e) => updateRow(i, { parent_name: e.target.value || null })}
                           placeholder="Parent name"
                           title="Father/guardian name as written on the list (from an “s/o …” tail or the Parents Name column) — saved as the parent name, not part of the student's name."
+                          autoComplete="off" />
+                        <input
+                          className={`urdu mt-1 w-full rounded border px-2 py-1 text-sm ${lowConf ? 'border-red-400 bg-red-50' : 'border-slate-300'}`}
+                          dir="rtl"
+                          value={r.parent_name_ur ?? ''}
+                          onChange={(e) => updateRow(i, { parent_name_ur: e.target.value || null })}
+                          placeholder="والد کا نام"
+                          title="Parent name in Urdu script (filled in automatically from the English name) — fix the spelling here if it is off."
                           autoComplete="off" />
                       </td>
                       <td className="px-3 py-2">

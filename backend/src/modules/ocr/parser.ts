@@ -8,6 +8,7 @@
 //   "3. احمد رضا 0322-7654321"
 //   "Roll No 4, Bilal Ahmed, 0333 1112223"
 import { normalizePkPhone, normalizeName } from './phone.js';
+import { transliterateName } from './transliterate.js';
 
 export interface ExistingStudent {
   id?: string;
@@ -25,6 +26,9 @@ export interface ParsedRow {
   /** Father/guardian name when the list writes it as "Ali s/o Ahmed" — the
    * tail is the PARENT's name, never part of the student's name. */
   parent_name: string | null;
+  /** Urdu-script parent name: transliterated from parent_name (same
+   * dictionary + fallback as name_ur), editable on the review screen. */
+  parent_name_ur: string | null;
   confidence: number; // 0..1
   /** Second verification pass (different psm): 'match' = the name was also
    * read by the verification pass; 'mismatch' = it was not (check it);
@@ -135,6 +139,13 @@ export function parseLine(line: string): Omit<ParsedRow, 'duplicate' | 'duplicat
   }
   if (!name) return null;
 
+  // Urdu-script names: prefer the Urdu name the OCR pass actually read;
+  // otherwise transliterate the Latin name (dictionary + letter fallback).
+  // Transliteration is a best guess — the review screen lets the admin fix
+  // it before anything is saved.
+  const urduName = name_ur ?? transliterateName(name);
+  const parentNameUr = parent_name ? transliterateName(parent_name) : null;
+
   // Confidence heuristic: start at 0.5; roll +0.2, phone +0.15, multi-word name +0.1,
   // Urdu name present +0.05; single short token -0.15. Clamped to [0.3, 0.98].
   let conf = 0.5;
@@ -147,11 +158,12 @@ export function parseLine(line: string): Omit<ParsedRow, 'duplicate' | 'duplicat
 
   return {
     name,
-    name_ur: name_ur ?? null,
+    name_ur: urduName,
     roll_no,
     parent_phone: parent_phone ?? null,
     parent_phone_masked: parent_phone ? maskOf(parent_phone) : null,
     parent_name: parent_name ?? null,
+    parent_name_ur: parentNameUr,
     confidence: Math.round(conf * 100) / 100,
   };
 }

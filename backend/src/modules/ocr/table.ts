@@ -18,6 +18,7 @@
 import type { OcrWord } from './ocr-engine.js';
 import { extractPhone, type ExistingStudent, type ParsedRow } from './parser.js';
 import { normalizeName, normalizePkPhone } from './phone.js';
+import { transliterateName } from './transliterate.js';
 
 export interface TableParseResult {
   /** True when a real table (≥2 columns, ≥2 data rows) was found. */
@@ -322,11 +323,14 @@ export function parseTableWords(words: OcrWord[], existing: ExistingStudent[] = 
     const rowCells = cells;
     parsed.push({
       name,
-      name_ur: null,
+      // Table passes read English only, so the Urdu name is always the
+      // transliteration (dictionary + fallback) — editable on review.
+      name_ur: transliterateName(name),
       roll_no,
       parent_phone: parent_phone ?? null,
       parent_phone_masked: parent_phone ? maskOf(parent_phone) : null,
       parent_name: parentName || null,
+      parent_name_ur: parentName ? transliterateName(parentName) : null,
       confidence: confidenceOf(rowCells),
     });
   }
@@ -397,11 +401,15 @@ export function parseTableTextLines(rawText: string, existing: ExistingStudent[]
     const parent_phone = phoneRaw ? normalizePkPhone(phoneRaw) : null;
     rows.push({
       name,
-      name_ur: null,
+      // Re-derived deterministically from the Latin name — the stored pipe
+      // format carries no Urdu, and transliteration is deterministic, so a
+      // re-opened review shows the same Urdu names as the first one.
+      name_ur: transliterateName(name),
       roll_no: null,
       parent_phone: parent_phone ?? null,
       parent_phone_masked: parent_phone ? maskOf(parent_phone) : null,
       parent_name: parentName,
+      parent_name_ur: parentName ? transliterateName(parentName) : null,
       confidence: 0.9,
     });
   }

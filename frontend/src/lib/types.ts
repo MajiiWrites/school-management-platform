@@ -95,6 +95,7 @@ export interface Student {
   name: string;
   name_ur?: string | null;
   parent_name?: string | null;
+  parent_name_ur?: string | null;
   parent_phone?: string | null; // masked in responses
   parent_phone_masked?: string | null;
   parent_has_phone?: boolean;
@@ -158,6 +159,8 @@ export interface OcrRow {
   roll_no?: number | null;
   /** Parent name: from an "s/o ..." tail, or the Parents Name column of a table photo. */
   parent_name?: string | null;
+  /** Parent name in Urdu script (transliterated, editable on review). */
+  parent_name_ur?: string | null;
   parent_phone?: string;
   confidence: number;
   /** Second verification pass (different psm): 'match' | 'mismatch' | 'unverified'. */
@@ -174,6 +177,8 @@ export interface OcrUpload {
   warnings?: string[];
   /** Authenticated image endpoint for the zoomable review view. */
   image_url?: string;
+  /** Live stage while an upload runs ('processing' | 'reading' | 'verifying' | 'review' | 'failed'). */
+  status?: string;
 }
 
 export interface TeacherLinkData {

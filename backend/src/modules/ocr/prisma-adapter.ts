@@ -27,6 +27,7 @@ export interface PrismaLike {
         nameUr: string | null;
         rollNo: number | null;
         parentName: string | null;
+        parentNameUr: string | null;
         parentPhoneEnc: string | null;
         parentPhoneHash: string | null;
       }[];
@@ -42,8 +43,9 @@ export interface PrismaLike {
       filePath: string;
       status: string;
       rawText: string | null;
+      resultJson: string | null;
     } | null>;
-    update(args: { where: { id: string }; data: { status?: string; rawText?: string } }): Promise<unknown>;
+    update(args: { where: { id: string }; data: { status?: string; rawText?: string; resultJson?: string } }): Promise<unknown>;
   };
   auditLog: {
     create(args: { data: { schoolId: string; actorId: string | null; actorType: string; action: string; entity: string; entityId: string | null; details: object } }): Promise<unknown>;
@@ -57,6 +59,7 @@ function toUploadRecord(r: {
   filePath: string;
   status: string;
   rawText: string | null;
+  resultJson: string | null;
 }): UploadRecord {
   return {
     id: r.id,
@@ -65,6 +68,7 @@ function toUploadRecord(r: {
     file_path: r.filePath,
     status: r.status as UploadRecord['status'],
     raw_text: r.rawText,
+    result_json: r.resultJson,
   };
 }
 
@@ -104,9 +108,10 @@ export function prismaOcrDb(prisma: PrismaLike): OcrDb {
         err.status = 404; err.code = 'NOT_FOUND';
         throw err;
       }
-      const updateData: { status?: string; rawText?: string } = {};
+      const updateData: { status?: string; rawText?: string; resultJson?: string } = {};
       if (data.status !== undefined) updateData.status = data.status;
       if (data.raw_text !== undefined) updateData.rawText = data.raw_text;
+      if (data.result_json !== undefined) updateData.resultJson = data.result_json;
       await prisma.ocrUpload.update({ where: { id: uploadId }, data: updateData });
     },
     async createStudents(schoolId, classId, rows) {
@@ -118,6 +123,7 @@ export function prismaOcrDb(prisma: PrismaLike): OcrDb {
           nameUr: r.name_ur,
           rollNo: r.roll_no,
           parentName: r.parent_name ?? null,
+          parentNameUr: r.parent_name_ur ?? null,
           parentPhoneEnc: r.parent_phone_enc,
           parentPhoneHash: r.parent_phone_hash,
         })),

@@ -97,7 +97,13 @@ export function createOcrRouter(deps: OcrRouterDeps): Router {
     fail(res, 500, 'INTERNAL', 'Unexpected server error while processing the OCR upload.');
   };
 
-  // POST /classes/:id/ocr-upload — multipart image -> {upload_id, raw_text, rows}
+  // POST /classes/:id/ocr-upload — multipart image -> 202 {upload_id, status}
+  // OCR runs in the background (one upload at a time per process — see
+  // OcrService.processUpload); the review page polls GET /ocr-uploads/:id
+  // until status is 'review' (rows + warnings) or 'failed'. The old
+  // blocking POST held the request open for the whole OCR run (minutes on
+  // the free tier) with a dead spinner; the staged statuses now drive a
+  // real progress display (uploading → reading → verifying → review).
   router.post(
     '/classes/:id/ocr-upload',
     deps.auth,
@@ -108,8 +114,19 @@ export function createOcrRouter(deps: OcrRouterDeps): Router {
         if (!schoolId) return fail(res, 401, 'UNAUTHORIZED', 'Missing tenant context.');
         const file = (req as Request & { file?: Express.Multer.File }).file;
         if (!file) return fail(res, 400, 'VALIDATION', 'No image uploaded. Send a multipart field named "image".');
-        const result = await service.uploadAndParse(schoolId, param(req, 'id'), req.user?.sub ?? null, file.path);
-        return ok(res, result, 201);
+        const { upload_id } = await service.beginUpload(
+          schoolId,
+          param(req, 'id'),
+          req.user?.sub ?? null,
+          file.path,
+        );
+        // Background OCR: never awaited here. processUpload marks the
+        // upload 'review' (or 'failed') itself; the .catch is only a
+        // safety net against an unhandled rejection.
+        void service
+          .processUpload(schoolId, param(req, 'id'), req.user?.sub ?? null, upload_id, file.path)
+          .catch(() => undefined);
+        return ok(res, { upload_id, status: 'processing' }, 202);
       } catch (err) {
         return handleError(err, res);
       }

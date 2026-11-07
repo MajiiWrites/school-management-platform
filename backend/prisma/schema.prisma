@@ -182,6 +182,7 @@ model Student {
   name             String
   nameUr           String?
   parentName       String?
+  parentNameUr     String? // Urdu-script parent name (OCR transliteration, editable on review)
   parentPhoneEnc   String?
   parentPhoneHash  String?
   parentOptOut     Boolean   @default(false)
@@ -500,6 +501,7 @@ model OcrUpload {
   filePath  String
   status    String
   rawText   String?
+  resultJson String? // finished OCR result {rows, warnings, engine} — review re-opens show it as-is
   createdAt DateTime @default(now()) @db.Timestamptz(6)
 
   @@map("ocr_uploads")

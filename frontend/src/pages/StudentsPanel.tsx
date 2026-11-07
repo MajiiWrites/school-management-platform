@@ -145,7 +145,8 @@ export default function StudentsPanel({
         (s.father_name ?? '').toLowerCase().includes(q) ||
         (s.admission_no ?? '').toLowerCase().includes(q) ||
         String(s.roll_no ?? '').includes(q) ||
-        (s.parent_name ?? '').toLowerCase().includes(q)
+        (s.parent_name ?? '').toLowerCase().includes(q) ||
+        (s.parent_name_ur ?? '').toLowerCase().includes(q)
       );
     });
   }, [students, search, flagFilter, serverPaged]);
@@ -342,6 +343,7 @@ export default function StudentsPanel({
                   <td className="px-4 py-2.5">{statusBadge(s) ?? <span className="text-xs text-slate-400">Active</span>}</td>
                   <td className="px-4 py-2.5">
                     {s.parent_name ? <HighlightedText text={s.parent_name} query={search} /> : '—'}
+                    {s.parent_name_ur ? <span className="urdu ml-2 text-slate-500">{s.parent_name_ur}</span> : null}
                     {s.father_name && s.father_name !== s.parent_name ? (
                       <span className="block text-xs text-slate-500">
                         Father: <HighlightedText text={s.father_name} query={search} />
@@ -554,6 +556,7 @@ function StudentForm({
   const [nameUr, setNameUr] = useState(initial?.name_ur ?? '');
   const [rollNo, setRollNo] = useState(initial?.roll_no ? String(initial.roll_no) : '');
   const [parentName, setParentName] = useState(initial?.parent_name ?? '');
+  const [parentNameUr, setParentNameUr] = useState(initial?.parent_name_ur ?? '');
   const [parentPhone, setParentPhone] = useState(initial?.parent_phone_masked ?? initial?.parent_phone ?? '');
   const [optOut, setOptOut] = useState(initial?.parent_opt_out ?? false);
   // 6B extended profile fields.
@@ -600,6 +603,7 @@ function StudentForm({
         name_ur: nameUr.trim() || undefined,
         roll_no: rollNo ? Number(rollNo) : undefined,
         parent_name: parentName.trim() || undefined,
+        parent_name_ur: parentNameUr.trim() || undefined,
         // Masked numbers are "unchanged" — never send them back.
         parent_phone: parentPhone.trim() && !isMaskedPhone(parentPhone.trim()) ? parentPhone.trim() : undefined,
         parent_opt_out: optOut,
@@ -674,6 +678,9 @@ function StudentForm({
         </Field>
         <Field label="Parent / guardian name">
           <input className={inputCls} value={parentName} onChange={(e) => setParentName(e.target.value)} placeholder="e.g. Muhammad Raza" autoComplete="off" />
+        </Field>
+        <Field label="Parent name in Urdu (optional)">
+          <input className={`${inputCls} urdu`} dir="rtl" value={parentNameUr} onChange={(e) => setParentNameUr(e.target.value)} placeholder="والد کا نام" autoComplete="off" />
         </Field>
         <Field label="Parent phone" hint="Pakistan mobile — 0300…, +92…, or 92…. Masked numbers are left unchanged.">
           <input className={inputCls} type="tel" value={parentPhone} onChange={(e) => setParentPhone(e.target.value)} placeholder="03001234567" autoComplete="off" />

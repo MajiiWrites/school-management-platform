@@ -87,10 +87,15 @@ export function mergeDualPass(engText: string, urdText: string): string {
   return out.join('\n');
 }
 
+/** Cached: the installed Tesseract languages never change while the process runs. */
+let cachedLangs: string[] | null = null;
+
 async function tesseractLangs(): Promise<string[]> {
+  if (cachedLangs !== null) return cachedLangs;
   try {
     const { stdout } = await execFileAsync('tesseract', ['--list-langs'], { timeout: 10_000 });
-    return stdout.split('\n').map((l) => l.trim()).filter(Boolean);
+    cachedLangs = stdout.split('\n').map((l) => l.trim()).filter(Boolean);
+    return cachedLangs;
   } catch {
     return [];
   }
@@ -191,12 +196,25 @@ export interface PreprocessResult {
 
 /**
  * Preprocess an uploaded photo for OCR with sharp:
- * EXIF auto-rotate, OSD-based orientation correction (deskew for 90° steps),
- * grayscale + contrast normalisation, width capped at 3000px.
+ * EXIF auto-rotate, downscale, OSD-based orientation correction (deskew
+ * for 90° steps), grayscale + contrast normalisation.
  * NEVER throws and NEVER fails the upload: on any error the original file
  * is returned with skipped: true and OCR runs on it unmodified.
+ *
+ * SPEED: the image is downscaled FIRST (default cap 3000px, the student
+ * list path passes 1000px — measured on the real 20-row table photo:
+ * 1000px reads 20/20 rows in ~2.0s at HIGHER confidence than 1600px
+ * ~3.6s, while 800px drops to 18/20) and OSD runs on the downscaled
+ * image, so every pass after this one reuses the same prepared file
+ * instead of paying for sharp + OSD again. Callers that need full
+ * resolution (timetable/result-sheet photos with small print) keep the
+ * 3000px default — only the student-list path opts into 1000px.
  */
-export async function preprocessImage(filePath: string): Promise<PreprocessResult> {
+export async function preprocessImage(
+  filePath: string,
+  opts: { maxWidth?: number } = {},
+): Promise<PreprocessResult> {
+  const maxWidth = opts.maxWidth ?? 3000;
   const noop = async (): Promise<void> => {};
   try {
     const tmpFiles: string[] = [];
@@ -210,8 +228,14 @@ export async function preprocessImage(filePath: string): Promise<PreprocessResul
       }
     };
     const applied: string[] = [];
-    // 1. EXIF auto-rotate (sharp .rotate() reads the Orientation tag).
-    let buf = await sharp(filePath).rotate().toBuffer();
+    // 1. EXIF auto-rotate (sharp .rotate() reads the Orientation tag) +
+    // downscale first: fewer pixels for every later step (OSD + OCR).
+    const meta = await sharp(filePath).metadata();
+    if (meta.width && meta.width > maxWidth) applied.push(`downscale:${maxWidth}`);
+    let buf = await sharp(filePath)
+      .rotate()
+      .resize({ width: maxWidth, withoutEnlargement: true })
+      .toBuffer();
     try {
       const raw = await readFile(filePath);
       const o = readJpegOrientation(raw);
@@ -219,8 +243,9 @@ export async function preprocessImage(filePath: string): Promise<PreprocessResul
     } catch {
       /* orientation read is best-effort */
     }
-    // 2. OSD orientation correction (deskew): write the rotated image to a
-    // temp file, ask Tesseract OSD for its orientation, rotate back if needed.
+    // 2. OSD orientation correction (deskew): runs on the DOWNSCALED
+    // image — orientation detection only needs coarse geometry, and the
+    // full-res OSD pass cost ~0.9s on a 1600px photo.
     const tmp1 = join(tmpdir(), `smp-ocr-${randomUUID()}.png`);
     await writeFile(tmp1, buf);
     tmpFiles.push(tmp1);
@@ -232,9 +257,9 @@ export async function preprocessImage(filePath: string): Promise<PreprocessResul
         applied.push(`osd-deskew:${osd.degrees}`);
       }
     }
-    // 3. Grayscale + contrast stretch + width cap, as PNG for Tesseract.
+    // 3. Grayscale + contrast stretch, as PNG for Tesseract.
     const out = join(tmpdir(), `smp-ocr-${randomUUID()}.png`);
-    await sharp(buf).resize({ width: 3000, withoutEnlargement: true }).greyscale().normalise().png().toFile(out);
+    await sharp(buf).greyscale().normalise().png().toFile(out);
     tmpFiles.push(out);
     applied.push('grayscale', 'contrast');
     return { path: out, applied, skipped: false, cleanup };
@@ -271,13 +296,22 @@ export async function inspectImage(filePath: string): Promise<string[]> {
   return warnings;
 }
 
-/** Run Tesseract TSV output: one row per word, with bounding boxes + confidence. Preprocesses the image first (rotate/deskew/contrast). */
+/**
+ * Run Tesseract TSV output: one row per word, with bounding boxes + confidence.
+ * Preprocesses the image first (rotate/deskew/contrast) — UNLESS the caller
+ * passes opts.preparedPath (an already-prepared file from preprocessImage),
+ * in which case preprocessing is skipped and the caller owns cleanup.
+ * Sharing one prepared file across passes is what makes multi-pass uploads
+ * fast: preprocessing (sharp + an OSD Tesseract run) used to repeat per pass.
+ */
 export async function runTesseractTsv(
   filePath: string,
   langs = 'eng+urd',
   psm = '6',
   timeoutMs = 180_000,
+  opts: { preparedPath?: string } = {},
 ): Promise<OcrWord[]> {
+  if (opts.preparedPath) return runTesseractTsvOnFile(opts.preparedPath, langs, psm, timeoutMs);
   const prep = await preprocessImage(filePath);
   try {
     return await runTesseractTsvOnFile(prep.path, langs, psm, timeoutMs);
@@ -333,13 +367,27 @@ async function runTesseractTsvOnFile(
   return words;
 }
 
-/** Run Tesseract CLI on an image file. `langs` e.g. "eng+urd". Preprocesses the image first (rotate/deskew/contrast); falls back to the original on any preprocessing failure. */
+/**
+ * Run Tesseract CLI on an image file. `langs` e.g. "eng+urd".
+ * Preprocesses the image first (rotate/deskew/contrast); falls back to the
+ * original on any preprocessing failure. Pass opts.preparedPath to run on
+ * an already-prepared file instead (see runTesseractTsv).
+ */
 export async function runTesseract(
   filePath: string,
   langs = 'eng+urd',
   timeoutMs = 180_000,
   psm = '6',
+  opts: { preparedPath?: string } = {},
 ): Promise<OcrResult> {
+  if (opts.preparedPath) {
+    return runTesseractOnFile(opts.preparedPath, langs, timeoutMs, psm, {
+      path: opts.preparedPath,
+      applied: [],
+      skipped: false,
+      cleanup: async () => {},
+    });
+  }
   const prep = await preprocessImage(filePath);
   try {
     return await runTesseractOnFile(prep.path, langs, timeoutMs, psm, prep);
@@ -442,12 +490,14 @@ export async function runAiVision(filePath: string): Promise<OcrResult> {
 /** Dispatch to the configured provider. Default: tesseract. */
 export async function runOcr(
   filePath: string,
-  opts: { provider?: string; langs?: string; timeoutMs?: number } = {},
+  opts: { provider?: string; langs?: string; timeoutMs?: number; preparedPath?: string } = {},
 ): Promise<OcrResult> {
   const provider = opts.provider ?? process.env.OCR_PROVIDER ?? 'tesseract';
   if (provider === 'ai-vision') return runAiVision(filePath);
   if (provider === 'tesseract') {
-    return runTesseract(filePath, opts.langs ?? process.env.OCR_LANGS ?? 'eng+urd', opts.timeoutMs);
+    return runTesseract(filePath, opts.langs ?? process.env.OCR_LANGS ?? 'eng+urd', opts.timeoutMs, '6', {
+      preparedPath: opts.preparedPath,
+    });
   }
   throw new OcrUnavailableError(
     `Unknown OCR provider "${provider}".`,
