@@ -3,7 +3,10 @@
 // publish-SMS drafts. All writes go through ConfirmDialog; nothing is
 // saved until the admin confirms the review table.
 import { useEffect, useRef, useState } from 'react';
-import { api, apiDownload, getAccessToken, ApiClientError, API_BASE } from '../lib/api';
+import { api, apiDownload, getAccessToken, ApiClientError, API_BASE, isAbortError } from '../lib/api';
+import { LIVE_SEARCH_DEBOUNCE_MS } from '../lib/search';
+import { useDebouncedValue } from '../lib/useDebouncedValue';
+import LiveSearchInput, { HighlightedText } from '../components/LiveSearchInput';
 import type { ClassItem, ExamItem, ExamType, PageResult, ResultRow, ResultSheetReviewRow, Student } from '../lib/types';
 import { EXAM_TYPE_LABELS } from '../lib/types';
 import { displayClass } from '../lib/utils';
@@ -185,9 +188,17 @@ export default function ResultsPage() {
   const [page, setPage] = useState(1);
   const [pages, setPages] = useState(1);
   const [search, setSearch] = useState('');
-  const [debouncedSearch, setDebouncedSearch] = useState('');
+  // Search-reload fix: shared ~200 ms debounce (was a local 300 ms one)
+  // and the table is NEVER swapped for a spinner on a refetch — the old
+  // code did exactly that on every debounced keystroke. `hasLoaded` is
+  // true once the first list has arrived; before that the spinner is
+  // correct, after that the current rows stay rendered and only the small
+  // spinner inside the search field shows while new results are in flight.
+  const debouncedSearch = useDebouncedValue(search, LIVE_SEARCH_DEBOUNCE_MS);
   const [loading, setLoading] = useState(true);
   const [listLoading, setListLoading] = useState(false);
+  const [hasLoaded, setHasLoaded] = useState(false);
+  const resultsAbort = useRef<AbortController | null>(null);
   const [error, setError] = useState('');
   const [students, setStudents] = useState<Student[]>([]);
   // Upload + review
@@ -271,13 +282,18 @@ export default function ResultsPage() {
   // stayed disabled until a manual reload.
   const loadResults = async (clsId: string = classId, exId: string = examId) => {
     if (!clsId) return;
+    // Cancel the previous (now outdated) search request before firing
+    // the new one — its late reply must never reach setResults.
+    resultsAbort.current?.abort();
+    const controller = new AbortController();
+    resultsAbort.current = controller;
     setListLoading(true);
     try {
       const q = new URLSearchParams({ class_id: clsId, page: String(page), limit: '50' });
       if (exId) q.set('exam_id', exId);
       if (examTypeFilter) q.set('exam_type', examTypeFilter);
       if (debouncedSearch.trim()) q.set('search', debouncedSearch.trim());
-      const d = await api<PageResult<ResultRow>>(`/results?${q.toString()}`);
+      const d = await api<PageResult<ResultRow>>(`/results?${q.toString()}`, { signal: controller.signal });
       setResults(d.items);
       setTotal(d.total);
       setPages(d.pages);
@@ -299,22 +315,23 @@ export default function ResultsPage() {
         setSummary(null);
       }
     } catch (e) {
+      if (isAbortError(e)) return; // superseded by a newer keystroke
       setError(errText(e));
     } finally {
-      setListLoading(false);
+      if (resultsAbort.current === controller) {
+        setListLoading(false);
+        setHasLoaded(true);
+      }
     }
   };
+
+  // Abort any in-flight search when this page unmounts.
+  useEffect(() => () => resultsAbort.current?.abort(), []);
 
   useEffect(() => {
     void loadResults(classId, examId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [classId, examId, examTypeFilter, page, debouncedSearch]);
-
-  // Debounce the search so each keystroke does not fire an API request.
-  useEffect(() => {
-    const t = window.setTimeout(() => setDebouncedSearch(search), 300);
-    return () => window.clearTimeout(t);
-  }, [search]);
 
   /**
    * Shared post-save refresh for manual entry + OCR-review confirm.
@@ -565,13 +582,13 @@ export default function ResultsPage() {
               <option value="midterm">Midterm</option>
               <option value="annual">Annual</option>
             </select>
-            <input
-              className={`${inputCls} max-w-xs`}
+            <LiveSearchInput
               value={search}
-              onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+              onChange={(q) => { setSearch(q); setPage(1); }}
               placeholder="Search student name or roll no…"
-              aria-label="Search results"
-              autoComplete="off" />
+              searching={listLoading && debouncedSearch.trim() !== ''}
+              ariaLabel="Search results"
+            />
             <div className="ml-auto flex flex-wrap gap-2">
               <Button variant="secondary" onClick={() => { setManualExamName(''); setShowManual(true); }}>+ Manual entry</Button>
               {/* Exports unlock as soon as any results exist for the
@@ -649,12 +666,18 @@ export default function ResultsPage() {
             </div>
           )}
 
-          {listLoading ? (
+          {!hasLoaded ? (
             <Spinner label="Loading results…" />
           ) : results.length === 0 ? (
             <EmptyState
-              title="No results yet"
-              body={cls ? `No results recorded for Class ${displayClass(cls)}${examId ? ' in this exam' : ''} — upload a result sheet or add marks manually.` : 'Pick a class to see results.'}
+              title={debouncedSearch.trim() ? 'No student found' : 'No results yet'}
+              body={
+                debouncedSearch.trim()
+                  ? `No results match "${debouncedSearch.trim()}". Try a different name or roll number.`
+                  : cls
+                    ? `No results recorded for Class ${displayClass(cls)}${examId ? ' in this exam' : ''} — upload a result sheet or add marks manually.`
+                    : 'Pick a class to see results.'
+              }
               actionLabel="Add marks manually"
               onAction={() => setShowManual(true)}
             />
@@ -681,7 +704,7 @@ export default function ResultsPage() {
                     <tr key={r.id} className="hover:bg-slate-50">
                       <td className="px-4 py-2.5">{r.position ?? '—'}</td>
                       <td className="px-4 py-2.5 font-medium">{r.roll_no}</td>
-                      <td className="px-4 py-2.5 font-medium text-slate-900">{r.student_name}</td>
+                      <td className="px-4 py-2.5 font-medium text-slate-900"><HighlightedText text={r.student_name} query={debouncedSearch} /></td>
                       <td className="px-4 py-2.5">{r.father_name ?? '—'}</td>
                       <td className="px-4 py-2.5">{r.obtained_marks ?? '—'}</td>
                       <td className="px-4 py-2.5">{r.total_marks ?? '—'}</td>

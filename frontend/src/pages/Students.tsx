@@ -16,6 +16,13 @@ export default function StudentsPage() {
   const [students, setStudents] = useState<Student[]>([]);
   const [loading, setLoading] = useState(true);
   const [listLoading, setListLoading] = useState(false);
+  // Search-reload fix: the panel (which holds the search box itself) must
+  // NEVER be swapped for a spinner on a refetch — the old code did exactly
+  // that on every debounced keystroke. `hasLoaded` is true once the first
+  // list has arrived; before that the spinner is correct, after that the
+  // current rows stay rendered and only the small ⏳ inside the search
+  // field shows while the new results are in flight.
+  const [hasLoaded, setHasLoaded] = useState(false);
   const [error, setError] = useState('');
   // Round 5 (F1): server-side pagination + search + phone-flag filter.
   // The list used to fetch ?limit=200 (API clamps to 100) with no pager
@@ -76,7 +83,10 @@ export default function StudentsPage() {
         setError('Could not load students.');
       })
       .finally(() => {
-        if (searchAbort.current === controller) setListLoading(false);
+        if (searchAbort.current === controller) {
+          setListLoading(false);
+          setHasLoaded(true);
+        }
       });
   }, [classId, page, debouncedSearch, flagFilter]);
 
@@ -127,7 +137,7 @@ export default function StudentsPage() {
               ♻ Recycle Bin — restore deleted students
             </Link>
           </div>
-          {listLoading ? (
+          {!hasLoaded ? (
             <Spinner label="Loading students…" />
           ) : (
             <StudentsPanel

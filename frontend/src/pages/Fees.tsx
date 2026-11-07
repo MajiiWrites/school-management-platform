@@ -1,6 +1,9 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
-import { api, apiPrint, ApiClientError } from '../lib/api';
+import { api, apiPrint, ApiClientError, isAbortError } from '../lib/api';
+import { LIVE_SEARCH_DEBOUNCE_MS } from '../lib/search';
+import { useDebouncedValue } from '../lib/useDebouncedValue';
+import LiveSearchInput, { HighlightedText } from '../components/LiveSearchInput';
 import type { ClassItem, FeeRow, FeeStructure, PageResult } from '../lib/types';
 import { currentMonth, fmtPKR, monthName, todayISO } from '../lib/utils';
 import { Badge, Button, Card, EmptyState, ErrorBanner, Field, inputCls, Modal, Pager, Spinner, Tabs, useToast } from '../components/ui';
@@ -26,13 +29,26 @@ export default function FeesPage() {
   const [statusFilter, setStatusFilter] = useState<'all' | 'paid' | 'partial' | 'unpaid'>('all');
   const [classFilter, setClassFilter] = useState('');
   const [search, setSearch] = useState('');
-  const [debouncedSearch, setDebouncedSearch] = useState('');
+  // Search-reload fix: the query only fires ~200 ms after typing stops
+  // (shared hook), the previous request is aborted, and — critically — a
+  // refetch NEVER blanks the page. The old code set the single `loading`
+  // flag on every debounced search and returned a full-page "Loading
+  // fees…" spinner, which unmounted the search box itself on every
+  // keystroke (see the user's video: type "St" → blank → list returns).
+  // Now `loading` covers the first load only; refetches use `listLoading`
+  // and keep the current rows + filters rendered, with only the small
+  // spinner inside the search field while the new results are in flight.
+  const debouncedSearch = useDebouncedValue(search, LIVE_SEARCH_DEBOUNCE_MS);
   const [fees, setFees] = useState<FeeRow[]>([]);
   const [feeTotals, setFeeTotals] = useState<{ collected: number; pending: number; paid_count: number; unpaid_count: number } | null>(null);
   const [structures, setStructures] = useState<FeeStructure[]>([]);
   const [classes, setClasses] = useState<ClassItem[]>([]);
   const [tab, setTab] = useState('fees');
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(true); // first load only — never set on a refetch
+  const [listLoading, setListLoading] = useState(false); // fees-list refetch (search / filter / page)
+  const [voucherLoading, setVoucherLoading] = useState(false);
+  const feesAbort = useRef<AbortController | null>(null);
+  const vouchersAbort = useRef<AbortController | null>(null);
   const [error, setError] = useState('');
   const [paying, setPaying] = useState<FeeRow | null>(null);
   const [receipt, setReceipt] = useState<ReceiptData | null>(null);
@@ -54,44 +70,92 @@ export default function FeesPage() {
   const [voucherPages, setVoucherPages] = useState(1);
   const { push, view } = useToast();
 
-  // Debounce the search so each keystroke does not fire an API request.
-  useEffect(() => {
-    const t = window.setTimeout(() => setDebouncedSearch(search), 300);
-    return () => window.clearTimeout(t);
-  }, [search]);
+  // Abort in-flight list requests when the page unmounts.
+  useEffect(() => () => {
+    feesAbort.current?.abort();
+    vouchersAbort.current?.abort();
+  }, []);
 
-  const load = useCallback(() => {
-    setLoading(true);
+  // Fee structures + classes change rarely and never with the search —
+  // load them once (and after a structure change), not on every keystroke.
+  const loadMeta = useCallback(() => {
+    return Promise.all([
+      // GET /fees/structures returns a BARE ARRAY, not a PageResult —
+      // reading `.items` off it yields undefined and blanked the page.
+      api<FeeStructure[]>('/fees/structures'),
+      api<PageResult<ClassItem>>('/classes'),
+    ])
+      .then(([s, c]) => {
+        setStructures(Array.isArray(s) ? s : []);
+        setClasses(Array.isArray(c?.items) ? c.items : []);
+      })
+      .catch(() => setError('Could not load fees.'));
+  }, []);
+
+  const loadFees = useCallback(() => {
+    // Cancel the previous (now outdated) search request before firing
+    // the new one — its late reply must never reach setFees.
+    feesAbort.current?.abort();
+    const controller = new AbortController();
+    feesAbort.current = controller;
+    setListLoading(true);
     const q = new URLSearchParams({ month, page: String(page), limit: '50' });
     if (debouncedSearch.trim()) q.set('search', debouncedSearch.trim());
     if (classFilter) q.set('class_id', classFilter);
     if (statusFilter !== 'all') q.set('status', statusFilter);
-    const vq = new URLSearchParams({ month, page: String(voucherPage), limit: '50' });
-    Promise.all([
-      api<PageResult<FeeRow> & { totals?: { collected: number; pending: number; paid_count: number; unpaid_count: number } }>(`/fees?${q.toString()}`),
-      // GET /fees/structures returns a BARE ARRAY, not a PageResult —
-      // reading `.items` off it yields undefined and blanked the page.
-      api<FeeStructure[]>('/fees/structures'),
-      api<PageResult<{ voucher_no: string; student_name: string; class_name: string; month: string; amount_due: number; due_date: string; status: string }>>(`/fees/vouchers?${vq.toString()}`),
-      api<PageResult<ClassItem>>('/classes'),
-    ])
-      .then(([f, s, v, c]) => {
+    api<PageResult<FeeRow> & { totals?: { collected: number; pending: number; paid_count: number; unpaid_count: number } }>(`/fees?${q.toString()}`, { signal: controller.signal })
+      .then((f) => {
         setFees(Array.isArray(f?.items) ? f.items : []);
         setTotal(f?.total ?? 0);
         setPages(f?.pages ?? 1);
         setFeeTotals(f?.totals ?? null);
-        setStructures(Array.isArray(s) ? s : []);
+        setError('');
+        setLoading(false);
+      })
+      .catch((e) => {
+        if (isAbortError(e)) return; // superseded by a newer keystroke
+        setError('Could not load fees.');
+        setLoading(false);
+      })
+      .finally(() => {
+        if (feesAbort.current === controller) setListLoading(false);
+      });
+  }, [month, page, debouncedSearch, classFilter, statusFilter]);
+
+  const loadVouchers = useCallback(() => {
+    vouchersAbort.current?.abort();
+    const controller = new AbortController();
+    vouchersAbort.current = controller;
+    setVoucherLoading(true);
+    const vq = new URLSearchParams({ month, page: String(voucherPage), limit: '50' });
+    api<PageResult<{ voucher_no: string; student_name: string; class_name: string; month: string; amount_due: number; due_date: string; status: string }>>(`/fees/vouchers?${vq.toString()}`, { signal: controller.signal })
+      .then((v) => {
         setVouchers(Array.isArray(v?.items) ? v.items : []);
         setVoucherTotal(v?.total ?? 0);
         setVoucherPages(v?.pages ?? 1);
-        setClasses(Array.isArray(c?.items) ? c.items : []);
-        setError('');
       })
-      .catch(() => setError('Could not load fees.'))
-      .finally(() => setLoading(false));
-  }, [month, page, debouncedSearch, classFilter, statusFilter, voucherPage]);
+      .catch((e) => {
+        if (isAbortError(e)) return;
+      })
+      .finally(() => {
+        if (vouchersAbort.current === controller) setVoucherLoading(false);
+      });
+  }, [month, voucherPage]);
 
-  useEffect(load, [load]);
+  // Initial load + refetches. The fees list refetches when month / page /
+  // search / filters change; structures + classes load once; vouchers
+  // refetch only when the month or voucher page changes — never on a
+  // search keystroke (the old code refetched all four on every search).
+  useEffect(() => { void loadMeta(); }, [loadMeta]);
+  useEffect(() => { void loadFees(); }, [loadFees]);
+  useEffect(() => { void loadVouchers(); }, [loadVouchers]);
+
+  // Reload everything (error-banner retry).
+  const reloadAll = useCallback(() => {
+    void loadMeta();
+    void loadFees();
+    void loadVouchers();
+  }, [loadMeta, loadFees, loadVouchers]);
 
   // Round 5 (F1): the status filter now runs server-side (see load), so
   // there is no client-side filter anymore — "Unpaid" returns every
@@ -119,7 +183,7 @@ export default function FeesPage() {
           onChange={(e) => { setMonth(e.target.value || currentMonth()); setPage(1); setVoucherPage(1); }} autoComplete="off" />
       </div>
 
-      {error && <ErrorBanner message={error} onRetry={load} />}
+      {error && <ErrorBanner message={error} onRetry={reloadAll} />}
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Card className="p-4">
@@ -173,17 +237,17 @@ export default function FeesPage() {
                 </option>
               ))}
             </select>
-            <input
-              className={`${inputCls} max-w-xs`}
+            <LiveSearchInput
               value={search}
-              onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+              onChange={(q) => { setSearch(q); setPage(1); }}
               placeholder="Search student name…"
-              aria-label="Search students"
-              autoComplete="off" />
+              searching={listLoading && debouncedSearch.trim() !== ''}
+              ariaLabel="Search students"
+            />
           </div>
           {fees.length === 0 ? (
             <EmptyState
-              title="No fee records for this month"
+              title={search.trim() || classFilter || statusFilter !== 'all' ? 'No student found' : 'No fee records for this month'}
               body={
                 search.trim() || classFilter || statusFilter !== 'all'
                   ? 'Try a different search or filter.'
@@ -209,7 +273,7 @@ export default function FeesPage() {
                 <tbody className="divide-y divide-slate-100">
                   {fees.map((f) => (
                     <tr key={`${f.student_id}-${f.month}`} className="hover:bg-slate-50">
-                      <td className="px-4 py-2.5 font-medium text-slate-900">{f.student_name}</td>
+                      <td className="px-4 py-2.5 font-medium text-slate-900"><HighlightedText text={f.student_name} query={debouncedSearch} /></td>
                       <td className="px-4 py-2.5">{f.class_name}</td>
                       {/* D4: a no-structure student owes nothing because no
                           structure exists — "Rs 0" in Due/Paid read as a
@@ -230,7 +294,8 @@ export default function FeesPage() {
                             try {
                               const v = await api<{ voucher_no: string }>(`/fees/vouchers/by-student`, { method: 'POST', body: { student_id: f.student_id, month } });
                               push('success', `Voucher ${v.voucher_no} ready.`);
-                              load();
+                              loadFees();
+                              loadVouchers();
                               await apiPrint(`/fees/vouchers/${v.voucher_no}`);
                             } catch (e) {
                               push('error', errText(e));
@@ -385,7 +450,9 @@ export default function FeesPage() {
             <Tooltip text="A voucher (challan) is a printed bill for one student for one month. It shows how much is due and the last date to pay. Generate one from a student's row in the Monthly fees tab, then print it and hand it to the parent." />
             {' '}is a printed bill (challan) for one student — generate it from a student&apos;s row in the Monthly fees tab.
           </p>
-          {vouchers.length === 0 ? (
+          {voucherLoading && vouchers.length === 0 ? (
+            <Spinner label="Loading vouchers…" />
+          ) : vouchers.length === 0 ? (
             <EmptyState
               title="No vouchers for this month"
               body="Generate a voucher (challan) from a student's row in the Monthly fees tab — it shows the amount payable and the due date."
@@ -436,7 +503,7 @@ export default function FeesPage() {
           onDone={async (receiptNo) => {
             setPaying(null);
             push('success', `Payment recorded — receipt ${receiptNo}.`);
-            load();
+            loadFees();
             try {
               const r = await api<ReceiptData>(`/fees/receipts/${receiptNo}?format=json`);
               setReceipt(r);
@@ -479,7 +546,8 @@ export default function FeesPage() {
           onDone={(queued) => {
             setEditingStructure(null);
             push('success', queued ? 'Submitted for admin approval — nothing was applied yet.' : 'Fee structure saved.');
-            load();
+            loadMeta();
+            loadFees();
           }}
         />
       )}
@@ -496,7 +564,8 @@ export default function FeesPage() {
               await api(`/fees/structures/${deletingStructure.id}`, { method: 'DELETE' });
               push('success', 'Fee structure deleted.');
               setDeletingStructure(null);
-              load();
+              loadMeta();
+              loadFees();
             } catch (e) {
               push('error', errText(e));
             }
