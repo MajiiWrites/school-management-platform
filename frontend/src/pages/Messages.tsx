@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api, ApiClientError } from '../lib/api';
 import type { ClassItem, MessageLogItem, MessageTemplateRow, MessageType, PendingGroup, SmsStatus } from '../lib/types';
 import { fmtDateTime } from '../lib/utils';
-import { Badge, Button, Card, EmptyState, ErrorBanner, Spinner, Tabs, inputCls, useToast } from '../components/ui';
+import { Badge, Button, Card, EmptyState, ErrorBanner, Pager, Spinner, Tabs, inputCls, useToast } from '../components/ui';
 import Tooltip from '../components/Tooltip'; // P8-TOUR: plain-word tooltip on "dedupe key".
 import ConfirmDialog from '../components/ConfirmDialog';
 import CustomMessages from '../components/CustomMessages';
@@ -35,15 +35,27 @@ export default function MessagesPage() {
   const [pendingRetry, setPendingRetry] = useState<MessageLogItem | null>(null);
   const { push, view } = useToast();
 
-  // Section 11: the delivery log is filtered server-side by type + class.
+  // Section 11: the delivery log is filtered server-side by status +
+  // type + class. Round 5 (F1): server-side pagination too — it fetched
+  // ?limit=100 with no pager and filtered status in the browser, so log
+  // rows past the cap were unreachable. The backend already paginates
+  // (/messages/log returns total/pages).
+  const [logPage, setLogPage] = useState(1);
+  const [logTotal, setLogTotal] = useState(0);
+  const [logPages, setLogPages] = useState(1);
   const loadLog = useCallback(() => {
-    const params = new URLSearchParams({ limit: '100' });
+    const params = new URLSearchParams({ page: String(logPage), limit: '50' });
+    if (logFilter !== 'all') params.set('status', logFilter);
     if (logType !== 'all') params.set('type', logType);
     if (logClass) params.set('class_id', logClass);
-    api<{ items: MessageLogItem[] }>(`/messages/log?${params.toString()}`)
-      .then((l) => setLog(l.items))
+    api<{ items: MessageLogItem[]; total: number; page: number; pages: number }>(`/messages/log?${params.toString()}`)
+      .then((l) => {
+        setLog(l.items);
+        setLogTotal(l.total ?? 0);
+        setLogPages(l.pages ?? 1);
+      })
       .catch(() => setError('Could not load the delivery log.'));
-  }, [logType, logClass]);
+  }, [logType, logClass, logFilter, logPage]);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -104,7 +116,6 @@ export default function MessagesPage() {
 
   if (loading) return <Spinner label="Loading messages…" />;
 
-  const filteredLog = log.filter((m) => (logFilter === 'all' ? true : m.status === logFilter));
   const totalPending = pending.reduce((a, g) => a + g.absent_count, 0);
 
   return (
@@ -173,13 +184,13 @@ export default function MessagesPage() {
             {' '}— the same message is never sent twice to the same parent.
           </p>
           <div className="flex flex-wrap gap-2">
-            <select className={inputCls + ' w-auto'} value={logFilter} onChange={(e) => setLogFilter(e.target.value as typeof logFilter)} autoComplete="off">
+            <select className={inputCls + ' w-auto'} value={logFilter} onChange={(e) => { setLogFilter(e.target.value as typeof logFilter); setLogPage(1); }} autoComplete="off">
               <option value="all">All statuses</option>
               <option value="sent">Sent</option>
               <option value="queued">Queued</option>
               <option value="failed">Failed</option>
             </select>
-            <select className={inputCls + ' w-auto'} value={logType} onChange={(e) => setLogType(e.target.value as typeof logType)} autoComplete="off">
+            <select className={inputCls + ' w-auto'} value={logType} onChange={(e) => { setLogType(e.target.value as typeof logType); setLogPage(1); }} autoComplete="off">
               <option value="all">All types</option>
               <option value="absent">Absent</option>
               <option value="fee_reminder">Fee reminder</option>
@@ -188,14 +199,14 @@ export default function MessagesPage() {
               <option value="announcement">Announcement</option>
               <option value="custom">Custom</option>
             </select>
-            <select className={inputCls + ' w-auto'} value={logClass} onChange={(e) => setLogClass(e.target.value)} autoComplete="off">
+            <select className={inputCls + ' w-auto'} value={logClass} onChange={(e) => { setLogClass(e.target.value); setLogPage(1); }} autoComplete="off">
               <option value="">All classes</option>
               {classes.map((c) => (
                 <option key={c.id} value={c.id}>{c.name}-{c.section}</option>
               ))}
             </select>
           </div>
-          {filteredLog.length === 0 ? (
+          {log.length === 0 ? (
             <EmptyState
               title="No messages yet"
               body="Sent, queued and failed messages will be listed here with their status."
@@ -217,7 +228,7 @@ export default function MessagesPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {filteredLog.map((m) => (
+                  {log.map((m) => (
                     <tr key={m.id} className="align-top hover:bg-slate-50">
                       <td className="px-4 py-2.5 capitalize">{m.type.replace('_', ' ')}</td>
                       <td className="px-4 py-2.5 font-medium">{m.student_name ?? '—'}</td>
@@ -244,6 +255,9 @@ export default function MessagesPage() {
                 </tbody>
               </table>
             </div>
+          )}
+          {log.length > 0 && (
+            <Pager page={logPage} pages={logPages} total={logTotal} itemLabel="messages" itemLabelSingular="message" onPage={setLogPage} />
           )}
         </>
       )}

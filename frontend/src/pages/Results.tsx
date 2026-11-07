@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from 'react';
 import { api, apiDownload, getAccessToken, ApiClientError, API_BASE } from '../lib/api';
 import type { ClassItem, ExamItem, PageResult, ResultRow, ResultSheetReviewRow, Student } from '../lib/types';
 import { displayClass } from '../lib/utils';
-import { Badge, Button, EmptyState, Field, inputCls, Modal, Spinner, useToast } from '../components/ui';
+import { Badge, Button, EmptyState, Field, inputCls, Modal, Pager, Spinner, useToast } from '../components/ui';
 import ConfirmDialog from '../components/ConfirmDialog';
 
 function errText(e: unknown): string {
@@ -171,6 +171,17 @@ export default function ResultsPage() {
   const [total, setTotal] = useState(0);
   const [toppers, setToppers] = useState<ResultRow[]>([]);
   const [summary, setSummary] = useState<Record<string, unknown> | null>(null);
+  // Round 5 (F1): server-side pagination + search for the results table.
+  // It used to fetch ?limit=200 with no pager — a class with more than
+  // 100 results (the API cap) silently lost the rest, and the page also
+  // rendered all 200 rows at once (part of the 2725 ms load with the
+  // 1100-student class). The backend already paginates + searches
+  // (listResults: page/limit/search, total/pages). Toppers/summary stay
+  // per exam+class, unaffected by the page.
+  const [page, setPage] = useState(1);
+  const [pages, setPages] = useState(1);
+  const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [listLoading, setListLoading] = useState(false);
   const [error, setError] = useState('');
@@ -256,11 +267,13 @@ export default function ResultsPage() {
     if (!clsId) return;
     setListLoading(true);
     try {
-      const q = new URLSearchParams({ class_id: clsId, limit: '200' });
+      const q = new URLSearchParams({ class_id: clsId, page: String(page), limit: '50' });
       if (exId) q.set('exam_id', exId);
+      if (debouncedSearch.trim()) q.set('search', debouncedSearch.trim());
       const d = await api<PageResult<ResultRow>>(`/results?${q.toString()}`);
       setResults(d.items);
       setTotal(d.total);
+      setPages(d.pages);
       // Safety net: if a result references an exam this page has never
       // seen (created in another tab, or by an OCR upload), refresh the
       // filter list so the exam becomes selectable instead of invisible.
@@ -288,7 +301,13 @@ export default function ResultsPage() {
   useEffect(() => {
     void loadResults(classId, examId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [classId, examId]);
+  }, [classId, examId, page, debouncedSearch]);
+
+  // Debounce the search so each keystroke does not fire an API request.
+  useEffect(() => {
+    const t = window.setTimeout(() => setDebouncedSearch(search), 300);
+    return () => window.clearTimeout(t);
+  }, [search]);
 
   /**
    * Shared post-save refresh for manual entry + OCR-review confirm.
@@ -503,18 +522,25 @@ export default function ResultsPage() {
         <>
           <div className="flex flex-wrap items-center gap-2">
             <label className="text-sm font-medium text-slate-700" htmlFor="class-select">Class:</label>
-            <select id="class-select" className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" value={classId} onChange={(e) => { const id = e.target.value; storeClass(id); setClassId(id); setExamId(pickExamForClass(id, exams)); }}>
+            <select id="class-select" className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" value={classId} onChange={(e) => { const id = e.target.value; storeClass(id); setClassId(id); setExamId(pickExamForClass(id, exams)); setPage(1); }}>
               {classes.map((c) => (
                 <option key={c.id} value={c.id}>Class {displayClass(c)} — {c.teacher_name}</option>
               ))}
             </select>
             <label className="text-sm font-medium text-slate-700" htmlFor="exam-select">Exam:</label>
-            <select id="exam-select" className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" value={examId} onChange={(e) => { setExamId(e.target.value); storeExam(classId, e.target.value); }}>
+            <select id="exam-select" className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" value={examId} onChange={(e) => { setExamId(e.target.value); storeExam(classId, e.target.value); setPage(1); }}>
               <option value="">All exams</option>
               {exams.map((e) => (
                 <option key={e.id} value={e.id}>{e.name}</option>
               ))}
             </select>
+            <input
+              className={`${inputCls} max-w-xs`}
+              value={search}
+              onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+              placeholder="Search student name or roll no…"
+              aria-label="Search results"
+              autoComplete="off" />
             <div className="ml-auto flex flex-wrap gap-2">
               <Button variant="secondary" onClick={() => { setManualExamName(''); setShowManual(true); }}>+ Manual entry</Button>
               {/* Exports unlock as soon as any results exist for the
@@ -638,6 +664,9 @@ export default function ResultsPage() {
               </table>
               <p className="px-4 py-2 text-xs text-slate-500">{total} results</p>
             </div>
+          )}
+          {results.length > 0 && (
+            <Pager page={page} pages={pages} total={total} itemLabel="results" itemLabelSingular="result" onPage={setPage} />
           )}
 
           <div className="rounded-xl border border-slate-200 bg-white px-4 py-3">

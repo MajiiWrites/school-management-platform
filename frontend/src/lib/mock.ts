@@ -250,7 +250,25 @@ export async function mockRequest<T>(path: string, method: string, body?: unknow
     return { provider: 'sim', sim_connected: false, last_seen_at: '2026-11-05T18:40:00Z', queued_count: 2 } as T;
   }
   if (rawPath === '/jobs/status') {
-    return { monthly_fee_reminder: '2026-11-01T00:05:00Z', daily_pending_attendance: '2026-11-06T08:00:00Z', teacher_reminders: '2026-11-06T08:00:00Z' } as T;
+    // Round 5 (F12): the real API shape is {jobs: [...]} with all six
+    // jobs (see lib/types.ts JobStatus) — the old flat mock hid the
+    // mismatch that left the Jobs tab showing "Last run: —" for 3 rows.
+    const job = (name: string, description: string, schedule: string, last_run_at: string | null) => ({
+      name,
+      description,
+      schedule,
+      schools: [{ school_id: 'mock', school_slug: 'mock', last_run_at, last_status: last_run_at ? 'ok' : 'never', last_summary: '', last_error: null, runs: last_run_at ? 1 : 0 }],
+    });
+    return {
+      jobs: [
+        job('monthly_fee_reminder', '1st school day of the month: roll over fee records, queue fee reminders for unpaid students.', '*/30 * * * *', '2026-11-01T00:05:00Z'),
+        job('fee_followup', 'On the fee follow-up day: remind parents whose fees are still unpaid.', '*/30 * * * *', null),
+        job('daily_pending_attendance', 'After school hours: notify admin about classes with no attendance submission today.', '*/30 * * * *', '2026-11-06T08:00:00Z'),
+        job('teacher_reminders', 'At the set reminder time: queue a teacher-reminder SMS for each class that has not submitted attendance.', '*/5 * * * *', '2026-11-06T08:00:00Z'),
+        job('scheduled_messages', 'Every 5 minutes: send due scheduled custom-message drafts that were approved first.', '*/5 * * * *', null),
+        job('school_backup', 'Nightly (02:00 UTC): per-school full data backup.', '0 2 * * *', null),
+      ],
+    } as T;
   }
 
   // Settings

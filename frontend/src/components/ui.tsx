@@ -207,7 +207,7 @@ export function EmptyState({
       {actionLabel && onAction ? (
         <button
           onClick={onAction}
-          className="mt-4 inline-block rounded-lg bg-brand-700 px-4 py-2 text-sm font-medium text-white hover:bg-brand-900"
+          className="mt-4 inline-flex min-h-11 items-center justify-center rounded-lg bg-brand-700 px-4 py-2 text-sm font-medium text-white hover:bg-brand-900"
         >
           {actionLabel}
         </button>
@@ -215,7 +215,7 @@ export function EmptyState({
       {actionLabel && !onAction && actionHref ? (
         <a
           href={actionHref}
-          className="mt-4 inline-block rounded-lg bg-brand-700 px-4 py-2 text-sm font-medium text-white hover:bg-brand-900"
+          className="mt-4 inline-flex min-h-11 items-center justify-center rounded-lg bg-brand-700 px-4 py-2 text-sm font-medium text-white hover:bg-brand-900"
         >
           {actionLabel}
         </a>
@@ -229,7 +229,7 @@ export function ErrorBanner({ message, onRetry }: { message: string; onRetry?: (
     <div className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
       <span>{message}</span>
       {onRetry ? (
-        <button onClick={onRetry} className="shrink-0 font-medium underline">
+        <button onClick={onRetry} className="min-h-11 min-w-11 shrink-0 rounded-lg px-2 font-medium underline">
           Retry
         </button>
       ) : null}
@@ -288,7 +288,7 @@ export function Tabs({
           key={t.key}
           onClick={() => onChange(t.key)}
           className={cx(
-            'whitespace-nowrap border-b-2 px-3 py-2 text-sm font-medium',
+            'min-h-11 whitespace-nowrap border-b-2 px-3 py-2 text-sm font-medium',
             active === t.key
               ? 'border-brand-700 text-brand-700'
               : 'border-transparent text-slate-500 hover:text-slate-800',
@@ -297,6 +297,56 @@ export function Tabs({
           {t.label}
         </button>
       ))}
+    </div>
+  );
+}
+
+/* ---------- Pager ---------- */
+
+/**
+ * Round 5 (F1): shared server-side pager — the Change History /
+ * Recycle Bin pattern (Previous / "Page X of Y" / Next), reused by every
+ * list that used to cap at 100/200 rows with no way to reach the rest
+ * (Students, Fees, Results, Parents, Approvals, Messages log, Reports
+ * message history, Vouchers). The count line always shows the
+ * server-side total so a filtered view cannot silently hide rows.
+ */
+export function Pager({
+  page,
+  pages,
+  total,
+  itemLabel,
+  itemLabelSingular,
+  onPage,
+}: {
+  page: number;
+  pages: number;
+  total: number;
+  /** Plural label, e.g. "students". */
+  itemLabel: string;
+  /** Singular label, e.g. "student" (defaults to itemLabel). */
+  itemLabelSingular?: string;
+  onPage: (page: number) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <p className="text-sm text-slate-500">
+        {total} {total === 1 ? (itemLabelSingular ?? itemLabel) : itemLabel}
+        {pages > 1 ? ` · Page ${page} of ${pages}` : ''}
+      </p>
+      {pages > 1 && (
+        <div className="flex items-center gap-2">
+          <Button variant="secondary" disabled={page <= 1} onClick={() => onPage(Math.max(1, page - 1))}>
+            ← Previous
+          </Button>
+          <span className="text-sm text-slate-500">
+            Page {page} of {pages}
+          </span>
+          <Button variant="secondary" disabled={page >= pages} onClick={() => onPage(Math.min(pages, page + 1))}>
+            Next →
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

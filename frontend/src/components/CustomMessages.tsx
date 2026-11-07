@@ -19,7 +19,7 @@ import type {
 import { MESSAGE_VARIABLES } from '../lib/types';
 import { smsPartCount } from '../lib/sms';
 import { fmtDateTime } from '../lib/utils';
-import { Badge, Button, Card, EmptyState, ErrorBanner, Spinner, inputCls, useToast } from '../components/ui';
+import { Badge, Button, Card, EmptyState, ErrorBanner, Pager, Spinner, inputCls, useToast } from '../components/ui';
 import Tooltip from './Tooltip'; // P8-TOUR: plain-word tooltip on "scheduled message".
 import ConfirmDialog from '../components/ConfirmDialog';
 
@@ -60,6 +60,12 @@ export default function CustomMessages() {
   const isAdmin = user?.role === 'admin';
   const [classes, setClasses] = useState<ClassItem[]>([]);
   const [drafts, setDrafts] = useState<MessageDraftRow[]>([]);
+  // Round 5 (F1): server-side pagination for the drafts list — it
+  // fetched ?limit=100 with no pager, so drafts past the cap were
+  // unreachable. The backend already paginates (total/pages).
+  const [draftPage, setDraftPage] = useState(1);
+  const [draftTotal, setDraftTotal] = useState(0);
+  const [draftPages, setDraftPages] = useState(1);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [students, setStudents] = useState<Student[]>([]);
@@ -91,16 +97,18 @@ export default function CustomMessages() {
     setLoading(true);
     Promise.all([
       api<{ items: ClassItem[] }>('/classes'),
-      api<{ items: MessageDraftRow[] }>('/messages/drafts?limit=100'),
+      api<{ items: MessageDraftRow[]; total: number; page: number; pages: number }>(`/messages/drafts?page=${draftPage}&limit=50`),
     ])
       .then(([c, d]) => {
         setClasses(c.items ?? []);
         setDrafts(d.items ?? []);
+        setDraftTotal(d.total ?? 0);
+        setDraftPages(d.pages ?? 1);
         setError('');
       })
       .catch(() => setError('Could not load custom messages.'))
       .finally(() => setLoading(false));
-  }, []);
+  }, [draftPage]);
 
   useEffect(load, [load]);
 
@@ -192,6 +200,8 @@ export default function CustomMessages() {
         push('success', 'Draft saved. Nothing will send until it is approved.');
       }
       resetComposer();
+      // A new draft lands on page 1; go there so the user sees it.
+      setDraftPage(1);
       load();
     } catch (e) {
       push('error', errText(e));
@@ -554,6 +564,9 @@ export default function CustomMessages() {
             </div>
           </Card>
         ))
+      )}
+      {drafts.length > 0 && (
+        <Pager page={draftPage} pages={draftPages} total={draftTotal} itemLabel="drafts" itemLabelSingular="draft" onPage={setDraftPage} />
       )}
 
       {/* ------------------------------ dialogs ------------------------------ */}

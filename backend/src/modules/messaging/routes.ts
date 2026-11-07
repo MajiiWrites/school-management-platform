@@ -35,6 +35,7 @@ import {
   type CustomMessagesDeps,
 } from './custom-messages';
 import type { DraftRow } from './store';
+import { nextCopyName } from './store';
 import {
   approveMessages,
   editQueueBody,
@@ -535,10 +536,21 @@ export function createMessagingRouter(deps: MessagingRouterDeps): express.Router
       if (!source || source.schoolId !== schoolId) {
         throw Object.assign(new Error('Template not found'), { code: 'NOT_FOUND' });
       }
-      // Duplicates are always type 'custom': the (school, type, language)
-      // slot of the source is already taken. If a custom template of this
-      // language already exists the store throws CONFLICT (409).
-      const copyName = `Copy of ${source.name ?? source.type}`;
+      // Round 5 (F11): duplicates are always type 'custom', and the old
+      // unique key (school, type, language) allowed exactly ONE custom
+      // template per language — so duplicating could only ever succeed
+      // once per language and then always 409'd. The key is now
+      // (school, type, language, name) (migration
+      // 20261107140000_template_unique_name), so pick a name no other
+      // custom template of this language holds ("Copy of X", then
+      // "Copy of X (2)", …).
+      const existing = await store.listTemplates(schoolId);
+      const taken = new Set(
+        existing
+          .filter((t) => t.type === 'custom' && t.language === source.language)
+          .map((t) => t.name ?? ''),
+      );
+      const copyName = nextCopyName(taken, `Copy of ${source.name ?? source.type}`);
       const created = await store.createTemplate({
         schoolId,
         name: copyName,

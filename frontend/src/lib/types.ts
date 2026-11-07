@@ -290,10 +290,32 @@ export interface AcademicSession {
   is_archived?: boolean;
 }
 
+/**
+ * GET /jobs/status — the real shape (backend/src/jobs/registry.ts
+ * getJobsStatus): an array of all six jobs, each with its per-school
+ * last-run state. Round 5 (F12): the old flat shape here
+ * ({monthly_fee_reminder, daily_pending_attendance, teacher_reminders}
+ * as bare date strings) is what the MOCK returned, not the API — so the
+ * Jobs tab showed only 3 hardcoded rows, all "Last run: —", and the
+ * fee-follow-up / scheduled-messages / backup jobs were invisible.
+ */
+export interface JobStatusEntry {
+  name: string;
+  description: string;
+  schedule: string;
+  schools: Array<{
+    school_id: string;
+    school_slug: string;
+    last_run_at: string | null;
+    last_status: 'ok' | 'skipped' | 'error' | 'never';
+    last_summary: string;
+    last_error: string | null;
+    runs: number;
+  }>;
+}
+
 export interface JobStatus {
-  monthly_fee_reminder?: string | null;
-  daily_pending_attendance?: string | null;
-  teacher_reminders?: string | null;
+  jobs: JobStatusEntry[];
 }
 
 export interface PageResult<T> {

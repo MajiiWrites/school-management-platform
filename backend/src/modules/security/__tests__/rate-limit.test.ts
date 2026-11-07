@@ -115,7 +115,7 @@ describe('rate limiting (6D verification)', () => {
     }
   }, 60_000);
 
-  it('apiLimiter allows 300 requests / 15 min per IP, then 429', async () => {
+  it('apiLimiter allows 1000 requests / 15 min per IP, then 429', async () => {
     vi.resetModules();
     const { apiLimiter } = await import('../../../middleware/rateLimit');
     const app = express();
@@ -127,14 +127,14 @@ describe('rate limiting (6D verification)', () => {
     const port = (server.address() as any).port;
     try {
       const statuses: number[] = [];
-      for (let i = 0; i < 302; i++) {
+      for (let i = 0; i < 1002; i++) {
         const res = await fetch(`http://127.0.0.1:${port}/api/ping`);
         statuses.push(res.status);
         await res.text();
       }
-      expect(statuses.slice(0, 300).every((s) => s === 200)).toBe(true);
-      expect(statuses[300]).toBe(429);
-      expect(statuses[301]).toBe(429);
+      expect(statuses.slice(0, 1000).every((s) => s === 200)).toBe(true);
+      expect(statuses[1000]).toBe(429);
+      expect(statuses[1001]).toBe(429);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }

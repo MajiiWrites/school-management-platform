@@ -544,6 +544,37 @@ export async function listFees(
   const recordByStudent = new Map(records.map((r) => [r.studentId, r]));
   const structures = await latestStructuresByClass(db, schoolId, month);
 
+  // Round 5 (F3): the prospective-row breakdown used to run THREE queries
+  // per student (isSiblingStudent + priorArrears + hasPriorFeeRecord,
+  // awaited in sequence inside the loop below) — with the 1100-student
+  // class that was ~3300 sequential round-trips and pushed /fees to
+  // 2681 ms. Batch all three inputs up front instead: one query for every
+  // fee record of the listed students (arrears derive from the
+  // before-this-month subset; first-record from any month at all — the
+  // fee-math rule counts a record in ANY month), plus one lightweight
+  // query for every active student's parent-phone hash (siblings are
+  // school-wide, not just within the filtered class). feeBreakdownForStudent
+  // (single-student, used by payFee/rollover) is untouched.
+  const allRecords: any[] = studentIds.length
+    ? await db.feeRecord.findMany({ where: { schoolId, studentId: { in: studentIds }, deletedAt: null } })
+    : [];
+  const arrearsByStudent = new Map<string, number>();
+  const hasPriorByStudent = new Set<string>(allRecords.map((r) => r.studentId));
+  for (const r of allRecords) {
+    if (r.month >= month) continue;
+    const bal = Math.max(0, (r.amountDue ?? 0) - (r.amountPaid ?? 0) - (r.discount ?? 0));
+    arrearsByStudent.set(r.studentId, (arrearsByStudent.get(r.studentId) ?? 0) + bal);
+  }
+  const siblingHashes: any[] = await db.student.findMany({
+    where: { schoolId, status: 'active', deletedAt: null },
+    select: { parentPhoneHash: true },
+  });
+  const hashCounts = new Map<string, number>();
+  for (const s of siblingHashes) {
+    if (!s.parentPhoneHash) continue;
+    hashCounts.set(s.parentPhoneHash, (hashCounts.get(s.parentPhoneHash) ?? 0) + 1);
+  }
+
   // 6C-2: rows without a record yet show the PROSPECTIVE breakdown
   // (arrears / admission fee / sibling discount folded into amount_due).
   // Rows with a record show the stored arrears / scholarship_discount;
@@ -566,7 +597,16 @@ export async function listFees(
       arrears = rec.arrears ?? 0;
       scholarshipDiscount = rec.scholarshipDiscount ?? 0;
     } else if (structure) {
-      breakdown = await feeBreakdownForStudent(db, schoolId, s, structure, month);
+      // Batched inputs (see above) — same math as feeBreakdownForStudent.
+      breakdown = computeFeeBreakdown({
+        monthlyAmount: structure.monthlyAmount,
+        admissionFee: structure.admissionFee ?? 0,
+        siblingDiscountPct: structure.siblingDiscountPct ?? 0,
+        isSibling: !!s.parentPhoneHash && (hashCounts.get(s.parentPhoneHash) ?? 0) > 1,
+        isFirstRecord: !hasPriorByStudent.has(s.id),
+        arrears: arrearsByStudent.get(s.id) ?? 0,
+        scholarshipDiscount: 0,
+      });
       amountDue = breakdown.amount_due;
       amountPaid = 0;
       discount = 0;
@@ -601,11 +641,29 @@ export async function listFees(
     });
   }
 
-  if (query.status) items = items.filter((i) => i.status === query.status);
+  // Round 5 (F1): the status filter runs server-side now (the UI used to
+  // filter only the loaded page, so "Unpaid" returned 0 rows while unpaid
+  // vouchers existed for students past the 200-row cap). A no-structure
+  // row carries the backend's GENERATED 'paid' status (balance 0 <= 0) —
+  // the D3 phantom — so it must NOT match a 'paid' filter; it is not paid,
+  // it owes nothing yet. It matches no status filter except 'all'.
+  if (query.status) {
+    items = items.filter((i) => i.status === query.status && !(query.status === 'paid' && i.no_structure));
+  }
   const total = items.length;
   const pages = Math.max(1, Math.ceil(total / limit));
   const paged = items.slice((page - 1) * limit, page * limit);
-  return { items: paged, total, page, pages, month };
+  // Round 5 (F1): whole-month totals over ALL matching rows, so the Fees
+  // cards (Collected / Pending / Paid / Unpaid) no longer change when the
+  // admin turns the page. No-structure rows contribute 0 (their amounts
+  // are all 0), matching the old page-local sums.
+  const totals = {
+    collected: items.reduce((a, i) => a + (i.amount_paid ?? 0), 0),
+    pending: items.reduce((a, i) => a + Math.max(0, (i.amount_due ?? 0) - (i.amount_paid ?? 0) - (i.discount ?? 0)), 0),
+    paid_count: items.filter((i) => i.status === 'paid' && !i.no_structure).length,
+    unpaid_count: items.filter((i) => i.status === 'unpaid' && !i.no_structure).length,
+  };
+  return { items: paged, total, page, pages, month, totals };
 }
 
 // ---------------------------------------------------------------------------

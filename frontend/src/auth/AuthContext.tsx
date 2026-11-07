@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
-import { api, clearTokens, getAccessToken, setTokens, SESSION_EXPIRED_EVENT, SESSION_EXPIRED_KEY } from '../lib/api';
+import { api, cachedApiGet, clearTokens, getAccessToken, setTokens, SESSION_EXPIRED_EVENT, SESSION_EXPIRED_KEY } from '../lib/api';
 import type { User } from '../lib/types';
 
 interface AuthState {
@@ -94,7 +94,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setLoading(false);
       return;
     }
-    api<{ user: User }>('/auth/me')
+    // Round 5 (F2): /auth/me is cached per session for 5 minutes
+    // (cachedApiGet) — it was re-fetched on every full app mount and
+    // counted toward the per-IP rate limit on every navigation in the
+    // harness. A 401 from any other call still signs the user out.
+    cachedApiGet<{ user: User }>('/auth/me')
       .then((data) => {
         if (!alive) return;
         // The endpoint wraps the user: { user: {...} }. Accept the bare

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, ApiClientError } from '../lib/api';
 import type { PageResult, Student } from '../lib/types';
 import { normalizePkPhone } from '../lib/utils';
-import { Badge, Button, EmptyState, ErrorBanner, Field, inputCls, Modal, Spinner, Tabs, useToast } from '../components/ui';
+import { Badge, Button, EmptyState, ErrorBanner, Field, inputCls, Modal, Pager, Spinner, Tabs, useToast } from '../components/ui';
 import ConfirmDialog from '../components/ConfirmDialog';
 import type { FormEvent } from 'react';
 
@@ -30,6 +30,9 @@ interface ParentImportPreview {
 export default function ParentsPage() {
   const [flag, setFlag] = useState<'missing' | 'invalid' | 'duplicate'>('missing');
   const [students, setStudents] = useState<Student[]>([]);
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const [pages, setPages] = useState(1);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [editing, setEditing] = useState<Student | null>(null);
@@ -76,14 +79,20 @@ export default function ParentsPage() {
 
   const load = useCallback(() => {
     setLoading(true);
-    api<PageResult<Student>>(`/parents?flag=${flag}&limit=200`)
+    // Round 5 (F1): server-side pagination — the list used to fetch
+    // ?limit=200 with no pager, so flagged students past the cap were
+    // unreachable. The backend already paginates (listParents returns
+    // total/pages).
+    api<PageResult<Student>>(`/parents?flag=${flag}&page=${page}&limit=50`)
       .then((d) => {
         setStudents(d.items);
+        setTotal(d.total);
+        setPages(d.pages);
         setError('');
       })
       .catch(() => setError('Could not load parent numbers.'))
       .finally(() => setLoading(false));
-  }, [flag]);
+  }, [flag, page]);
 
   useEffect(load, [load]);
 
@@ -134,7 +143,7 @@ export default function ParentsPage() {
           { key: 'duplicate', label: 'Duplicate number' },
         ]}
         active={flag}
-        onChange={(k) => setFlag(k as typeof flag)}
+        onChange={(k) => { setFlag(k as typeof flag); setPage(1); }}
       />
 
       {students.length === 0 ? (
@@ -175,6 +184,9 @@ export default function ParentsPage() {
             </tbody>
           </table>
         </div>
+      )}
+      {students.length > 0 && (
+        <Pager page={page} pages={pages} total={total} itemLabel="students" itemLabelSingular="student" onPage={setPage} />
       )}
 
       {editing && (

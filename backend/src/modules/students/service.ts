@@ -55,7 +55,8 @@ export function toPublicStudent(s: any): Record<string, unknown> {
   // value (never the full number); it is the alias the frontend type
   // (`parent_phone // masked in responses`) and mock data already expect.
   // 'duplicate' is NOT set here — a per-row serializer cannot see
-  // siblings; the list functions upgrade it via withDuplicateFlags.
+  // siblings; the list functions upgrade it via duplicateFlagIds
+  // (whole class/school scope, so pagination cannot hide a pair).
   const phoneFlag: 'missing' | 'invalid' | null = !s.parentPhoneEnc
     ? 'missing'
     : !s.parentPhoneHash || parentDecryptFailed
@@ -88,29 +89,6 @@ export function toPublicStudent(s: any): Record<string, unknown> {
     created_at: s.createdAt,
     updated_at: s.updatedAt,
   };
-}
-
-/**
- * D2: duplicate rule (contracts/SCHEMA.md) — same phone hash + same
- * normalized name. Only the list functions can see siblings, so they
- * upgrade `phone_flag` to 'duplicate' for rows sharing (hash, name)
- * within the returned set. (A page boundary can hide a cross-page
- * duplicate; the Parents list fetches the whole school, the class list
- * fetches the whole class at limit=200 in the UI.)
- */
-function withDuplicateFlags(rows: any[], publics: Record<string, unknown>[]): Record<string, unknown>[] {
-  const counts = new Map<string, number>();
-  for (const r of rows) {
-    if (!r.parentPhoneHash) continue;
-    const key = `${r.parentPhoneHash}|${normalizeName(r.name)}`;
-    counts.set(key, (counts.get(key) ?? 0) + 1);
-  }
-  return publics.map((p, i) => {
-    const r = rows[i];
-    if (!r?.parentPhoneHash || p.phone_flag) return p;
-    const key = `${r.parentPhoneHash}|${normalizeName(r.name)}`;
-    return (counts.get(key) ?? 0) > 1 ? { ...p, phone_flag: 'duplicate' } : p;
-  });
 }
 
 /**
@@ -282,6 +260,50 @@ export async function createStudent(db: Db, schoolId: string, classId: string, i
   return created;
 }
 
+/**
+ * Round 5 (F1): duplicate phone flags must be computed over the WHOLE
+ * class/school, not just the loaded page. With server-side pagination the
+ * old withDuplicateFlags only saw the current page, so a duplicate pair
+ * split across pages was invisible on both pages. This fetches only the
+ * three columns the check needs (no phone decryption).
+ */
+async function duplicateFlagIds(db: Db, schoolId: string, classId?: string): Promise<Set<string>> {
+  const where: Record<string, unknown> = { schoolId: schoolId, deletedAt: null };
+  if (classId) where.classId = classId;
+  const all: any[] = await db.student.findMany({ where, select: { id: true, parentPhoneHash: true, name: true } });
+  const counts = new Map<string, number>();
+  for (const s of all) {
+    if (!s.parentPhoneHash) continue;
+    const key = `${s.parentPhoneHash}|${normalizeName(s.name)}`;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  const ids = new Set<string>();
+  for (const s of all) {
+    if (!s.parentPhoneHash) continue;
+    if ((counts.get(`${s.parentPhoneHash}|${normalizeName(s.name)}`) ?? 0) > 1) ids.add(s.id);
+  }
+  return ids;
+}
+
+/** Upgrade phone_flag to 'duplicate' from a precomputed whole-scope id set. */
+function applyDuplicateFlags(publics: Record<string, unknown>[], dupIds: Set<string>): Record<string, unknown>[] {
+  return publics.map((p) => (!p.phone_flag && dupIds.has(p.id as string) ? { ...p, phone_flag: 'duplicate' } : p));
+}
+
+/** Round 5 (F1): server-side phone-flag filter for listStudents. Missing /
+ * invalid filter in the database; 'duplicate' needs the whole-class id set
+ * (same (phone, name) pair, computed above) because no single row carries it.
+ */
+async function flagWhere(db: Db, schoolId: string, classId: string, flag: string): Promise<Record<string, unknown>> {
+  if (flag === 'missing') return { parentPhoneEnc: null };
+  if (flag === 'invalid') return { parentPhoneEnc: { not: null }, parentPhoneHash: null };
+  if (flag === 'duplicate') {
+    const ids = await duplicateFlagIds(db, schoolId, classId);
+    return { id: { in: [...ids] } };
+  }
+  return {};
+}
+
 export async function listStudents(
   db: Db,
   schoolId: string,
@@ -292,8 +314,10 @@ export async function listStudents(
   const { page, limit, skip } = parsePagination(query);
   const search = String(query.search ?? '').trim();
   const status = String(query.status ?? '').trim();
+  const flag = String(query.flag ?? '').trim();
   const where: Record<string, unknown> = { schoolId: schoolId, classId: classId, deletedAt: null };
   if (status) where.status = status;
+  if (flag) Object.assign(where, await flagWhere(db, schoolId, classId, flag));
   const or: Record<string, unknown>[] = [];
   if (search) {
     or.push({ name: { contains: search, mode: 'insensitive' } });
@@ -302,11 +326,12 @@ export async function listStudents(
     if (!Number.isNaN(asNum)) or.push({ rollNo: asNum });
   }
   const whereWithSearch = or.length > 0 ? { ...where, OR: or } : where;
-  const [items, total] = await Promise.all([
+  const [items, total, dupIds] = await Promise.all([
     db.student.findMany({ where: whereWithSearch, orderBy: [{ rollNo: 'asc' }, { name: 'asc' }], skip, take: limit }),
     db.student.count({ where: whereWithSearch }),
+    duplicateFlagIds(db, schoolId, classId),
   ]);
-  const pageOut = paginatedResponse(withDuplicateFlags(items, items.map(toPublicStudent)), total, { page, limit, skip });
+  const pageOut = paginatedResponse(applyDuplicateFlags(items.map(toPublicStudent), dupIds), total, { page, limit, skip });
   return pageOut;
 }
 
@@ -475,11 +500,12 @@ export async function listStudentsSchoolWide(
     if (!Number.isNaN(asNum)) or.push({ rollNo: asNum });
   }
   const whereWithSearch = or.length > 0 ? { ...where, OR: or } : where;
-  const [items, total] = await Promise.all([
+  const [items, total, dupIds] = await Promise.all([
     db.student.findMany({ where: whereWithSearch, orderBy: [{ name: 'asc' }], skip, take: limit }),
     db.student.count({ where: whereWithSearch }),
+    duplicateFlagIds(db, schoolId),
   ]);
-  return paginatedResponse(withDuplicateFlags(items, items.map(toPublicStudent)), total, { page, limit, skip });
+  return paginatedResponse(applyDuplicateFlags(items.map(toPublicStudent), dupIds), total, { page, limit, skip });
 }
 
 /**
@@ -552,7 +578,9 @@ export async function listParents(
   }
   const total = filtered.length;
   const pageRows = filtered.slice(skip, skip + limit);
-  const items = withDuplicateFlags(pageRows, pageRows.map(toPublicStudent));
+  // Round 5 (F1): duplicate flags from the whole school, not just the page.
+  const dupIds = await duplicateFlagIds(db, schoolId);
+  const items = applyDuplicateFlags(pageRows.map(toPublicStudent), dupIds);
   return { items, total, page, pages: Math.max(1, Math.ceil(total / limit)) };
 }
 
@@ -650,8 +678,15 @@ export function rowsToImportRows(grid: string[][]): ImportRow[] {
   const out: ImportRow[] = [];
   for (let i = 1; i < grid.length; i++) {
     const r = grid[i];
+    // Round 5 (F10): a row with an empty name used to be skipped silently
+    // here (`if (!name) continue`) before validation ever saw it — the
+    // preview total did not even count it. Keep skipping genuinely blank
+    // lines (no cell has content), but carry any other empty-name row
+    // through so previewImport reports it as invalid ("Missing student
+    // name") instead of dropping it without a trace.
+    const hasContent = r.some((c) => (c ?? '').trim() !== '');
+    if (!hasContent) continue;
     const name = (r[idx('name')] ?? '').trim();
-    if (!name) continue;
     const rollRaw = (r[idx('roll_no')] ?? '').trim();
     const rollNo = rollRaw === '' ? null : Number.parseInt(rollRaw, 10);
     const cell = (h: string): string | null => {

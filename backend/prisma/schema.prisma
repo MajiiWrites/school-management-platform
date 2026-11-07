@@ -355,7 +355,16 @@ model MessageTemplate {
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
 
-  @@unique([schoolId, type, language])
+  // Round 5 (F11): the old key (school, type, language) allowed exactly ONE
+  // custom template per language, so Duplicate always 409'd once any
+  // custom template existed — and creating a second custom template failed
+  // the same way. Names are required on create and seeded defaults are
+  // backfilled by the migration, so (school, type, language, name) keeps
+  // one active wording per type/language/name while letting a school hold
+  // several custom templates. getActiveTemplate (sends) still resolves by
+  // type + language + isActive; system types keep a single row per
+  // language because their seeded names are distinct per type/language.
+  @@unique([schoolId, type, language, name])
   @@map("message_templates")
 }
 

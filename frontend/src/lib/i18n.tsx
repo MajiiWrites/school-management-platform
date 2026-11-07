@@ -8,7 +8,7 @@
 
 import { createContext, useContext, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import { api } from './api';
+import { cachedApiGet } from './api';
 
 export type UiLang = 'en' | 'ur';
 
@@ -64,8 +64,12 @@ const Ctx = createContext<LangCtx>({ lang: 'en', setLang: () => undefined, nav: 
 export function LanguageProvider({ children }: { children: ReactNode }) {
   const [lang, setLangState] = useState<UiLang>(() => (localStorage.getItem('smp_lang') === 'ur' ? 'ur' : 'en'));
 
+  // Round 5 (F2): the language fetch is cached per session for 5 minutes
+  // (cachedApiGet) — it fired on every full app mount. A language change
+  // saved in Settings clears the cache (see Settings.tsx doSave), so the
+  // new language still applies on the next mount without waiting.
   useEffect(() => {
-    api<{ language?: string }>('/settings')
+    cachedApiGet<{ language?: string }>('/settings')
       .then((s) => {
         if (s.language === 'ur' || s.language === 'en') {
           setLangState(s.language);

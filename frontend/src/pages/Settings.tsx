@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
-import { api, ApiClientError } from '../lib/api';
+import { api, clearApiCache, ApiClientError } from '../lib/api';
 import type {
   AcademicSession,
   AuditLog,
@@ -78,6 +78,10 @@ function SchoolSettingsTab() {
     setBusy(true);
     try {
       await api('/settings', { method: 'PATCH', body: s });
+      // Round 5 (F2): the language + session settings are cached per
+      // session — a save must invalidate that cache or the new values
+      // would not apply until the 5-minute cache expired.
+      clearApiCache();
       push('success', 'Settings saved.');
     } catch (err) {
       push('error', errText(err));
@@ -151,11 +155,18 @@ function SchoolSettingsTab() {
           <input className={inputCls} value={s.school_phone ?? ''} onChange={(e) => setS({ ...s, school_phone: e.target.value })} placeholder="e.g. 03001234567" autoComplete="off" />
         </Field>
         <Field label="School logo" hint="Shown on certificates and ID cards. JPG/PNG up to ~500 KB.">
-          <div className="flex items-center gap-3">
+          {/* Round 5 (R2): the row used to be a non-wrapping flex row and
+              the native file input is ~312px wide with no shrink — at a
+              360px viewport it pushed the whole Settings page 63px past
+              the viewport (reproduced exactly: input x=111, w=312,
+              right edge 423). Wrap the row and let the input shrink to
+              the card width instead. */}
+          <div className="flex flex-wrap items-center gap-3">
             {s.logo_url ? <img src={s.logo_url} alt="School logo" className="h-12 max-w-[120px] rounded border border-slate-200 object-contain" /> : <span className="text-sm text-slate-400">No logo uploaded</span>}
             <input
               type="file"
               accept="image/*"
+              className="min-w-0 flex-1"
               onChange={(e) => {
                 const f = e.target.files?.[0];
                 if (!f) return;
@@ -615,29 +626,52 @@ function JobsTab() {
   if (loading) return <Spinner label="Loading job status…" />;
   if (!jobs) return <ErrorBanner message={error || 'Job status unavailable.'} />;
 
-  const rows: { label: string; when: string; last: string | null | undefined }[] = [
-    { label: 'Monthly fee reminder', when: '1st of every month, school timezone', last: jobs.monthly_fee_reminder },
-    { label: 'Daily pending-attendance check', when: 'Every school day', last: jobs.daily_pending_attendance },
-    { label: 'Teacher reminders', when: 'At the set reminder time', last: jobs.teacher_reminders },
-  ];
+  // Round 5 (F12): render every job the API returns (all six), with its
+  // own description, schedule and last-run state. The old code hardcoded
+  // 3 rows and read a flat shape the API never returned, so the tab
+  // showed 3 rows all stuck on "Last run: —" and hid fee_followup,
+  // scheduled_messages and school_backup entirely. Job names are shown
+  // in plain words (underscores become spaces); last-run state comes
+  // from this school's entry (the API is tenant-scoped).
+  const labelOf = (name: string) =>
+    name
+      .split('_')
+      .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w))
+      .join(' ');
+  const entries = Array.isArray(jobs.jobs) ? jobs.jobs : [];
 
   return (
     <Card className="p-5">
       <h2 className="text-base font-semibold">Scheduled jobs</h2>
       <p className="mt-1 text-sm text-slate-500">
         These run on the server (node-cron). Fee reminders skip Sundays and holidays; paid students are never reminded.
+        Last-run state resets when the server restarts.
       </p>
-      <ul className="mt-4 divide-y divide-slate-100">
-        {rows.map((r) => (
-          <li key={r.label} className="flex flex-wrap items-center justify-between gap-2 py-3 text-sm">
-            <div>
-              <p className="font-medium">{r.label}</p>
-              <p className="text-slate-500">{r.when}</p>
-            </div>
-            <span className="text-slate-600">Last run: {fmtDateTime(r.last)}</span>
-          </li>
-        ))}
-      </ul>
+      {entries.length === 0 ? (
+        <div className="mt-4">
+          <EmptyState title="No scheduled jobs" body="The server reported no jobs. Try reloading the page." />
+        </div>
+      ) : (
+        <ul className="mt-4 divide-y divide-slate-100">
+          {entries.map((j) => {
+            const mine = j.schools?.[0];
+            return (
+              <li key={j.name} className="flex flex-wrap items-center justify-between gap-2 py-3 text-sm">
+                <div className="min-w-0">
+                  <p className="font-medium">{labelOf(j.name)}</p>
+                  <p className="text-slate-500">{j.description || `Runs ${j.schedule}`}</p>
+                  <p className="text-xs text-slate-400">Schedule: {j.schedule}</p>
+                </div>
+                <span className="text-right text-slate-600">
+                  Last run: {fmtDateTime(mine?.last_run_at)}
+                  {mine?.last_status && mine.last_status !== 'never' ? ` (${mine.last_status})` : ''}
+                  {mine && mine.runs > 0 ? ` · ${mine.runs} run${mine.runs === 1 ? '' : 's'}` : ''}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </Card>
   );
 }

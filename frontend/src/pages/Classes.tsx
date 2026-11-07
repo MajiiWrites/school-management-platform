@@ -413,22 +413,52 @@ export function ClassDetailPage() {
   const [cls, setCls] = useState<ClassItem | null>(null);
   const [students, setStudents] = useState<Student[]>([]);
   const [loading, setLoading] = useState(true);
+  const [listLoading, setListLoading] = useState(false);
   const [error, setError] = useState('');
+  // Round 5 (F1): same server-side pagination + search + flag filter as
+  // the Students page — this detail view used to cap at 200 rows (API
+  // clamps to 100) with no pager, so most of a big class was unreachable
+  // here too.
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const [pages, setPages] = useState(1);
+  const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [flagFilter, setFlagFilter] = useState<'all' | 'missing' | 'invalid' | 'duplicate'>('all');
+
+  useEffect(() => {
+    const t = window.setTimeout(() => setDebouncedSearch(search), 300);
+    return () => window.clearTimeout(t);
+  }, [search]);
 
   useEffect(() => {
     if (!id) return;
     setLoading(true);
-    Promise.all([
-      api<ClassItem>(`/classes/${id}`),
-      api<PageResult<Student>>(`/classes/${id}/students?limit=200`),
-    ])
-      .then(([c, s]) => {
-        setCls(c);
-        setStudents(s.items);
-      })
+    api<ClassItem>(`/classes/${id}`)
+      .then((c) => setCls(c))
       .catch(() => setError('Could not load this class.'))
       .finally(() => setLoading(false));
   }, [id]);
+
+  const loadStudents = useCallback(() => {
+    if (!id) return;
+    setListLoading(true);
+    const q = new URLSearchParams({ page: String(page), limit: '50' });
+    if (debouncedSearch.trim()) q.set('search', debouncedSearch.trim());
+    if (flagFilter !== 'all') q.set('flag', flagFilter);
+    api<PageResult<Student>>(`/classes/${id}/students?${q.toString()}`)
+      .then((d) => {
+        setStudents(d.items);
+        setTotal(d.total);
+        setPages(d.pages);
+      })
+      .catch(() => setError('Could not load students.'))
+      .finally(() => setListLoading(false));
+  }, [id, page, debouncedSearch, flagFilter]);
+
+  useEffect(() => {
+    void loadStudents();
+  }, [loadStudents]);
 
   if (loading) return <Spinner label="Loading class…" />;
   if (!cls) return <ErrorBanner message={error || 'Class not found.'} onRetry={() => navigate('/classes')} />;
@@ -441,11 +471,29 @@ export function ClassDetailPage() {
         </button>
         <h1 className="mt-1 text-2xl font-bold text-slate-900">Class {displayClass(cls)}</h1>
         <p className="text-sm text-slate-500">
-          Teacher: {cls.teacher_name} · {students.length} students
+          Teacher: {cls.teacher_name} · {total} student{total === 1 ? '' : 's'}
         </p>
       </div>
-      {error && <ErrorBanner message={error} />}
-      <StudentsPanel classId={cls.id} students={students} setStudents={setStudents} showOcr />
+      {error && <ErrorBanner message={error} onRetry={loadStudents} />}
+      {listLoading ? (
+        <Spinner label="Loading students…" />
+      ) : (
+        <StudentsPanel
+          classId={cls.id}
+          students={students}
+          setStudents={setStudents}
+          showOcr
+          page={page}
+          pages={pages}
+          total={total}
+          search={search}
+          onSearchChange={(q) => { setSearch(q); setPage(1); }}
+          flagFilter={flagFilter}
+          onFlagFilterChange={(f) => { setFlagFilter(f); setPage(1); }}
+          onPageChange={setPage}
+          onRefresh={loadStudents}
+        />
+      )}
     </div>
   );
 }

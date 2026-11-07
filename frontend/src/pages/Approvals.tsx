@@ -11,7 +11,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api, ApiClientError } from '../lib/api';
 import type { PageResult } from '../lib/types';
 import { fmtDateTime } from '../lib/utils';
-import { Badge, Button, Card, EmptyState, ErrorBanner, Field, inputCls, Modal, Spinner, Tabs, useToast } from '../components/ui';
+import { Badge, Button, Card, EmptyState, ErrorBanner, Field, inputCls, Modal, Pager, Spinner, Tabs, useToast } from '../components/ui';
 
 function errText(e: unknown): string {
   return e instanceof ApiClientError ? e.message : 'Something went wrong.';
@@ -64,6 +64,11 @@ export default function ApprovalsPage() {
   const [filter, setFilter] = useState<FilterKey>('pending');
   const [rows, setRows] = useState<ApprovalRow[]>([]);
   const [total, setTotal] = useState(0);
+  // Round 5 (F1): server-side pagination — the queue fetched ?limit=50
+  // with no pager, so requests past the first 50 were unreachable. The
+  // backend already paginates (total/pages).
+  const [page, setPage] = useState(1);
+  const [pages, setPages] = useState(1);
   const [users, setUsers] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -76,20 +81,21 @@ export default function ApprovalsPage() {
     setLoading(true);
     setError('');
     try {
-      const qs = filter ? `?status=${filter}&limit=50` : '?limit=50';
+      const qs = filter ? `?status=${filter}&page=${page}&limit=50` : `?page=${page}&limit=50`;
       const [data, u] = await Promise.all([
         api<PageResult<ApprovalRow>>(`/approvals${qs}`),
         api<PageResult<{ id: string; email: string }>>('/users').catch(() => ({ items: [] as { id: string; email: string }[], total: 0, page: 1, pages: 1 })),
       ]);
       setRows(data.items);
       setTotal(data.total);
+      setPages(data.pages);
       setUsers(Object.fromEntries(u.items.map((x) => [x.id, x.email])));
     } catch (err) {
       setError(errText(err));
     } finally {
       setLoading(false);
     }
-  }, [filter]);
+  }, [filter, page]);
 
   useEffect(() => {
     void load();
@@ -140,7 +146,7 @@ export default function ApprovalsPage() {
         </p>
       </div>
 
-      <Tabs tabs={FILTERS.map((f) => ({ key: f.key, label: `${f.label}${f.key === filter ? ` (${total})` : ''}` }))} active={filter} onChange={(k) => setFilter(k as FilterKey)} />
+      <Tabs tabs={FILTERS.map((f) => ({ key: f.key, label: `${f.label}${f.key === filter ? ` (${total})` : ''}` }))} active={filter} onChange={(k) => { setFilter(k as FilterKey); setPage(1); }} />
 
       {error && <ErrorBanner message={error} onRetry={() => void load()} />}
       {loading ? (
@@ -193,6 +199,9 @@ export default function ApprovalsPage() {
             </Card>
           ))}
         </div>
+      )}
+      {rows.length > 0 && (
+        <Pager page={page} pages={pages} total={total} itemLabel="requests" itemLabelSingular="request" onPage={setPage} />
       )}
 
       {rejectTarget && (

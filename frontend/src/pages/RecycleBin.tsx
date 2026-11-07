@@ -37,7 +37,29 @@ const ENTITY_LABELS: Record<string, string> = {
   exam: 'Exam',
   result: 'Result',
   result_sheet: 'Result sheet',
+  message_template: 'Message template',
+  message_draft: 'Message draft',
+  academic_session: 'School year',
+  exam_datesheet: 'Exam datesheet',
+  timetable_entry: 'Timetable entry',
+  staff: 'Staff member',
 };
+
+/** Entities the backend can actually restore (hardening/recycleBin.ts).
+ * Everything else lands in the bin when it is deleted, but the backend
+ * has no way to rebuild it — Round 5 (F4): instead of a Restore button
+ * that always fails ("Entity cannot be restored: message_template"),
+ * those rows show plain words explaining that they can't be restored.
+ * The raw entity key (message_template) must never reach the user. */
+const RESTORABLE = new Set([
+  'class',
+  'student',
+  'fee_record',
+  'exam',
+  'result',
+  'result_sheet',
+  'message_template',
+]);
 
 function str(v: unknown): string {
   return typeof v === 'string' ? v : v === null || v === undefined ? '' : String(v);
@@ -59,8 +81,22 @@ function describe(r: DeletedRecord): string {
       return `${str(s.studentName) || 'Result'}${s.rollNo !== null && s.rollNo !== undefined ? ` · Roll ${String(s.rollNo)}` : ''}`;
     case 'result_sheet':
       return str(s.title) || 'Result sheet';
+    case 'message_template':
+      // Snapshot shape is the camelCase mapTemplateRow row (name, type,
+      // language, body) — see hardening/recycleBin.ts.
+      return `Message template “${str(s.name) || str(s.type) || 'template'}”${str(s.type) ? ` · ${str(s.type)}` : ''}${str(s.language) ? ` · ${str(s.language)}` : ''}`;
+    case 'message_draft':
+      return `Message draft${str(s.title) ? ` — ${str(s.title)}` : ''}`;
+    case 'academic_session':
+      return `School year ${str(s.name) || str(s.title) || ''}`.trim();
+    case 'exam_datesheet':
+      return `Exam datesheet${str(s.title) ? ` — ${str(s.title)}` : ''}`;
+    case 'timetable_entry':
+      return `Timetable entry${str(s.title) ? ` — ${str(s.title)}` : ''}`;
+    case 'staff':
+      return `Staff member ${str(s.name) || ''}`.trim();
     default:
-      return `${ENTITY_LABELS[r.entity] ?? r.entity} ${r.entity_id.slice(0, 8)}`;
+      return `${ENTITY_LABELS[r.entity] ?? 'Deleted item'} ${r.entity_id.slice(0, 8)}`;
   }
 }
 
@@ -172,7 +208,7 @@ export default function RecycleBinPage() {
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
-                        <Badge tone="slate">{ENTITY_LABELS[r.entity] ?? r.entity}</Badge>
+                        <Badge tone="slate">{ENTITY_LABELS[r.entity] ?? 'Deleted item'}</Badge>
                         {left === null ? null : left < 0 ? (
                           <Badge tone="red">Restore window expired</Badge>
                         ) : left <= 7 ? (
@@ -188,13 +224,19 @@ export default function RecycleBinPage() {
                       </p>
                     </div>
                     <div className="flex shrink-0 gap-2">
-                      <Button
-                        variant="secondary"
-                        disabled={busyId === r.id || (left !== null && left < 0)}
-                        onClick={() => restore(r)}
-                      >
-                        {busyId === r.id ? 'Working…' : 'Restore'}
-                      </Button>
+                      {RESTORABLE.has(r.entity) ? (
+                        <Button
+                          variant="secondary"
+                          disabled={busyId === r.id || (left !== null && left < 0)}
+                          onClick={() => restore(r)}
+                        >
+                          {busyId === r.id ? 'Working…' : 'Restore'}
+                        </Button>
+                      ) : (
+                        <span className="inline-flex min-h-11 items-center px-3 py-2 text-sm text-slate-500">
+                          Can’t be restored — only kept here for the record
+                        </span>
+                      )}
                       <Button variant="danger" disabled={busyId === r.id} onClick={() => setPurgeStep1(r)}>
                         Delete permanently
                       </Button>

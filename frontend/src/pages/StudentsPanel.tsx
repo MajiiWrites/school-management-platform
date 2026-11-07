@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom';
 import { api, ApiClientError } from '../lib/api';
 import type { ClassItem, Student } from '../lib/types';
 import { displayClass, normalizePkPhone } from '../lib/utils';
-import { Badge, Button, EmptyState, Field, inputCls, Modal, useToast } from '../components/ui';
+import { Badge, Button, EmptyState, Field, inputCls, Modal, Pager, useToast } from '../components/ui';
 import ConfirmDialog from '../components/ConfirmDialog';
 
 function errText(e: unknown): string {
@@ -68,15 +68,41 @@ export default function StudentsPanel({
   setStudents,
   showOcr,
   classNameLabel,
+  // Round 5 (F1): server-side paging. When the parent passes these, the
+  // search box + phone filter + pager all run against the API (page,
+  // search, flag) and the panel refreshes through onRefresh instead of
+  // mutating the local page after add/edit/remove/move/import. Without
+  // them the panel keeps its old client-side behaviour.
+  page,
+  pages,
+  total,
+  search: serverSearch,
+  onSearchChange,
+  flagFilter: serverFlagFilter,
+  onFlagFilterChange,
+  onPageChange,
+  onRefresh,
 }: {
   classId: string;
   students: Student[];
   setStudents: (s: Student[]) => void;
   showOcr?: boolean;
   classNameLabel?: string;
+  page?: number;
+  pages?: number;
+  total?: number;
+  search?: string;
+  onSearchChange?: (q: string) => void;
+  flagFilter?: 'all' | 'missing' | 'invalid' | 'duplicate';
+  onFlagFilterChange?: (f: 'all' | 'missing' | 'invalid' | 'duplicate') => void;
+  onPageChange?: (page: number) => void;
+  onRefresh?: () => void;
 }) {
-  const [search, setSearch] = useState('');
-  const [flagFilter, setFlagFilter] = useState<'all' | 'missing' | 'invalid' | 'duplicate'>('all');
+  const serverPaged = onPageChange !== undefined;
+  const [localSearch, setLocalSearch] = useState('');
+  const [localFlagFilter, setLocalFlagFilter] = useState<'all' | 'missing' | 'invalid' | 'duplicate'>('all');
+  const search = serverPaged ? (serverSearch ?? '') : localSearch;
+  const flagFilter = serverPaged ? (serverFlagFilter ?? 'all') : localFlagFilter;
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<Student | null>(null);
   const [importing, setImporting] = useState(false);
@@ -99,7 +125,11 @@ export default function StudentsPanel({
       .catch(() => undefined);
   }, []);
 
+  // Round 5 (F1): server-paged mode skips the client filter entirely —
+  // the API already searched/filtered this page. Client mode (no paging
+  // props) keeps the old in-memory filter.
   const filtered = useMemo(() => {
+    if (serverPaged) return students;
     const q = search.trim().toLowerCase();
     return students.filter((s) => {
       if (flagFilter !== 'all' && phoneFlagOf(s) !== flagFilter) return false;
@@ -110,12 +140,13 @@ export default function StudentsPanel({
         (s.parent_name ?? '').toLowerCase().includes(q)
       );
     });
-  }, [students, search, flagFilter]);
+  }, [students, search, flagFilter, serverPaged]);
 
   const remove = async (s: Student) => {
     try {
       await api(`/students/${s.id}`, { method: 'DELETE' });
-      setStudents(students.filter((x) => x.id !== s.id));
+      if (serverPaged && onRefresh) onRefresh();
+      else setStudents(students.filter((x) => x.id !== s.id));
       push('success', 'Student moved to the Recycle Bin.');
     } catch (e) {
       push('error', errText(e));
@@ -152,10 +183,18 @@ export default function StudentsPanel({
       // directly rendered "[object Object]". Count it, tolerating the
       // legacy number shape the mock API returns.
       const invalidCount = Array.isArray(res.invalid_rows) ? res.invalid_rows.length : res.invalid_rows;
-      push('success', `Imported ${res.imported} students (${res.duplicates_flagged} duplicates flagged, ${invalidCount} invalid rows).`);
+      // Round 5 (F7): "Imported 1 students (… 1 invalid rows)" — pluralise.
+      const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+      push(
+        'success',
+        `Imported ${plural(res.imported, 'student', 'students')} (${plural(res.duplicates_flagged, 'duplicate', 'duplicates')} flagged, ${plural(invalidCount, 'invalid row', 'invalid rows')}).`,
+      );
       // Refresh list
-      const fresh = await api<{ items: Student[] }>(`/classes/${classId}/students?limit=200`);
-      setStudents(fresh.items);
+      if (serverPaged && onRefresh) onRefresh();
+      else {
+        const fresh = await api<{ items: Student[] }>(`/classes/${classId}/students?limit=200`);
+        setStudents(fresh.items);
+      }
     } catch (e) {
       push('error', errText(e));
     } finally {
@@ -168,7 +207,8 @@ export default function StudentsPanel({
     setMoveBusy(true);
     try {
       const saved = await api<Student>(`/students/${student.id}/move`, { method: 'POST', body: { class_id: toClassId } });
-      setStudents(students.filter((x) => x.id !== student.id));
+      if (serverPaged && onRefresh) onRefresh();
+      else setStudents(students.filter((x) => x.id !== student.id));
       const target = classes.find((c) => c.id === toClassId);
       push('success', `${student.name} moved to Class ${target ? displayClass(target) : 'the selected class'}.`);
       return saved;
@@ -186,9 +226,9 @@ export default function StudentsPanel({
         <input
           className={`${inputCls} max-w-xs`}
           value={search}
-          onChange={(e) => setSearch(e.target.value)}
+          onChange={(e) => (serverPaged ? onSearchChange?.(e.target.value) : setLocalSearch(e.target.value))}
           placeholder="Search name, roll no, parent…" autoComplete="off" />
-        <select className={inputCls + ' w-auto'} value={flagFilter} onChange={(e) => setFlagFilter(e.target.value as typeof flagFilter)}>
+        <select className={inputCls + ' w-auto'} value={flagFilter} onChange={(e) => (serverPaged ? onFlagFilterChange?.(e.target.value as typeof flagFilter) : setLocalFlagFilter(e.target.value as typeof flagFilter))}>
           <option value="all">All phone statuses</option>
           <option value="missing">Missing number</option>
           <option value="invalid">Invalid number</option>
@@ -232,10 +272,18 @@ export default function StudentsPanel({
       {filtered.length === 0 ? (
         <EmptyState
           title="No students found"
-          body={students.length === 0 ? `No students in ${classNameLabel ?? 'this class'} yet — upload a list photo or add them manually.` : 'Try a different search or filter.'}
-          actionLabel={students.length === 0 ? 'Add your first student' : undefined}
+          body={
+            serverPaged
+              ? (total ?? 0) === 0
+                ? `No students in ${classNameLabel ?? 'this class'} yet — upload a list photo or add them manually.`
+                : 'Try a different search or filter.'
+              : students.length === 0
+                ? `No students in ${classNameLabel ?? 'this class'} yet — upload a list photo or add them manually.`
+                : 'Try a different search or filter.'
+          }
+          actionLabel={(serverPaged ? (total ?? 0) === 0 : students.length === 0) ? 'Add your first student' : undefined}
           onAction={
-            students.length === 0
+            (serverPaged ? (total ?? 0) === 0 : students.length === 0)
               ? () => {
                   setEditing(null);
                   setShowForm(true);
@@ -298,6 +346,9 @@ export default function StudentsPanel({
           </table>
         </div>
       )}
+      {serverPaged && filtered.length > 0 && (
+        <Pager page={page ?? 1} pages={pages ?? 1} total={total ?? 0} itemLabel="students" itemLabelSingular="student" onPage={(p) => onPageChange?.(p)} />
+      )}
 
       {showForm && (
         <StudentForm
@@ -306,7 +357,11 @@ export default function StudentsPanel({
           onClose={() => setShowForm(false)}
           onSaved={(saved) => {
             setShowForm(false);
-            if (editing) setStudents(students.map((x) => (x.id === saved.id ? saved : x)));
+            // Round 5 (F1): server-paged mode refreshes from the API (the
+            // saved row may belong on another page); client mode keeps the
+            // local list update.
+            if (serverPaged && onRefresh) onRefresh();
+            else if (editing) setStudents(students.map((x) => (x.id === saved.id ? saved : x)));
             else setStudents([...students, saved]);
             push('success', editing ? 'Student updated.' : 'Student added.');
           }}
@@ -385,7 +440,7 @@ export default function StudentsPanel({
                 void importCsv(f);
               }}
             >
-              {importing ? 'Importing…' : `Import ${preview.data.valid} valid students`}
+              {importing ? 'Importing…' : `Import ${preview.data.valid} valid ${preview.data.valid === 1 ? 'student' : 'students'}`}
             </Button>
           </div>
         </Modal>

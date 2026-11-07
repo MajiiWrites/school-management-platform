@@ -121,7 +121,7 @@ feesRouter.get(
     );
     res.json({
       ok: true,
-      data: { items: result.items, total: result.total, page: result.page, pages: result.pages },
+      data: { items: result.items, total: result.total, page: result.page, pages: result.pages, totals: result.totals },
       month: result.month,
     });
   }),

@@ -54,7 +54,63 @@ export async function restoreDeletedRecord(db: Db, schoolId: string, id: string,
     throw ApiError.conflict('The 30-day restore window has expired');
   }
   const delegateKey = ENTITY_DELEGATES[record.entity];
-  if (!delegateKey) throw ApiError.validation(`Entity cannot be restored: ${record.entity}`);
+  if (!delegateKey) {
+    // Round 5 (F4): message templates have no deleted_at column — the
+    // delete is a hard delete + a deleted_records snapshot (see
+    // messaging/routes.ts) — so there is no row to un-delete. Re-create
+    // the template from its snapshot instead. The snapshot is the
+    // mapTemplateRow shape (camelCase: schoolId/type/language/body/name/
+    // isCustom/isActive). If another template has since taken the same
+    // (type, language, name) slot, say so plainly instead of a raw P2002.
+    if (record.entity === 'message_template') {
+      const snap = (record.snapshot ?? {}) as Record<string, unknown>;
+      try {
+        await (db as any).messageTemplate.create({
+          data: {
+            id: record.entityId,
+            schoolId,
+            name: typeof snap.name === 'string' ? snap.name : null,
+            type: String(snap.type ?? 'custom'),
+            language: String(snap.language ?? 'en'),
+            body: String(snap.body ?? ''),
+            isCustom: snap.isCustom !== false,
+            isActive: snap.isActive !== false,
+          },
+        });
+      } catch (err) {
+        if (isUniqueViolation(err)) {
+          throw ApiError.conflict(
+            'Cannot restore this template: a template with the same name already exists for this message type and language. Rename or delete that template first, then restore.',
+          );
+        }
+        throw err;
+      }
+      await (db as any).deletedRecord.delete({ where: { id } });
+      await writeChangeLogs(db, {
+        schoolId,
+        actorId,
+        entity: record.entity,
+        entityId: record.entityId,
+        before: { deleted_at: record.deletedAt ? new Date(record.deletedAt).toISOString() : null },
+        after: { deleted_at: null },
+      });
+      await writeAudit(db, {
+        schoolId,
+        actorId,
+        actorType: 'user',
+        action: 'recycle_bin.restore',
+        entity: record.entity,
+        entityId: record.entityId,
+        details: { deleted_record_id: id },
+      });
+      return { entity: record.entity, entity_id: record.entityId, restored: true };
+    }
+    // Any other entity without a delegate (academic_session,
+    // exam_datesheet, timetable_entry, staff, message_draft) was hard
+    // deleted with only a snapshot — it cannot be restored. Say so in
+    // plain words, never with the internal snake_case entity name.
+    throw ApiError.validation('This type of record cannot be restored from the Recycle Bin.');
+  }
   const delegate = (db as any)[delegateKey];
   const row = await delegate.findFirst({ where: { id: record.entityId, schoolId } });
   if (!row) throw ApiError.notFound(`${record.entity} row no longer exists`);

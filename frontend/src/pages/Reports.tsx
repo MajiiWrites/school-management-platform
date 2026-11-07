@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api, apiDownload, ApiClientError } from '../lib/api';
 import type { ClassItem, PageResult } from '../lib/types';
 import { fmtPKR, todayISO } from '../lib/utils';
-import { Button, Card, EmptyState, ErrorBanner, Spinner, Tabs, inputCls, useToast } from '../components/ui';
+import { Button, Card, EmptyState, ErrorBanner, Pager, Spinner, Tabs, inputCls, useToast } from '../components/ui';
 
 function errText(e: unknown): string {
   return e instanceof ApiClientError ? e.message : 'Something went wrong.';
@@ -47,7 +47,8 @@ export default function ReportsPage() {
   type ReportTab = 'daily' | 'weekly' | 'monthly' | 'fees' | 'defaulters' | 'strength' | 'income-expense' | 'messages';
   const [tab, setTab] = useState<ReportTab>('daily');
   // 6C-2: generic JSON for the new report tabs (rendered as a simple table).
-  const [generic, setGeneric] = useState<{ title: string; columns: { key: string; label: string }[]; rows: Record<string, unknown>[] } | null>(null);
+  const [generic, setGeneric] = useState<{ title: string; columns: { key: string; label: string }[]; rows: Record<string, unknown>[]; page?: number; pages?: number; total?: number } | null>(null);
+  const [msgPage, setMsgPage] = useState(1);
   const [classes, setClasses] = useState<ClassItem[]>([]);
   const [classId, setClassId] = useState('');
   const [date, setDate] = useState(todayISO());
@@ -74,7 +75,7 @@ export default function ReportsPage() {
         defaulters: `/reports/fees/defaulters?month=${month}`,
         strength: '/reports/classes/strength',
         'income-expense': `/reports/income-expense?month=${month}`,
-        messages: '/reports/messages/history?limit=200',
+        messages: `/reports/messages/history?page=${msgPage}&limit=50`,
       };
       api<Record<string, unknown>>(paths[tab])
         .then((d) => {
@@ -121,6 +122,9 @@ export default function ReportsPage() {
               ],
             });
           } else {
+            // Round 5 (F1): server-side pagination for message history —
+            // it fetched ?limit=200 with no pager, so older messages were
+            // unreachable. The backend already paginates (total/pages).
             setGeneric({
               title: 'Message history',
               columns: [
@@ -131,6 +135,9 @@ export default function ReportsPage() {
                 { key: 'body', label: 'Message' },
               ],
               rows: asRows(data.items),
+              page: typeof data.page === 'number' ? data.page : msgPage,
+              pages: typeof data.pages === 'number' ? data.pages : 1,
+              total: typeof data.total === 'number' ? data.total : asRows(data.items).length,
             });
           }
           setRows([]);
@@ -209,7 +216,7 @@ export default function ReportsPage() {
         setError('Could not load the report.');
       })
       .finally(() => setLoading(false));
-  }, [tab, classId, date, month]);
+  }, [tab, classId, date, month, msgPage]);
 
   useEffect(load, [load]);
 
@@ -253,7 +260,7 @@ export default function ReportsPage() {
           { key: 'messages', label: 'Message history' },
         ]}
         active={tab}
-        onChange={(k) => setTab(k as typeof tab)}
+        onChange={(k) => { setTab(k as typeof tab); setMsgPage(1); }}
       />
 
       <Card className="flex flex-wrap items-end gap-3 p-4">
@@ -295,6 +302,7 @@ export default function ReportsPage() {
         generic.rows.length === 0 ? (
           <EmptyState title="No data for this report" body="There is nothing to show for the selected period yet." />
         ) : (
+          <>
           <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
             <table className="w-full min-w-[560px] text-sm">
               <thead>
@@ -319,6 +327,10 @@ export default function ReportsPage() {
               </tbody>
             </table>
           </div>
+          {generic.page !== undefined && generic.total !== undefined && generic.rows.length > 0 && (
+            <Pager page={generic.page} pages={generic.pages ?? 1} total={generic.total} itemLabel="messages" itemLabelSingular="message" onPage={setMsgPage} />
+          )}
+          </>
         )
       ) : tab === 'fees' ? (
         feeReport ? (

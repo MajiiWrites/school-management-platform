@@ -185,7 +185,7 @@ export default function Layout() {
         {/* Top bar */}
         <header className="sticky top-0 z-30 flex items-center gap-3 border-b border-slate-200 bg-white px-4 py-3">
           <button
-            className="rounded-lg p-2 text-slate-600 hover:bg-slate-100 lg:hidden"
+            className="flex h-11 w-11 items-center justify-center rounded-lg text-slate-600 hover:bg-slate-100 lg:hidden"
             onClick={() => setMobileOpen(true)}
             aria-label="Open menu"
           >
@@ -195,7 +195,7 @@ export default function Layout() {
           {/* P8-TOUR: relaunch the guided tour anytime. */}
           <button
             onClick={startGuidedTour}
-            className="ml-auto rounded-lg p-2 text-slate-600 hover:bg-slate-100"
+            className="ml-auto flex h-11 w-11 items-center justify-center rounded-lg text-slate-600 hover:bg-slate-100"
             title="Take the guided tour"
             aria-label="Take the guided tour"
           >
@@ -204,7 +204,7 @@ export default function Layout() {
           <div className="relative">
             <button
               onClick={() => setBellOpen((v) => !v)}
-              className="relative rounded-lg p-2 text-slate-600 hover:bg-slate-100"
+              className="relative flex h-11 w-11 items-center justify-center rounded-lg text-slate-600 hover:bg-slate-100"
               aria-label="Notifications"
             >
               🔔

@@ -3,7 +3,7 @@ import type { FormEvent } from 'react';
 import { api, apiPrint, ApiClientError } from '../lib/api';
 import type { ClassItem, FeeRow, FeeStructure, PageResult } from '../lib/types';
 import { currentMonth, fmtPKR, monthName, todayISO } from '../lib/utils';
-import { Badge, Button, Card, EmptyState, ErrorBanner, Field, inputCls, Modal, Spinner, Tabs, useToast } from '../components/ui';
+import { Badge, Button, Card, EmptyState, ErrorBanner, Field, inputCls, Modal, Pager, Spinner, Tabs, useToast } from '../components/ui';
 import Tooltip from '../components/Tooltip'; // P8-TOUR: plain-word tooltips on confusing labels.
 import ConfirmDialog from '../components/ConfirmDialog';
 
@@ -24,7 +24,11 @@ function statusBadge(s: FeeRow['status'], noStructure?: boolean) {
 export default function FeesPage() {
   const [month, setMonth] = useState(currentMonth());
   const [statusFilter, setStatusFilter] = useState<'all' | 'paid' | 'partial' | 'unpaid'>('all');
+  const [classFilter, setClassFilter] = useState('');
+  const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [fees, setFees] = useState<FeeRow[]>([]);
+  const [feeTotals, setFeeTotals] = useState<{ collected: number; pending: number; paid_count: number; unpaid_count: number } | null>(null);
   const [structures, setStructures] = useState<FeeStructure[]>([]);
   const [classes, setClasses] = useState<ClassItem[]>([]);
   const [tab, setTab] = useState('fees');
@@ -37,41 +41,67 @@ export default function FeesPage() {
   // 6C-2: fee vouchers / challans for the month.
   const [vouchers, setVouchers] = useState<{ voucher_no: string; student_name: string; class_name: string; month: string; amount_due: number; due_date: string; status: string }[]>([]);
   const [voucherBusy, setVoucherBusy] = useState(false);
+  // Round 5 (F1): server-side pagination for the monthly list and the
+  // vouchers tab. Both used to fetch ?limit=200 with no pager and filter
+  // in the browser — with 1111 students only the first 200 rows (all one
+  // class) ever rendered, so most students' fees were unreachable and the
+  // "Unpaid" filter returned 0 rows despite unpaid vouchers existing.
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const [pages, setPages] = useState(1);
+  const [voucherPage, setVoucherPage] = useState(1);
+  const [voucherTotal, setVoucherTotal] = useState(0);
+  const [voucherPages, setVoucherPages] = useState(1);
   const { push, view } = useToast();
+
+  // Debounce the search so each keystroke does not fire an API request.
+  useEffect(() => {
+    const t = window.setTimeout(() => setDebouncedSearch(search), 300);
+    return () => window.clearTimeout(t);
+  }, [search]);
 
   const load = useCallback(() => {
     setLoading(true);
+    const q = new URLSearchParams({ month, page: String(page), limit: '50' });
+    if (debouncedSearch.trim()) q.set('search', debouncedSearch.trim());
+    if (classFilter) q.set('class_id', classFilter);
+    if (statusFilter !== 'all') q.set('status', statusFilter);
+    const vq = new URLSearchParams({ month, page: String(voucherPage), limit: '50' });
     Promise.all([
-      api<PageResult<FeeRow>>(`/fees?month=${month}&limit=200`),
+      api<PageResult<FeeRow> & { totals?: { collected: number; pending: number; paid_count: number; unpaid_count: number } }>(`/fees?${q.toString()}`),
       // GET /fees/structures returns a BARE ARRAY, not a PageResult —
       // reading `.items` off it yields undefined and blanked the page.
       api<FeeStructure[]>('/fees/structures'),
-      api<PageResult<{ voucher_no: string; student_name: string; class_name: string; month: string; amount_due: number; due_date: string; status: string }>>(`/fees/vouchers?month=${month}&limit=200`),
+      api<PageResult<{ voucher_no: string; student_name: string; class_name: string; month: string; amount_due: number; due_date: string; status: string }>>(`/fees/vouchers?${vq.toString()}`),
       api<PageResult<ClassItem>>('/classes'),
     ])
       .then(([f, s, v, c]) => {
         setFees(Array.isArray(f?.items) ? f.items : []);
+        setTotal(f?.total ?? 0);
+        setPages(f?.pages ?? 1);
+        setFeeTotals(f?.totals ?? null);
         setStructures(Array.isArray(s) ? s : []);
         setVouchers(Array.isArray(v?.items) ? v.items : []);
+        setVoucherTotal(v?.total ?? 0);
+        setVoucherPages(v?.pages ?? 1);
         setClasses(Array.isArray(c?.items) ? c.items : []);
         setError('');
       })
       .catch(() => setError('Could not load fees.'))
       .finally(() => setLoading(false));
-  }, [month]);
+  }, [month, page, debouncedSearch, classFilter, statusFilter, voucherPage]);
 
   useEffect(load, [load]);
 
-  // D3: no_structure rows carry the backend's GENERATED 'paid' status but
-  // are not paid — exclude them from the Paid filter (they stay visible
-  // under "All statuses" with the "No fee structure" badge).
-  const filtered = fees.filter((f) =>
-    statusFilter === 'all' ? true : statusFilter === 'paid' ? f.status === 'paid' && !f.no_structure : f.status === statusFilter,
-  );
-  // D3: no_structure rows contribute 0 to both totals (amount_due,
-  // amount_paid and discount are all 0), so Collected/Pending stay honest.
-  const collected = fees.reduce((a, f) => a + (f.amount_paid ?? 0), 0);
-  const pending = fees.reduce((a, f) => a + ((f.amount_due ?? 0) - (f.amount_paid ?? 0) - (f.discount ?? 0)), 0);
+  // Round 5 (F1): the status filter now runs server-side (see load), so
+  // there is no client-side filter anymore — "Unpaid" returns every
+  // unpaid row in the school, not just the loaded page. The summary cards
+  // use the server totals (whole month, all pages) with a page-local
+  // fallback for stale responses without totals.
+  const collected = feeTotals?.collected ?? fees.reduce((a, f) => a + (f.amount_paid ?? 0), 0);
+  const pending = feeTotals ? Math.max(0, feeTotals.pending) : fees.reduce((a, f) => a + ((f.amount_due ?? 0) - (f.amount_paid ?? 0) - (f.discount ?? 0)), 0);
+  const paidCount = feeTotals?.paid_count ?? fees.filter((f) => f.status === 'paid' && !f.no_structure).length;
+  const unpaidCount = feeTotals?.unpaid_count ?? fees.filter((f) => f.status === 'unpaid' && !f.no_structure).length;
 
   if (loading) return <Spinner label="Loading fees…" />;
 
@@ -86,7 +116,7 @@ export default function FeesPage() {
           type="month"
           className={inputCls + ' w-auto'}
           value={month}
-          onChange={(e) => setMonth(e.target.value || currentMonth())} autoComplete="off" />
+          onChange={(e) => { setMonth(e.target.value || currentMonth()); setPage(1); setVoucherPage(1); }} autoComplete="off" />
       </div>
 
       {error && <ErrorBanner message={error} onRetry={load} />}
@@ -103,16 +133,15 @@ export default function FeesPage() {
         <Card className="p-4">
           <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Paid students</p>
           {/* D3: no_structure rows are excluded from the Paid count (their
-              GENERATED 'paid' status is a phantom). Denominator stays the
-              total row count so paid + unpaid + partial + no-structure = all
-              students shown. */}
-          <p className="mt-1 text-2xl font-bold text-slate-900">{fees.filter((f) => f.status === 'paid' && !f.no_structure).length} / {fees.length}</p>
+              GENERATED 'paid' status is a phantom). Denominator is the
+              server-side total across all pages, not the loaded page. */}
+          <p className="mt-1 text-2xl font-bold text-slate-900">{paidCount} / {total}</p>
         </Card>
         <Card className="p-4">
           <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Unpaid students</p>
           {/* D3: no_structure rows are excluded here too (defensive — the
               backend synthesises them as 'paid', never 'unpaid'). */}
-          <p className="mt-1 text-2xl font-bold text-red-600">{fees.filter((f) => f.status === 'unpaid' && !f.no_structure).length}</p>
+          <p className="mt-1 text-2xl font-bold text-red-600">{unpaidCount}</p>
         </Card>
       </div>
 
@@ -129,18 +158,37 @@ export default function FeesPage() {
 
       {tab === 'fees' && (
         <>
-          <div className="flex gap-2">
-            <select className={inputCls + ' w-auto'} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}>
+          <div className="flex flex-wrap gap-2">
+            <select className={inputCls + ' w-auto'} value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value as typeof statusFilter); setPage(1); }}>
               <option value="all">All statuses</option>
               <option value="paid">Paid</option>
               <option value="partial">Partial</option>
               <option value="unpaid">Unpaid</option>
             </select>
+            <select className={inputCls + ' w-auto'} value={classFilter} onChange={(e) => { setClassFilter(e.target.value); setPage(1); }} aria-label="Filter by class">
+              <option value="">All classes</option>
+              {classes.map((c) => (
+                <option key={c.id} value={c.id}>
+                  Class {c.name}-{c.section}
+                </option>
+              ))}
+            </select>
+            <input
+              className={`${inputCls} max-w-xs`}
+              value={search}
+              onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+              placeholder="Search student name…"
+              aria-label="Search students"
+              autoComplete="off" />
           </div>
-          {filtered.length === 0 ? (
+          {fees.length === 0 ? (
             <EmptyState
               title="No fee records for this month"
-              body="Fee records are created automatically at the start of each month from the fee structures."
+              body={
+                search.trim() || classFilter || statusFilter !== 'all'
+                  ? 'Try a different search or filter.'
+                  : 'Fee records are created automatically at the start of each month from the fee structures.'
+              }
               actionLabel="View fee structures"
               onAction={() => setTab('structures')}
             />
@@ -159,7 +207,7 @@ export default function FeesPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {filtered.map((f) => (
+                  {fees.map((f) => (
                     <tr key={`${f.student_id}-${f.month}`} className="hover:bg-slate-50">
                       <td className="px-4 py-2.5 font-medium text-slate-900">{f.student_name}</td>
                       <td className="px-4 py-2.5">{f.class_name}</td>
@@ -245,12 +293,27 @@ export default function FeesPage() {
                         >
                           Receipt
                         </button>
+                        {/* Round 5 (F5): Collect/Receipt on a no-structure
+                            row used to silently do nothing — the buttons
+                            are disabled (there is nothing to collect) but
+                            a disabled button gives no reason. The row
+                            already carries the "No fee structure" badge;
+                            say in plain words, in the row itself, what to
+                            do about it. */}
+                        {f.no_structure && (
+                          <span className="mt-1 block text-right text-xs text-slate-400">
+                            No fee structure yet — add one in Fee structures first.
+                          </span>
+                        )}
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
+          )}
+          {fees.length > 0 && (
+            <Pager page={page} pages={pages} total={total} itemLabel="fee records" itemLabelSingular="fee record" onPage={setPage} />
           )}
         </>
       )}
@@ -358,6 +421,9 @@ export default function FeesPage() {
                 </tbody>
               </table>
             </div>
+          )}
+          {vouchers.length > 0 && (
+            <Pager page={voucherPage} pages={voucherPages} total={voucherTotal} itemLabel="vouchers" itemLabelSingular="voucher" onPage={setVoucherPage} />
           )}
         </>
       )}

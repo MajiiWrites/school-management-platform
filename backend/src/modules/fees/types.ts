@@ -56,12 +56,22 @@ export interface FeeListItem {
   no_structure: boolean; // true when no fee structure covers this class/month
 }
 
+export interface FeeListTotals {
+  /** Whole-month sums over ALL matching rows (not just the returned page) —
+   * the Fees page cards must not change when the admin turns the page. */
+  collected: number;
+  pending: number;
+  paid_count: number;
+  unpaid_count: number;
+}
+
 export interface FeeListResult {
   items: FeeListItem[];
   total: number;
   page: number;
   pages: number;
   month: string;
+  totals: FeeListTotals;
 }
 
 export interface ReceiptData {

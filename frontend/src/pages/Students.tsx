@@ -1,10 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api';
 import type { ClassItem, PageResult, Student } from '../lib/types';
 import { displayClass } from '../lib/utils';
 import { ErrorBanner, EmptyState, Spinner } from '../components/ui';
 import StudentsPanel from './StudentsPanel';
+
+export type StudentFlagFilter = 'all' | 'missing' | 'invalid' | 'duplicate';
 
 export default function StudentsPage() {
   const [classes, setClasses] = useState<ClassItem[]>([]);
@@ -13,25 +15,61 @@ export default function StudentsPage() {
   const [loading, setLoading] = useState(true);
   const [listLoading, setListLoading] = useState(false);
   const [error, setError] = useState('');
+  // Round 5 (F1): server-side pagination + search + phone-flag filter.
+  // The list used to fetch ?limit=200 (API clamps to 100) with no pager
+  // and filter the loaded rows in the browser — students 101-1100 of a
+  // class were unreachable and unsearchable. The backend already
+  // paginates and searches (listStudents: page/limit/search/flag, with
+  // total/pages); this page now drives it and resets to page 1 whenever
+  // the class, search or flag changes.
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const [pages, setPages] = useState(1);
+  const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [flagFilter, setFlagFilter] = useState<StudentFlagFilter>('all');
 
+  // Debounce the search so each keystroke does not fire an API request
+  // (rate-limit friendly: one request 300 ms after the user stops typing).
   useEffect(() => {
+    const t = window.setTimeout(() => setDebouncedSearch(search), 300);
+    return () => window.clearTimeout(t);
+  }, [search]);
+
+  const loadClasses = useCallback(() => {
+    setLoading(true);
     api<PageResult<ClassItem>>('/classes')
       .then((d) => {
         setClasses(d.items);
-        if (d.items.length > 0) setClassId(d.items[0].id);
+        setError('');
+        if (d.items.length > 0) setClassId((prev) => prev || d.items[0].id);
       })
       .catch(() => setError('Could not load classes.'))
       .finally(() => setLoading(false));
   }, []);
 
-  useEffect(() => {
+  useEffect(loadClasses, [loadClasses]);
+
+  const loadStudents = useCallback(() => {
     if (!classId) return;
     setListLoading(true);
-    api<PageResult<Student>>(`/classes/${classId}/students?limit=200`)
-      .then((d) => setStudents(d.items))
+    const q = new URLSearchParams({ page: String(page), limit: '50' });
+    if (debouncedSearch.trim()) q.set('search', debouncedSearch.trim());
+    if (flagFilter !== 'all') q.set('flag', flagFilter);
+    api<PageResult<Student>>(`/classes/${classId}/students?${q.toString()}`)
+      .then((d) => {
+        setStudents(d.items);
+        setTotal(d.total);
+        setPages(d.pages);
+        setError('');
+      })
       .catch(() => setError('Could not load students.'))
       .finally(() => setListLoading(false));
-  }, [classId]);
+  }, [classId, page, debouncedSearch, flagFilter]);
+
+  useEffect(() => {
+    void loadStudents();
+  }, [loadStudents]);
 
   if (loading) return <Spinner label="Loading students…" />;
 
@@ -43,15 +81,20 @@ export default function StudentsPage() {
         <h1 className="text-2xl font-bold text-slate-900">Students</h1>
         <p className="text-sm text-slate-500">Search, add, edit, or import students — and fix parent phone problems.</p>
       </div>
-      {error && <ErrorBanner message={error} />}
-      {classes.length === 0 ? (
+      {error && <ErrorBanner message={error} onRetry={() => { loadClasses(); loadStudents(); }} />}
+      {/* Round 5 (F6): error and empty states are mutually exclusive — a
+          failed load used to show "Could not load classes." AND "No
+          classes yet — Add a class first", which read as if every class
+          had been deleted. The empty state only renders when the load
+          succeeded and there really are no classes. */}
+      {!error && classes.length === 0 ? (
         <EmptyState
           title="No classes yet"
           body="Add a class first, then add its students."
           actionLabel="Add your first class"
           actionHref="/classes"
         />
-      ) : (
+      ) : classes.length === 0 ? null : (
         <>
           <div className="flex flex-wrap items-center gap-2">
             <label className="text-sm font-medium text-slate-700" htmlFor="class-select">Class:</label>
@@ -59,7 +102,7 @@ export default function StudentsPage() {
               id="class-select"
               className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
               value={classId}
-              onChange={(e) => setClassId(e.target.value)}
+              onChange={(e) => { setClassId(e.target.value); setPage(1); }}
             >
               {classes.map((c) => (
                 <option key={c.id} value={c.id}>
@@ -80,6 +123,15 @@ export default function StudentsPage() {
               setStudents={setStudents}
               showOcr
               classNameLabel={cls ? `Class ${displayClass(cls)}` : undefined}
+              page={page}
+              pages={pages}
+              total={total}
+              search={search}
+              onSearchChange={(q) => { setSearch(q); setPage(1); }}
+              flagFilter={flagFilter}
+              onFlagFilterChange={(f) => { setFlagFilter(f); setPage(1); }}
+              onPageChange={setPage}
+              onRefresh={loadStudents}
             />
           )}
         </>

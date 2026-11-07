@@ -33,6 +33,53 @@ export function setTokens(access: string, refresh: string | null): void {
 export function clearTokens(): void {
   localStorage.removeItem(ACCESS_KEY);
   localStorage.removeItem(REFRESH_KEY);
+  clearApiCache();
+}
+
+/**
+ * Round 5 (F2): short per-session GET cache. /auth/me and /settings were
+ * re-fetched on every full app mount (and the Phase 10 harness counted
+ * them in the ~8-12 calls per navigation that made the old 300/15-min
+ * limiter bite). Both values change rarely within a session, so cache
+ * them in sessionStorage for 5 minutes: a re-verification still happens
+ * at least every 5 minutes, a 401 anywhere still signs the user out
+ * (api() handles that), and logout/login clear the cache via
+ * clearTokens(). Only for reads that are safe to serve briefly stale —
+ * never for writes or for data the user just changed (Settings clears
+ * the cache after a successful save).
+ */
+const API_CACHE_TTL_MS = 5 * 60 * 1000;
+const API_CACHE_PREFIX = 'smp_api_cache:';
+
+export function clearApiCache(): void {
+  try {
+    for (let i = sessionStorage.length - 1; i >= 0; i--) {
+      const k = sessionStorage.key(i);
+      if (k?.startsWith(API_CACHE_PREFIX)) sessionStorage.removeItem(k);
+    }
+  } catch {
+    /* storage unavailable — caching is best-effort */
+  }
+}
+
+export async function cachedApiGet<T>(path: string, ttlMs: number = API_CACHE_TTL_MS): Promise<T> {
+  const key = API_CACHE_PREFIX + path;
+  try {
+    const raw = sessionStorage.getItem(key);
+    if (raw) {
+      const { at, data } = JSON.parse(raw) as { at: number; data: T };
+      if (Date.now() - at < ttlMs) return data;
+    }
+  } catch {
+    /* fall through to a live fetch */
+  }
+  const data = await api<T>(path);
+  try {
+    sessionStorage.setItem(key, JSON.stringify({ at: Date.now(), data }));
+  } catch {
+    /* storage full/unavailable — the live result is still returned */
+  }
+  return data;
 }
 
 export class ApiClientError extends Error {

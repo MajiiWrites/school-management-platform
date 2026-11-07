@@ -393,6 +393,20 @@ function mapTemplateRow(r: any): TemplateRow {
 export const dedupeKeyCustom = (draftId: string, studentId: string) =>
   `custom:${draftId}:${studentId}`;
 
+/**
+ * Round 5 (F11): first free copy name for a duplicated template —
+ * "Copy of X", then "Copy of X (2)", "Copy of X (3)", … The template
+ * unique key is (school, type, language, name), so a duplicate needs a
+ * name no other template of the same type/language holds.
+ */
+export function nextCopyName(taken: Set<string> | string[], base: string): string {
+  const set = taken instanceof Set ? taken : new Set(taken);
+  if (!set.has(base)) return base;
+  let n = 2;
+  while (set.has(`${base} (${n})`)) n += 1;
+  return `${base} (${n})`;
+}
+
 function mapDraftRow(r: any): DraftRow {
   const ids = Array.isArray(r.targetStudentIds) ? r.targetStudentIds : [];
   return {
@@ -512,14 +526,16 @@ export function createPrismaMessagingStore(prisma: any): MessagingStore {
         const data: any = {};
         if (patch.body !== undefined) data.body = patch.body;
         if (patch.isActive !== undefined) data.isActive = patch.isActive;
-        if (patch.name !== undefined) data.name = patch.name;
+        // Round 5 (F11): a blank/null name would break the (school, type,
+        // language, name) unique key's intent — keep the existing name.
+        if (patch.name !== undefined && typeof patch.name === 'string' && patch.name.trim()) data.name = patch.name;
         if (patch.type !== undefined) data.type = patch.type;
         if (patch.language !== undefined) data.language = patch.language;
         try {
           const t = await prisma.messageTemplate.update({ where: { id }, data });
           return mapTemplateRow(t);
         } catch (err: any) {
-          if (err?.code === 'P2002') throw conflictError('A template already exists for this type and language');
+          if (err?.code === 'P2002') throw conflictError('A template with this name already exists for this type and language');
           throw err;
         }
       }, 'Template not found');
@@ -540,7 +556,7 @@ export function createPrismaMessagingStore(prisma: any): MessagingStore {
         });
         return mapTemplateRow(t);
       } catch (err: any) {
-        if (err?.code === 'P2002') throw conflictError('A template already exists for this type and language');
+        if (err?.code === 'P2002') throw conflictError('A template with this name already exists for this type and language');
         throw err;
       }
     },
