@@ -4,6 +4,11 @@
 
 import type {
   ClassItem,
+  CollegeCourse,
+  CollegeEnrollment,
+  CollegeMark,
+  CollegeProgram,
+  CollegeSemester,
   DashboardData,
   FeeRow,
   MessageLogItem,
@@ -12,6 +17,30 @@ import type {
   PendingGroup,
   Student,
 } from './types';
+
+const MOCK_PROGRAMS: CollegeProgram[] = [
+  { id: 'prog-1', name: 'BS Computer Science', code: 'BSCS', department: 'Computer Science', duration_years: 4, semester_count: 2, student_count: 2 },
+  { id: 'prog-2', name: 'BBA', code: 'BBA', department: 'Business', duration_years: 4, semester_count: 0, student_count: 0 },
+];
+
+const MOCK_SEMESTERS: CollegeSemester[] = [
+  { id: 'sem-1', program_id: 'prog-1', number: 1, name: 'Semester 1', course_count: 2, student_count: 2 },
+  { id: 'sem-2', program_id: 'prog-1', number: 2, name: 'Semester 2', course_count: 0, student_count: 0 },
+];
+
+const MOCK_COURSES: CollegeCourse[] = [
+  { id: 'crs-1', semester_id: 'sem-1', code: 'CS101', title: 'Intro to Computing', credit_hours: 3, teacher_id: null, teacher_name: null },
+  { id: 'crs-2', semester_id: 'sem-1', code: 'MTH101', title: 'Calculus I', credit_hours: 3, teacher_id: null, teacher_name: null },
+];
+
+const MOCK_ENROLLMENTS: CollegeEnrollment[] = [
+  { id: 'enr-1', student_id: 'st-1', program_id: 'prog-1', program_name: 'BS Computer Science', semester_id: 'sem-1', semester_number: 1, semester_name: 'Semester 1' },
+];
+
+const MOCK_MARKS: CollegeMark[] = [
+  { student_id: 'st-1', student_name: 'Ahmed Raza', roll_no: 1, course_id: 'crs-1', course_code: 'CS101', obtained_marks: 85, total_marks: 100, percentage: 85 },
+  { student_id: 'st-1', student_name: 'Ahmed Raza', roll_no: 1, course_id: 'crs-2', course_code: 'MTH101', obtained_marks: 72, total_marks: 100, percentage: 72 },
+];
 
 const STUDENTS: Student[] = [
   { id: 'st-1', class_id: 'cl-1', class_name: '5-A', roll_no: 1, name: 'Ahmed Raza', name_ur: 'احمد رضا', parent_name: 'Muhammad Raza', parent_phone: '+92 3XX XXXX101', status: 'active', phone_flag: null },
@@ -301,9 +330,102 @@ export async function mockRequest<T>(path: string, method: string, body?: unknow
 
   // Settings
   if (rawPath === '/settings' && method === 'GET') {
-    return { teacher_reminder_time: '08:30', fee_auto_send: false, fee_require_approval: true, fee_followup_day: 10, sms_provider: 'sim', teacher_attendance_mode: 'link' } as T;
+    // Mock school is a College so College Mode can be exercised in mock
+    // mode (VITE_MOCK_API=true) without a backend.
+    return { teacher_reminder_time: '08:30', fee_auto_send: false, fee_require_approval: true, fee_followup_day: 10, sms_provider: 'sim', teacher_attendance_mode: 'link', org_type: 'College', school_name: 'Demo College' } as T;
   }
   if (rawPath === '/settings' && method === 'PATCH') return { ok: true } as T;
+
+  // College Mode (mock — mirrors the /college contract exactly).
+  if (rawPath === '/college/programs' && method === 'GET') {
+    return { programs: MOCK_PROGRAMS } as T;
+  }
+  if (rawPath === '/college/programs' && method === 'POST') {
+    const b = body as { name: string; code: string; department: string; duration_years: number };
+    const p = { id: `prog-${Date.now()}`, name: b.name, code: b.code, department: b.department, duration_years: b.duration_years, semester_count: 0, student_count: 0 };
+    MOCK_PROGRAMS.push(p);
+    return { program: p } as T;
+  }
+  if (seg[0] === 'college' && seg[1] === 'programs' && seg.length === 3 && method === 'GET') {
+    const p = MOCK_PROGRAMS.find((x) => x.id === seg[2]) ?? MOCK_PROGRAMS[0];
+    return { program: p, semesters: MOCK_SEMESTERS.filter((s) => s.program_id === p.id) } as T;
+  }
+  if (seg[0] === 'college' && seg[1] === 'programs' && seg.length === 3 && method === 'PATCH') {
+    const p = MOCK_PROGRAMS.find((x) => x.id === seg[2]);
+    if (p) Object.assign(p, body as object);
+    return { program: p } as T;
+  }
+  if (seg[0] === 'college' && seg[1] === 'programs' && seg.length === 3 && method === 'DELETE') {
+    const p = MOCK_PROGRAMS.find((x) => x.id === seg[2]);
+    if (p && (p.semester_count > 0 || p.student_count > 0)) {
+      throw Object.assign(new Error('Cannot delete a program that has semesters or enrollments'), { status: 409, code: 'CONFLICT' });
+    }
+    return { ok: true } as T;
+  }
+  if (seg[0] === 'college' && seg[1] === 'programs' && seg[3] === 'semesters' && method === 'GET') {
+    return { semesters: MOCK_SEMESTERS.filter((s) => s.program_id === seg[2]) } as T;
+  }
+  if (seg[0] === 'college' && seg[1] === 'programs' && seg[3] === 'semesters' && method === 'POST') {
+    const b = body as { number: number; name?: string };
+    const s = { id: `sem-${Date.now()}`, program_id: seg[2], number: b.number, name: b.name ?? `Semester ${b.number}`, course_count: 0, student_count: 0 };
+    MOCK_SEMESTERS.push(s);
+    return { semester: s } as T;
+  }
+  if (seg[0] === 'college' && seg[1] === 'semesters' && seg.length === 3 && method === 'DELETE') {
+    const s = MOCK_SEMESTERS.find((x) => x.id === seg[2]);
+    if (s && s.course_count > 0) {
+      throw Object.assign(new Error('Cannot delete a semester that has courses or enrollments'), { status: 409, code: 'CONFLICT' });
+    }
+    return { ok: true } as T;
+  }
+  if (seg[0] === 'college' && seg[1] === 'semesters' && seg[3] === 'courses' && method === 'GET') {
+    return { courses: MOCK_COURSES.filter((c) => c.semester_id === seg[2]) } as T;
+  }
+  if (seg[0] === 'college' && seg[1] === 'semesters' && seg[3] === 'courses' && method === 'POST') {
+    const b = body as { code: string; title: string; credit_hours: number; teacher_id?: string };
+    const c = { id: `crs-${Date.now()}`, semester_id: seg[2], code: b.code, title: b.title, credit_hours: b.credit_hours, teacher_id: b.teacher_id ?? null, teacher_name: b.teacher_id ? 'Ms. Shazia Parveen' : null };
+    MOCK_COURSES.push(c);
+    return { course: c } as T;
+  }
+  if (seg[0] === 'college' && seg[1] === 'courses' && seg.length === 3 && method === 'PATCH') {
+    const c = MOCK_COURSES.find((x) => x.id === seg[2]);
+    if (c) Object.assign(c, body as object);
+    return { course: c } as T;
+  }
+  if (seg[0] === 'college' && seg[1] === 'courses' && seg.length === 3 && method === 'DELETE') {
+    return { ok: true } as T;
+  }
+  if (rawPath === '/college/enrollments' && method === 'POST') {
+    const b = body as { student_id: string; program_id: string; semester_id: string };
+    const sem = MOCK_SEMESTERS.find((s) => s.id === b.semester_id);
+    const prog = MOCK_PROGRAMS.find((p) => p.id === b.program_id);
+    return { enrollment: { id: `enr-${Date.now()}`, student_id: b.student_id, program_id: b.program_id, program_name: prog?.name ?? '', semester_id: b.semester_id, semester_number: sem?.number ?? 0, semester_name: sem?.name ?? '' } } as T;
+  }
+  if (seg[0] === 'college' && seg[1] === 'enrollments' && seg.length === 3 && method === 'DELETE') {
+    return { ok: true } as T;
+  }
+  if (seg[0] === 'college' && seg[1] === 'students' && seg[3] === 'enrollments' && method === 'GET') {
+    return { enrollments: MOCK_ENROLLMENTS.filter((e) => e.student_id === seg[2]) } as T;
+  }
+  if (rawPath === '/college/marks' && method === 'POST') return { ok: true } as T;
+  if (seg[0] === 'college' && seg[1] === 'semesters' && seg[3] === 'marks' && method === 'GET') {
+    return { marks: MOCK_MARKS.filter((m) => MOCK_COURSES.some((c) => c.id === m.course_id && c.semester_id === seg[2])) } as T;
+  }
+  if (seg[0] === 'college' && seg[1] === 'students' && seg[3] === 'gpa' && method === 'GET') {
+    return {
+      student_id: seg[2],
+      semester: { id: 'sem-1', number: 1, name: 'Semester 1', gpa: 3.5, total_credit_hours: 15 },
+      cgpa: 3.5,
+      total_credit_hours_all: 15,
+      courses: [
+        { course_id: 'crs-1', course_code: 'CS101', course_title: 'Intro to Computing', credit_hours: 3, obtained_marks: 85, total_marks: 100, percentage: 85, grade: 'A', grade_points: 4.0 },
+        { course_id: 'crs-2', course_code: 'MTH101', course_title: 'Calculus I', credit_hours: 3, obtained_marks: 72, total_marks: 100, percentage: 72, grade: 'B', grade_points: 3.0 },
+      ],
+    } as T;
+  }
+  if (seg[0] === 'college' && seg[1] === 'programs' && seg[3] === 'toppers' && method === 'GET') {
+    return { toppers: [{ student_id: 'st-1', student_name: 'Ahmed Raza', roll_no: 1, semester_gpa: 3.8, cgpa: 3.7 }] } as T;
+  }
 
   // Reports
   if (rawPath.startsWith('/reports/attendance/daily')) {

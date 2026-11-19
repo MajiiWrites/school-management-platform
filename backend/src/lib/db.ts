@@ -76,6 +76,16 @@ export interface Db {
   accountDeletionRequest: Delegate;
   schoolBackup: Delegate;
   messageDraft: Delegate;
+  // College Mode (2026-11-20).
+  program: Delegate;
+  semester: Delegate;
+  course: Delegate;
+  studentEnrollment: Delegate;
+  courseMark: Delegate;
+  // Gaps Top 3 (2026-11-20): parent portal, admissions, homework.
+  parentToken: Delegate;
+  admissionInquiry: Delegate;
+  homework: Delegate;
   $transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T>;
   $disconnect: () => Promise<void>;
 }
@@ -121,6 +131,14 @@ const MODEL_KEYS: Array<keyof Omit<Db, '$transaction' | '$disconnect'>> = [
   'accountDeletionRequest',
   'schoolBackup',
   'messageDraft',
+  'program',
+  'semester',
+  'course',
+  'studentEnrollment',
+  'courseMark',
+  'parentToken',
+  'admissionInquiry',
+  'homework',
 ];
 
 const PLURAL_FALLBACK: Record<string, string[]> = {
@@ -164,6 +182,14 @@ const PLURAL_FALLBACK: Record<string, string[]> = {
   accountDeletionRequest: ['accountDeletionRequests'],
   schoolBackup: ['schoolBackups'],
   messageDraft: ['messageDrafts'],
+  program: ['programs'],
+  semester: ['semesters'],
+  course: ['courses'],
+  studentEnrollment: ['studentEnrollments'],
+  courseMark: ['courseMarks'],
+  parentToken: ['parentTokens'],
+  admissionInquiry: ['admissionInquiries'],
+  homework: ['homework'],
 };
 
 function resolveDelegate(client: any, key: string): any {

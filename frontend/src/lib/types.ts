@@ -202,6 +202,104 @@ export interface TeacherLinkData {
   already_submitted: boolean;
 }
 
+/* ------------------------------------------------------------------ */
+/* Gaps Top 3 (2026-11-20) — parent portal, admissions, homework.      */
+/* Mirrors GET /p/:token, /admissions/* and /homework.                  */
+/* ------------------------------------------------------------------ */
+
+/** One student's read-only portal data (GET /p/:token). */
+export interface ParentPortalData {
+  school: { name: string };
+  student: {
+    id: string;
+    name: string;
+    name_ur?: string | null;
+    class_name: string;
+    roll_no: number | null;
+    admission_no?: string | null;
+  };
+  attendance: { date: string; status: 'present' | 'absent' | null }[];
+  results: {
+    id: string;
+    exam_name: string;
+    obtained_marks: number | null;
+    total_marks: number | null;
+    percentage: number | null;
+    grade: string | null;
+    position: number | null;
+    created_at: string;
+  }[];
+  fees: {
+    month: string;
+    amount_due: number;
+    amount_paid: number;
+    discount: number;
+    status: string;
+    paid_at?: string | null;
+    receipt_no?: string | null;
+  }[];
+  timetable: {
+    day_of_week: number;
+    periods: { period_no: number; subject: string; start_time: string; end_time: string; room?: string | null; teacher_name?: string | null }[];
+  }[];
+  announcements: { id: string; title: string; body: string; created_at: string }[];
+  homework: {
+    id: string;
+    subject: string;
+    title: string;
+    description?: string | null;
+    due_date: string;
+    teacher: string;
+  }[];
+}
+
+/** One row of GET /students/:id/parent-token. */
+export interface ParentTokenInfo {
+  exists: boolean;
+  url: string | null;
+  expires_at: string | null;
+  /** Present instead of url when a clerk's request went to the approval queue. */
+  approval_request_id?: string;
+}
+
+/** Public admissions form data (GET /admissions/:slug). */
+export interface AdmissionsFormData {
+  school_name: string;
+  school_slug: string;
+  classes: { id: string; name: string; section: string; display_name: string }[];
+}
+
+export type AdmissionStatus = 'new' | 'contacted' | 'test' | 'interview' | 'admitted' | 'rejected';
+
+/** One row of GET /admissions (admin pipeline). */
+export interface AdmissionInquiry {
+  id: string;
+  student_name: string;
+  class_id: string | null;
+  class_name: string;
+  parent_name: string;
+  parent_phone_masked: string | null;
+  parent_email?: string | null;
+  notes?: string | null;
+  status: AdmissionStatus;
+  admitted_student_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** One row of GET /homework. */
+export interface HomeworkItem {
+  id: string;
+  class_id: string;
+  class_name?: string | null;
+  subject: string;
+  title: string;
+  description?: string | null;
+  due_date: string;
+  teacher: string;
+  created_at: string;
+}
+
 export interface FeeRow {
   student_id: string;
   student_name: string;
@@ -711,4 +809,99 @@ export interface SalarySlipData {
   remaining: number | null;
   status: PayrollStatus;
   payments: { amount: number; paid_at: string | null }[];
+}
+
+/* ------------------------------------------------------------------ */
+/* College Mode (contracts: GET /college/* — college-only, 403 for     */
+/* School orgs). All fields snake_case, exactly as the API returns.    */
+/* ------------------------------------------------------------------ */
+
+export type OrgType = 'School' | 'College';
+
+export interface CollegeProgram {
+  id: string;
+  name: string;
+  code: string;
+  department: string;
+  duration_years: number;
+  semester_count: number;
+  student_count: number;
+}
+
+export interface CollegeSemester {
+  id: string;
+  program_id?: string;
+  number: number;
+  name: string;
+  course_count: number;
+  student_count: number;
+}
+
+export interface CollegeCourse {
+  id: string;
+  semester_id?: string;
+  code: string;
+  title: string;
+  credit_hours: number;
+  teacher_id: string | null;
+  teacher_name: string | null;
+}
+
+export interface CollegeEnrollment {
+  id: string;
+  student_id?: string;
+  program_id: string;
+  program_name: string;
+  semester_id: string;
+  semester_number: number;
+  semester_name: string;
+}
+
+export interface CollegeMark {
+  student_id: string;
+  student_name: string;
+  roll_no: number | null;
+  course_id: string;
+  course_code: string;
+  obtained_marks: number;
+  total_marks: number;
+  percentage: number;
+}
+
+export interface CollegeGpaCourse {
+  course_id: string;
+  course_code: string;
+  course_title: string;
+  credit_hours: number;
+  obtained_marks: number | null;
+  total_marks: number | null;
+  percentage: number | null;
+  grade: string | null;
+  grade_points: number | null;
+}
+
+export interface CollegeGpa {
+  student_id: string;
+  semester: { id: string; number: number; name: string; gpa: number | null; total_credit_hours: number } | null;
+  cgpa: number | null;
+  total_credit_hours_all: number;
+  courses: CollegeGpaCourse[];
+}
+
+export interface CollegeTopper {
+  student_id: string;
+  student_name: string;
+  roll_no: number | null;
+  semester_gpa: number | null;
+  cgpa: number | null;
+}
+
+/** College block of a report card — rendered when the report-card
+ * payload contains a `college` object; School cards never carry one. */
+export interface ReportCardCollege {
+  program?: string | null;
+  semester?: string | null;
+  courses: CollegeGpaCourse[];
+  semester_gpa: number | null;
+  cgpa: number | null;
 }

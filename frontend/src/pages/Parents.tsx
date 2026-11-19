@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api, ApiClientError } from '../lib/api';
-import type { PageResult, Student } from '../lib/types';
+import { api, ApiClientError, portalApi } from '../lib/api';
+import type { PageResult, ParentTokenInfo, Student } from '../lib/types';
 import { normalizePkPhone } from '../lib/utils';
 import { Badge, Button, EmptyState, ErrorBanner, Field, inputCls, Modal, Pager, Spinner, Tabs, useToast } from '../components/ui';
 import ConfirmDialog from '../components/ConfirmDialog';
@@ -36,6 +36,7 @@ export default function ParentsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [editing, setEditing] = useState<Student | null>(null);
+  const [linkStudent, setLinkStudent] = useState<Student | null>(null);
   const { push, view } = useToast();
   // Phase 9 fix: bulk import of parent numbers (CSV/Excel) — same
   // preview-first pattern as the student import.
@@ -179,7 +180,10 @@ export default function ParentsPage() {
                     <Badge tone={flag === 'missing' ? 'red' : 'amber'}>{flagLabel[flag]}</Badge>
                   </td>
                   <td className="px-4 py-2.5 text-right">
-                    <Button variant="secondary" onClick={() => setEditing(s)}>Fix number</Button>
+                    <div className="flex justify-end gap-2">
+                      <Button variant="secondary" onClick={() => setLinkStudent(s)}>Parent link</Button>
+                      <Button variant="secondary" onClick={() => setEditing(s)}>Fix number</Button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -200,6 +204,13 @@ export default function ParentsPage() {
             push('success', 'Parent number updated.');
             load();
           }}
+        />
+      )}
+      {linkStudent && (
+        <ParentLinkModal
+          student={linkStudent}
+          onClose={() => setLinkStudent(null)}
+          onToast={(tone, message) => push(tone, message)}
         />
       )}
       <ConfirmDialog
@@ -280,8 +291,7 @@ function ParentFixModal({
   student: Student;
   onClose: () => void;
   onSaved: () => void;
-}) {
-  const [parentName, setParentName] = useState(student.parent_name ?? '');
+}) {  const [parentName, setParentName] = useState(student.parent_name ?? '');
   const [phone, setPhone] = useState(student.parent_phone ?? '');
   const [optOut, setOptOut] = useState(student.parent_opt_out ?? false);
   const [error, setError] = useState('');
@@ -342,6 +352,165 @@ function ParentFixModal({
         busy={busy}
         onConfirm={doSave}
         onCancel={() => setConfirming(false)}
+      />
+    </Modal>
+  );
+}
+
+/**
+ * Parent portal link for one student (Gap #1): shows the existing link,
+ * creates/rotates it, copies it, sends it to the parent by SMS (held draft
+ * — the admin still approves it in Messages), or revokes it.
+ */
+function ParentLinkModal({
+  student,
+  onClose,
+  onToast,
+}: {
+  student: Student;
+  onClose: () => void;
+  onToast: (tone: 'success' | 'error', message: string) => void;
+}) {
+  const [info, setInfo] = useState<ParentTokenInfo | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [confirmRevoke, setConfirmRevoke] = useState(false);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    portalApi
+      .getTokenInfo(student.id)
+      .then((d) => {
+        setInfo(d);
+        setError('');
+      })
+      .catch((e) => setError(errText(e)))
+      .finally(() => setLoading(false));
+  }, [student.id]);
+
+  useEffect(load, [load]);
+
+  const isQueued = (res: unknown): boolean =>
+    typeof res === 'object' && res !== null && 'approval_request_id' in res;
+
+  const create = async () => {
+    setBusy(true);
+    try {
+      const res = await portalApi.createToken(student.id);
+      if (isQueued(res)) {
+        onToast('success', 'Submitted for admin approval — nothing was applied yet.');
+      } else {
+        setInfo(res);
+        onToast('success', 'Parent link created.');
+      }
+    } catch (e) {
+      setError(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copy = async () => {
+    if (!info?.url) return;
+    try {
+      await navigator.clipboard.writeText(info.url);
+      onToast('success', 'Parent link copied.');
+    } catch {
+      onToast('error', 'Could not copy — copy the link text manually.');
+    }
+  };
+
+  const sendSms = async () => {
+    setBusy(true);
+    try {
+      const res = await portalApi.sendLinkSms(student.id);
+      onToast(
+        'success',
+        res.already_queued
+          ? 'The link SMS is already queued for approval in Messages.'
+          : 'Link SMS queued — approve it in Messages to send it.',
+      );
+    } catch (e) {
+      setError(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const revoke = async () => {
+    setConfirmRevoke(false);
+    setBusy(true);
+    try {
+      const res = await portalApi.revokeToken(student.id);
+      if (isQueued(res)) {
+        onToast('success', 'Submitted for admin approval — nothing was applied yet.');
+      } else {
+        setInfo({ exists: false, url: null, expires_at: null });
+        onToast('success', 'Parent link revoked.');
+      }
+    } catch (e) {
+      setError(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const hasValidPhone = Boolean(student.parent_has_phone ?? student.parent_phone);
+  const optedOut = student.parent_opt_out ?? false;
+
+  return (
+    <Modal title={`Parent link — ${student.name}`} onClose={onClose}>
+      {error && <ErrorBanner message={error} />}
+      {loading ? (
+        <Spinner label="Loading parent link…" />
+      ) : info?.exists && info.url ? (
+        <div className="space-y-4">
+          <p className="text-sm text-slate-600">
+            Anyone with this link can view {student.name}'s attendance, results, fees, timetable, announcements and
+            homework — read-only, no login. It expires{' '}
+            {info.expires_at ? new Date(info.expires_at).toLocaleDateString() : 'in one year'}.
+          </p>
+          <p className="break-all rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-xs text-slate-700">
+            {info.url}
+          </p>
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button variant="secondary" onClick={copy}>Copy link</Button>
+            <Button variant="secondary" disabled={busy || !hasValidPhone || optedOut} onClick={sendSms}>
+              Send link via SMS
+            </Button>
+            <Button variant="secondary" disabled={busy} onClick={create}>Create new link</Button>
+            <Button variant="secondary" disabled={busy} onClick={() => setConfirmRevoke(true)}>Revoke link</Button>
+          </div>
+          {(!hasValidPhone || optedOut) && (
+            <p className="text-xs text-slate-500">
+              {optedOut
+                ? 'This parent opted out of SMS, so the link cannot be sent by text — copy it instead.'
+                : 'No valid parent number on file, so the link cannot be sent by SMS — copy it instead.'}
+            </p>
+          )}
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <p className="text-sm text-slate-600">
+            No parent link exists for {student.name} yet. Creating one gives the parent a read-only link to attendance,
+            results, fees, timetable, announcements and homework.
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={onClose}>Cancel</Button>
+            <Button disabled={busy} onClick={create}>{busy ? 'Creating…' : 'Create parent link'}</Button>
+          </div>
+        </div>
+      )}
+      <ConfirmDialog
+        open={confirmRevoke}
+        title={`Revoke the parent link for ${student.name}?`}
+        message="The old link stops working immediately. The parent will need a new link to see anything again."
+        confirmLabel="Revoke link"
+        tone="danger"
+        busy={busy}
+        onConfirm={revoke}
+        onCancel={() => setConfirmRevoke(false)}
       />
     </Modal>
   );

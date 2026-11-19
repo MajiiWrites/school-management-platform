@@ -264,3 +264,125 @@ export async function apiPrint(path: string): Promise<void> {
   win.document.write(html);
   win.document.close();
 }
+
+/* ------------------------------------------------------------------ */
+/* College Mode — /api/v1/college (college-only; 403 for School orgs). */
+/* Paths, methods and field names follow the API contract exactly.     */
+/* Errors (403/409) surface the API's own message via ApiClientError.  */
+/* ------------------------------------------------------------------ */
+
+import type {
+  CollegeCourse,
+  CollegeEnrollment,
+  CollegeGpa,
+  CollegeMark,
+  CollegeProgram,
+  CollegeSemester,
+  CollegeTopper,
+  ParentPortalData,
+  ParentTokenInfo,
+  AdmissionsFormData,
+  AdmissionInquiry,
+  AdmissionStatus,
+  HomeworkItem,
+} from './types';
+
+export const collegeApi = {
+  listPrograms: () => api<{ programs: CollegeProgram[] }>('/college/programs'),
+  createProgram: (body: { name: string; code: string; department: string; duration_years: number }) =>
+    api<{ program: CollegeProgram }>('/college/programs', { method: 'POST', body }),
+  getProgram: (id: string) =>
+    api<{ program: CollegeProgram; semesters: CollegeSemester[] }>(`/college/programs/${id}`),
+  updateProgram: (id: string, body: Partial<{ name: string; code: string; department: string; duration_years: number }>) =>
+    api<{ program: CollegeProgram }>(`/college/programs/${id}`, { method: 'PATCH', body }),
+  deleteProgram: (id: string) => api(`/college/programs/${id}`, { method: 'DELETE' }),
+
+  listSemesters: (programId: string) =>
+    api<{ semesters: CollegeSemester[] }>(`/college/programs/${programId}/semesters`),
+  createSemester: (programId: string, body: { number: number; name?: string }) =>
+    api<{ semester: CollegeSemester }>(`/college/programs/${programId}/semesters`, { method: 'POST', body }),
+  deleteSemester: (id: string) => api(`/college/semesters/${id}`, { method: 'DELETE' }),
+
+  listCourses: (semesterId: string) =>
+    api<{ courses: CollegeCourse[] }>(`/college/semesters/${semesterId}/courses`),
+  createCourse: (semesterId: string, body: { code: string; title: string; credit_hours: number; teacher_id?: string }) =>
+    api<{ course: CollegeCourse }>(`/college/semesters/${semesterId}/courses`, { method: 'POST', body }),
+  updateCourse: (id: string, body: Partial<{ code: string; title: string; credit_hours: number; teacher_id?: string | null }>) =>
+    api<{ course: CollegeCourse }>(`/college/courses/${id}`, { method: 'PATCH', body }),
+  deleteCourse: (id: string) => api(`/college/courses/${id}`, { method: 'DELETE' }),
+
+  createEnrollment: (body: { student_id: string; program_id: string; semester_id: string }) =>
+    api<{ enrollment: CollegeEnrollment }>('/college/enrollments', { method: 'POST', body }),
+  deleteEnrollment: (id: string) => api(`/college/enrollments/${id}`, { method: 'DELETE' }),
+  listStudentEnrollments: (studentId: string) =>
+    api<{ enrollments: CollegeEnrollment[] }>(`/college/students/${studentId}/enrollments`),
+
+  upsertMark: (body: { course_id: string; student_id: string; exam_id: string; obtained_marks: number; total_marks: number }) =>
+    api('/college/marks', { method: 'POST', body }),
+  listSemesterMarks: (semesterId: string, examId: string) =>
+    api<{ marks: CollegeMark[] }>(`/college/semesters/${semesterId}/marks?exam_id=${encodeURIComponent(examId)}`),
+
+  getStudentGpa: (studentId: string, semesterId?: string) =>
+    api<CollegeGpa>(
+      `/college/students/${studentId}/gpa${semesterId ? `?semester_id=${encodeURIComponent(semesterId)}` : ''}`,
+    ),
+  listToppers: (programId: string, semesterId?: string, examId?: string) => {
+    const q = new URLSearchParams();
+    if (semesterId) q.set('semester_id', semesterId);
+    if (examId) q.set('exam_id', examId);
+    const qs = q.toString();
+    return api<{ toppers: CollegeTopper[] }>(`/college/programs/${programId}/toppers${qs ? `?${qs}` : ''}`);
+  },
+};
+
+/* ------------------------------------------------------------------ */
+/* Gaps Top 3 — parent portal, admissions, homework.                   */
+/* ------------------------------------------------------------------ */
+
+export const portalApi = {
+  /** Public, no login: GET /p/:token. */
+  getPortal: (token: string) => api<ParentPortalData>(`/p/${token}`, { public: true }),
+  getTokenInfo: (studentId: string) => api<ParentTokenInfo>(`/students/${studentId}/parent-token`),
+  createToken: (studentId: string) =>
+    api<ParentTokenInfo>(`/students/${studentId}/parent-token`, { method: 'POST' }),
+  revokeToken: (studentId: string) => api(`/students/${studentId}/parent-token`, { method: 'DELETE' }),
+  /** Queues a held SMS draft with the link (admin approves in Messages). */
+  sendLinkSms: (studentId: string) =>
+    api<{ queued: boolean; already_queued: boolean; queue_id: string }>(`/students/${studentId}/send-parent-link`, {
+      method: 'POST',
+    }),
+};
+
+export const admissionsApi = {
+  /** Public, no login: GET /admissions/:slug. */
+  getForm: (slug: string) => api<AdmissionsFormData>(`/admissions/${slug}`, { public: true }),
+  /** Public, no login: POST /admissions/:slug. */
+  submit: (slug: string, body: Record<string, unknown>) =>
+    api<{ received: boolean; inquiry_id?: string }>(`/admissions/${slug}`, { method: 'POST', body, public: true }),
+  list: (status?: string, page = 1) => {
+    const q = new URLSearchParams({ page: String(page) });
+    if (status) q.set('status', status);
+    return api<{ items: AdmissionInquiry[]; total: number; page: number; pages: number; public_form_url: string | null }>(
+      `/admissions?${q.toString()}`,
+    );
+  },
+  setStatus: (id: string, status: AdmissionStatus) =>
+    api<{ inquiry: AdmissionInquiry }>(`/admissions/${id}/status`, { method: 'PATCH', body: { status } }),
+  admit: (id: string, body: { class_id: string; roll_no?: number | null; admission_no?: string | null }) =>
+    api<{ inquiry: AdmissionInquiry; student_id: string; student_name: string; voucher_no: string | null }>(
+      `/admissions/${id}/admit`,
+      { method: 'POST', body },
+    ),
+};
+
+export const homeworkApi = {
+  list: (classId?: string) =>
+    api<{ items: HomeworkItem[]; total: number }>(`/homework${classId ? `?class_id=${encodeURIComponent(classId)}` : ''}`),
+  create: (body: { class_id: string; subject: string; title: string; description?: string | null; due_date: string; teacher: string }) =>
+    api<{ homework: HomeworkItem }>('/homework', { method: 'POST', body }),
+  update: (id: string, body: Partial<{ class_id: string; subject: string; title: string; description?: string | null; due_date: string; teacher: string }>) =>
+    api<{ homework: HomeworkItem }>(`/homework/${id}`, { method: 'PATCH', body }),
+  remove: (id: string) => api(`/homework/${id}`, { method: 'DELETE' }),
+  notify: (id: string) =>
+    api<{ drafted: number; skipped: number; total_students: number }>(`/homework/${id}/notify`, { method: 'POST' }),
+};

@@ -59,6 +59,20 @@ export const QUEUEABLE: Array<[string, string]> = [
   ['results', 'create'],
   ['results', 'update'],
   ['results', 'delete'],
+  // College Mode (2026-11-20): clerk program/semester/course/enrollment/
+  // course-mark writes go through the approval queue, like classes.
+  ['college', 'create'],
+  ['college', 'update'],
+  ['college', 'delete'],
+  // Gaps Top 3 (2026-11-20): parent-portal tokens, admissions pipeline,
+  // homework diary — clerk writes queue like everything else.
+  ['parent_tokens', 'create'],
+  ['parent_tokens', 'delete'],
+  ['admission_inquiry', 'create'],
+  ['admission_inquiry', 'update'],
+  ['homework', 'create'],
+  ['homework', 'update'],
+  ['homework', 'delete'],
 ];
 
 export function requireQueueable(resource: string, action: string) {

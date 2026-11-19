@@ -17,6 +17,8 @@ const NAV_LABELS: Record<string, { en: string; ur: string }> = {
   classes: { en: 'Classes', ur: 'کلاسیں' },
   students: { en: 'Students', ur: 'طلبہ' },
   parents: { en: 'Parents', ur: 'والدین' },
+  admissions: { en: 'Admissions', ur: 'داخلے' },
+  homework: { en: 'Homework', ur: 'ہوم ورک' },
   fees: { en: 'Fees', ur: 'فیس' },
   messages: { en: 'Messages', ur: 'پیغامات' },
   reports: { en: 'Reports', ur: 'رپورٹس' },
@@ -40,6 +42,9 @@ const NAV_LABELS: Record<string, { en: string; ur: string }> = {
   // D1: Recycle Bin + Change History nav labels.
   'recycle-bin': { en: 'Recycle Bin', ur: 'ری سائیکل بن' },
   'change-history': { en: 'Change History', ur: 'تبدیلیوں کی تاریخ' },
+  // College Mode — visible only when org_type === 'College'.
+  college: { en: 'College', ur: 'کالج' },
+  'college-programs': { en: 'Programs', ur: 'پروگرامز' },
 };
 
 const PAGE_TITLES: Record<string, { en: string; ur: string }> = {

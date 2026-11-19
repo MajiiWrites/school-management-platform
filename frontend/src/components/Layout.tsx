@@ -6,21 +6,27 @@ import type { NotificationItem, Role } from '../lib/types';
 import { cx } from '../lib/utils';
 import { Spinner } from './ui';
 import { useLanguage } from '../lib/i18n';
+import { useOrgType, showCollegeNav } from '../lib/college';
 import DeveloperFooter from './DeveloperFooter';
 import IdleTimeout from './IdleTimeout'; // 6D component (added by its agent; import was missing)
 // P8-TOUR: guided tour (Phase 10 criterion E) — modal-based, no library.
 import GuidedTour, { startGuidedTour } from './GuidedTour';
 
-const NAV: { to: string; labelKey: string; icon: string; roles: Role[] }[] = [
+const NAV: { to: string; labelKey: string; icon: string; roles: Role[]; collegeOnly?: boolean }[] = [
   { to: '/dashboard', labelKey: 'dashboard', icon: '▦', roles: ['admin', 'clerk', 'principal'] },
   { to: '/classes', labelKey: 'classes', icon: '▤', roles: ['admin', 'clerk', 'principal'] },
   { to: '/students', labelKey: 'students', icon: '👥', roles: ['admin', 'clerk', 'principal'] },
   { to: '/parents', labelKey: 'parents', icon: '☎', roles: ['admin', 'clerk', 'principal'] },
+  // Gaps Top 3 (2026-11-20): admissions pipeline + homework diary (both orgs).
+  { to: '/admissions', labelKey: 'admissions', icon: '📋', roles: ['admin', 'clerk', 'principal'] },
+  { to: '/homework', labelKey: 'homework', icon: '📚', roles: ['admin', 'clerk', 'principal'] },
   { to: '/fees', labelKey: 'fees', icon: '₨', roles: ['admin', 'clerk', 'principal'] },
   { to: '/messages', labelKey: 'messages', icon: '✉', roles: ['admin', 'clerk', 'principal'] },
   { to: '/reports', labelKey: 'reports', icon: '▧', roles: ['admin', 'clerk', 'principal'] },
   // 6B: results (OCR sheets, toppers, report cards)
   { to: '/results', labelKey: 'results', icon: '🏆', roles: ['admin', 'clerk', 'principal'] },
+  // College Mode — Programs nav, visible ONLY when org_type === 'College'.
+  { to: '/college/programs', labelKey: 'college-programs', icon: '🎓', roles: ['admin', 'clerk', 'principal'], collegeOnly: true },
   // 6C-1: sessions / exams / timetable / staff & payroll.
   { to: '/sessions', labelKey: 'sessions', icon: '🗓', roles: ['admin', 'clerk', 'principal'] },
   { to: '/exams', labelKey: 'exams', icon: '📝', roles: ['admin', 'clerk', 'principal'] },
@@ -60,7 +66,13 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
     (n) => n.roles.includes('admin') && n.roles.includes('clerk') && n.roles.includes('principal'),
   );
   const roleFiltered = user ? NAV.filter((n) => n.roles.includes(user.role)) : commonNav;
-  const visibleNav = roleFiltered.length > 0 ? roleFiltered : commonNav;
+  const baseNav = roleFiltered.length > 0 ? roleFiltered : commonNav;
+  // College Mode: college-only nav items render only for College orgs.
+  // While the org type is still unknown (null) they stay hidden — a
+  // School org never sees them, at worst a College org sees them a
+  // moment late once /settings (cached) resolves.
+  const { orgType } = useOrgType();
+  const visibleNav = baseNav.filter((n) => !n.collegeOnly || showCollegeNav(orgType));
 
   return (
     <div className="flex h-full flex-col">

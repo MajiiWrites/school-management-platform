@@ -25,6 +25,10 @@ import { eventsRouter } from './modules/events/routes';
 import { certificatesRouter } from './modules/certificates/routes';
 import { notificationsRouter } from './modules/notifications/routes';
 import { resultsRouter } from './modules/results/routes';
+import { collegeRouter } from './modules/college/routes';
+import { portalRouter } from './modules/portal/routes';
+import { admissionsRouter } from './modules/admissions/routes';
+import { homeworkRouter } from './modules/homework/routes';
 import { securityRouter } from './modules/security/routes';
 // --- 6C-1: sessions / exams / timetable / staff+payroll ----------------------
 import { sessionsRouter } from './modules/sessions/routes';
@@ -55,6 +59,11 @@ app.get('/health', (_req, res) => {
 // middleware would otherwise reject public link requests with 401.
 app.use('/api/v1/auth', authRouter);
 app.use('/api/v1', attendanceRouter); // /t/:token (public) + /classes/:id/attendance + /teacher-attendance
+// --- Gaps Top 3 (2026-11-20): parent portal (/p/:token, public) +
+// admissions (/admissions/:slug, public) — mounted early like the teacher
+// link so their public routes are never 401'd by later routers.
+app.use('/api/v1', portalRouter);
+app.use('/api/v1', admissionsRouter);
 
 // Messaging is mounted HERE (before studentsRouter/adminRouter): its
 // /sms/devices/* endpoints authenticate with the device key ONLY (no staff
@@ -128,6 +137,11 @@ app.use('/api/v1', resultsRouter);
 app.use('/api/v1', examsRouter);
 app.use('/api/v1', timetableRouter);
 app.use('/api/v1', staffRouter);
+// --- College Mode (2026-11-20): /college/* (programs, semesters,
+// courses, enrollments, marks, GPA, toppers) — College orgs only.
+app.use('/api/v1/college', collegeRouter);
+// --- Gaps Top 3 (2026-11-20): /homework (admin JWT; clerk writes queue).
+app.use('/api/v1/homework', homeworkRouter);
 // --- Phase 6D (roles & security) ------------------------------------------
 // Security router: POST /backups/run (manual per-school backup now).
 // GET /backups (log) stays in the hardening router; 2FA / roles / export /

@@ -7,8 +7,12 @@ import ErrorBoundary from './components/ErrorBoundary';
 import { Spinner } from './components/ui';
 import { ForgotPasswordPage, LoginPage, ResetPasswordPage, SignupPage, VerifyEmailPage } from './pages/Auth';
 import TeacherLinkPage from './pages/TeacherLink';
+import ParentPortalPage from './pages/ParentPortal'; // public parent link at `/p/:token` (entry chunk — first paint for token users)
+import AdmissionsFormPage from './pages/AdmissionsForm'; // public inquiry form at `/admissions/:slug` (entry chunk)
 import HomePage from './pages/Home'; // public landing page at `/` (entry chunk — first paint for logged-out visitors)
 import { LanguageProvider } from './lib/i18n';
+import { useIsCollege } from './lib/college';
+import { CollegeNotAvailable } from './components/CollegeReportCard';
 // R2-E (round 2): route-level code splitting. The whole portal used to
 // ship as one 596 kB JS chunk, so a cold first paint waited on all of it.
 // Pages now load on demand; Layout wraps <Outlet /> in a Suspense
@@ -25,6 +29,9 @@ const OcrReviewPage = lazy(() => import('./pages/OcrReview'));
 const FeesPage = lazy(() => import('./pages/Fees'));
 const MessagesPage = lazy(() => import('./pages/Messages'));
 const ParentsPage = lazy(() => import('./pages/Parents'));
+// Gaps Top 3 (2026-11-20): admissions pipeline + homework diary (both orgs).
+const AdmissionsPage = lazy(() => import('./pages/Admissions'));
+const HomeworkPage = lazy(() => import('./pages/Homework'));
 const SettingsPage = lazy(() => import('./pages/Settings'));
 const ReportsPage = lazy(() => import('./pages/Reports'));
 // 6C-2 pages: expenses, announcements, events, certificates, notifications.
@@ -45,6 +52,11 @@ const TimetablePage = lazy(() => import('./pages/Timetable'));
 const StaffPage = lazy(() => import('./pages/Staff'));
 // P8-TOUR: guided tour + help page (Phase 10 criterion E).
 const HelpPage = lazy(() => import('./pages/Help'));
+// College Mode (college-only; guarded by RequireCollege below).
+const CollegeProgramsPage = lazy(() => import('./pages/CollegePrograms'));
+const CollegeProgramDetailPage = lazy(() => import('./pages/CollegeProgramDetail'));
+const CollegeSemesterDetailPage = lazy(() => import('./pages/CollegeSemesterDetail'));
+const CollegeStudentGpaPage = lazy(() => import('./pages/CollegeStudentGpa'));
 
 /** Redirects to /login when there is no signed-in user. */
 function RequireAuth({ children }: { children: ReactNode }) {
@@ -74,6 +86,22 @@ function RequireAuth({ children }: { children: ReactNode }) {
 function RequireAdmin({ children }: { children: ReactNode }) {
   const { user } = useAuth();
   if (user?.role !== 'admin') return <Navigate to="/dashboard" replace />;
+  return <>{children}</>;
+}
+
+/** College Mode guard: while the org type is still loading, wait; a
+ * School org (or unknown org) sees the "not available" state, never a
+ * crash and never the college pages. */
+function RequireCollege({ children }: { children: ReactNode }) {
+  const { isCollege, loading } = useIsCollege();
+  if (loading) {
+    return (
+      <div className="flex min-h-[50vh] items-center justify-center">
+        <Spinner label="Checking your organization type…" />
+      </div>
+    );
+  }
+  if (!isCollege) return <CollegeNotAvailable />;
   return <>{children}</>;
 }
 
@@ -107,6 +135,8 @@ export default function App() {
         <Route path="/forgot-password" element={<ForgotPasswordPage />} />
         <Route path="/reset-password" element={<ResetPasswordPage />} />
         <Route path="/t/:token" element={<TeacherLinkPage />} />
+        <Route path="/p/:token" element={<ParentPortalPage />} />
+        <Route path="/admissions/:slug" element={<AdmissionsFormPage />} />
 
         {/* R2-C fix (F3): dead routes — /calendar and /holidays.
             These used to live inside the authenticated portal below, so the
@@ -140,6 +170,8 @@ export default function App() {
           <Route path="classes/:id/ocr" element={<OcrReviewPage />} />
           <Route path="students" element={<StudentsPage />} />
           <Route path="parents" element={<ParentsPage />} />
+          <Route path="admissions" element={<AdmissionsPage />} />
+          <Route path="homework" element={<HomeworkPage />} />
           <Route path="fees" element={<FeesPage />} />
           <Route path="messages" element={<MessagesPage />} />
           <Route path="reports" element={<ReportsPage />} />
@@ -151,6 +183,39 @@ export default function App() {
           <Route path="notifications" element={<NotificationsPage />} />
           {/* 6B: results */}
           <Route path="results" element={<ResultsPage />} />
+          {/* College Mode (college-only routes) */}
+          <Route
+            path="college/programs"
+            element={
+              <RequireCollege>
+                <CollegeProgramsPage />
+              </RequireCollege>
+            }
+          />
+          <Route
+            path="college/programs/:id"
+            element={
+              <RequireCollege>
+                <CollegeProgramDetailPage />
+              </RequireCollege>
+            }
+          />
+          <Route
+            path="college/semesters/:id"
+            element={
+              <RequireCollege>
+                <CollegeSemesterDetailPage />
+              </RequireCollege>
+            }
+          />
+          <Route
+            path="college/students/:id"
+            element={
+              <RequireCollege>
+                <CollegeStudentGpaPage />
+              </RequireCollege>
+            }
+          />
           {/* 6C-1 routes */}
           <Route path="sessions" element={<SessionsPage />} />
           <Route path="exams" element={<ExamsPage />} />

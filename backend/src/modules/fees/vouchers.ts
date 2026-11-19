@@ -82,25 +82,13 @@ export async function generateVoucher(
   });
   if (existing) return toVoucherView(db, schoolId, school, existing);
 
-  const balance = balanceOf(record.amountDue, record.amountPaid, record.discount);
-  const voucherNo = await nextVoucherNo(db, schoolId, school.slug, input.month);
-  const created: any = await db.feeVoucher.create({
-    data: {
-      schoolId,
-      feeRecordId: record.id,
-      voucherNo,
-      month: input.month,
-      amountDue: balance,
-      dueDate: new Date(`${dueDate}T00:00:00Z`),
-      status: computeFeeStatus(record.amountDue, record.amountPaid, record.discount),
-    },
-  });
+  const created = await mintVoucher(db, schoolId, school, record, input.month, dueDate);
   await logCreate(db, {
     schoolId,
     actorId,
     entity: 'fee_voucher',
     entityId: created.id,
-    after: { voucher_no: voucherNo, amount_due: balance, status: created.status, due_date: dueDate },
+    after: { voucher_no: created.voucherNo, amount_due: created.amountDue, status: created.status, due_date: dueDate },
   });
   await writeAudit(db, {
     schoolId,
@@ -109,9 +97,38 @@ export async function generateVoucher(
     action: 'fee.voucher.create',
     entity: 'fee_voucher',
     entityId: created.id,
-    details: { voucher_no: voucherNo, student_id: record.studentId, month: input.month, amount_due: balance, due_date: dueDate },
+    details: { voucher_no: created.voucherNo, student_id: record.studentId, month: input.month, amount_due: created.amountDue, due_date: dueDate },
   });
   return toVoucherView(db, schoolId, school, created);
+}
+
+/**
+ * Mint a voucher row for a fee record (no audit — the caller logs its own).
+ * Exported so the admissions Admit flow can create the student + first fee
+ * record + first voucher in ONE transaction (generateVoucher above is the
+ * standalone endpoint wrapper around this).
+ */
+export async function mintVoucher(
+  db: Db,
+  schoolId: string,
+  school: any,
+  record: any,
+  month: string,
+  dueDate: string,
+): Promise<any> {
+  const balance = balanceOf(record.amountDue, record.amountPaid, record.discount);
+  const voucherNo = await nextVoucherNo(db, schoolId, school.slug, month);
+  return db.feeVoucher.create({
+    data: {
+      schoolId,
+      feeRecordId: record.id,
+      voucherNo,
+      month,
+      amountDue: balance,
+      dueDate: new Date(`${dueDate}T00:00:00Z`),
+      status: computeFeeStatus(record.amountDue, record.amountPaid, record.discount),
+    },
+  });
 }
 
 export async function generateVoucherForStudent(

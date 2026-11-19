@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { api, ApiClientError } from '../lib/api';
+import { useIsCollege } from '../lib/college';
 import type { ClassItem, Student } from '../lib/types';
 import { displayClass, normalizePkPhone } from '../lib/utils';
 import { Badge, Button, EmptyState, Field, inputCls, Modal, Pager, useToast } from '../components/ui';
@@ -104,6 +105,9 @@ export default function StudentsPanel({
   searching?: boolean;
 }) {
   const serverPaged = onPageChange !== undefined;
+  // College Mode: the CGPA link on each student row renders only for
+  // College orgs (org_type from cached GET /settings).
+  const { isCollege } = useIsCollege();
   const [localSearch, setLocalSearch] = useState('');
   const [localFlagFilter, setLocalFlagFilter] = useState<'all' | 'missing' | 'invalid' | 'duplicate'>('all');
   const search = serverPaged ? (serverSearch ?? '') : localSearch;
@@ -353,6 +357,11 @@ export default function StudentsPanel({
                   <td className="px-4 py-2.5 font-mono text-xs">{s.parent_phone_masked ?? s.parent_phone ?? '—'}</td>
                   <td className="px-4 py-2.5">{phoneBadge(s)}</td>
                   <td className="px-4 py-2.5 text-right">
+                    {isCollege && (
+                      <Link to={`/college/students/${s.id}`} className="mr-3 font-medium text-brand-700 hover:underline">
+                        CGPA
+                      </Link>
+                    )}
                     <button
                       className="mr-3 font-medium text-brand-700 hover:underline"
                       onClick={() => {

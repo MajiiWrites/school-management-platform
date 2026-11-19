@@ -10,7 +10,7 @@ import { writeAudit } from '../../lib/audit';
 import type { Db } from '../../lib/db';
 
 /** Entities that support soft delete (contracts/SCHEMA.md §4/§10). */
-export const SOFT_DELETE_ENTITIES = ['student', 'class', 'fee_record', 'exam', 'result', 'result_sheet'] as const;
+export const SOFT_DELETE_ENTITIES = ['student', 'class', 'fee_record', 'exam', 'result', 'result_sheet', 'program', 'semester', 'course', 'homework'] as const;
 export type SoftDeleteEntity = (typeof SOFT_DELETE_ENTITIES)[number];
 
 /** Entity name (as stored in approval_requests / deleted_records) -> Db delegate. */
@@ -21,6 +21,14 @@ export const ENTITY_DELEGATES: Record<string, keyof Db> = {
   exam: 'exam',
   result: 'result',
   result_sheet: 'resultSheet',
+  // College Mode (2026-11-20): soft delete goes through the recycle bin
+  // like classes/results, so deleted programs/semesters/courses are
+  // restorable for 30 days. Enrollments are NOT here (hard delete).
+  program: 'program',
+  semester: 'semester',
+  course: 'course',
+  // Gaps Top 3 (2026-11-20): homework deletes go to the recycle bin too.
+  homework: 'homework',
 };
 
 /** Serialize a row for the recycle-bin snapshot (Dates -> ISO strings). */

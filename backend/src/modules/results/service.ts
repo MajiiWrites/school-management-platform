@@ -714,6 +714,20 @@ export interface ReportCardData {
   position: number | null;
   /** Remarks entered with the results (manual entry / review table). */
   remarks: string[];
+  /**
+   * College Mode (2026-11-20): present ONLY when the school orgType is
+   * 'College' AND the student has an enrollment. School orgs never get
+   * this key (undefined is omitted by JSON.stringify), so their response
+   * is byte-identical to before.
+   */
+  college?: {
+    program_name: string;
+    semester_number: number;
+    semester_name: string;
+    courses: Array<Record<string, unknown>>;
+    semester_gpa: number | null;
+    cgpa: number | null;
+  };
 }
 
 export async function getReportCard(db: Db, schoolId: string, studentId: string, examId: string): Promise<ReportCardData> {
@@ -740,6 +754,12 @@ export async function getReportCard(db: Db, schoolId: string, studentId: string,
   // carries no father name at all.
   const resultFather = rows.map((r: any) => (r.fatherName ?? '').trim()).find((f: string) => f) ?? null;
   const remarks = rows.map((r: any) => (r.remarks ?? '').trim()).filter((m: string) => m);
+  // College Mode (2026-11-20): the college block is computed by the
+  // college module and attached ONLY for College orgs with an enrollment.
+  // For School orgs buildCollegeReportCardBlock returns null and this
+  // key is left undefined, so the response is byte-identical to before.
+  const { buildCollegeReportCardBlock } = await import('../college/service');
+  const college = await buildCollegeReportCardBlock(db, schoolId, studentId, examId);
   return {
     school_name: (school as any)?.name ?? 'School',
     exam_name: exam.name,
@@ -758,6 +778,7 @@ export async function getReportCard(db: Db, schoolId: string, studentId: string,
     grade,
     position,
     remarks,
+    ...(college ? { college } : {}),
   };
 }
 
@@ -784,6 +805,16 @@ export function renderReportCardHtml(card: ReportCardData): string {
       return subjects.map(([subject, marks]) => `<tr><td>${subject}</td><td>${marks}</td><td>${perSubject}</td></tr>`).join('');
     })
     .join('');
+  // College Mode (2026-11-20): only when card.college is present (College
+  // org + enrollment). School orgs never reach this branch, so their HTML
+  // is byte-identical to before.
+  const collegeSection = card.college
+    ? `<h2>${card.college.program_name} — ${card.college.semester_name}</h2>
+<table><tr><th>Course</th><th>Obtained</th><th>Total</th><th>%</th><th>Grade</th><th>Points</th></tr>${(card.college.courses as any[])
+      .map((c: any) => `<tr><td>${c.course_code} — ${c.course_title}</td><td>${c.obtained_marks}</td><td>${c.total_marks}</td><td>${c.percentage}%</td><td>${c.grade}</td><td>${c.grade_points}</td></tr>`)
+      .join('')}</table>
+<p><strong>Semester GPA: ${card.college.semester_gpa ?? '—'}</strong> &nbsp; CGPA: ${card.college.cgpa ?? '—'}</p>`
+    : '';
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Report Card — ${card.student.name}</title>
 <style>body{font-family:system-ui,sans-serif;margin:40px;color:#111}h1{font-size:22px}table{border-collapse:collapse;width:100%;margin-top:16px}td,th{border:1px solid #999;padding:8px;text-align:left}th{background:#eee}</style></head><body>
 <h1>${card.school_name}</h1><p><strong>${card.exam_name} — Report Card</strong></p>
@@ -791,6 +822,7 @@ export function renderReportCardHtml(card: ReportCardData): string {
 Father: ${card.student.father_name ?? '—'} &nbsp; Admission no: ${card.student.admission_no ?? '—'}</p>
 <table><tr><th>Subject</th><th>Obtained</th><th>Total</th></tr>${subjectRows}</table>
 <p><strong>Total: ${card.obtained ?? '—'} / ${card.total ?? '—'}</strong> &nbsp; Percentage: ${card.percentage ?? '—'}% &nbsp; Grade: ${card.grade ?? '—'} &nbsp; Position: ${card.position ?? '—'}</p>
+${collegeSection}
 ${card.remarks.length > 0 ? `<p>Remarks: ${card.remarks.join('; ')}</p>` : ''}
 <button onclick="window.print()" style="margin-top:16px">Print</button></body></html>`;
 }
@@ -820,6 +852,16 @@ export async function renderReportCardPdf(card: ReportCardData): Promise<Buffer>
   }
   doc.moveDown();
   doc.fontSize(13).text(`Total: ${card.obtained ?? '—'} / ${card.total ?? '—'}    Percentage: ${card.percentage ?? '—'}%    Grade: ${card.grade ?? '—'}    Position: ${card.position ?? '—'}`);
+  // College Mode (2026-11-20): only when card.college is present; School
+  // orgs never reach this branch, so their PDF is byte-identical.
+  if (card.college) {
+    doc.moveDown();
+    doc.fontSize(14).text(`${card.college.program_name} — ${card.college.semester_name}`);
+    for (const c of card.college.courses as any[]) {
+      doc.fontSize(12).text(`${c.course_code} — ${c.course_title}: ${c.obtained_marks} / ${c.total_marks} (${c.percentage}%, ${c.grade}, ${c.grade_points})`);
+    }
+    doc.fontSize(13).text(`Semester GPA: ${card.college.semester_gpa ?? '—'}    CGPA: ${card.college.cgpa ?? '—'}`);
+  }
   if (card.remarks.length > 0) {
     doc.moveDown();
     doc.fontSize(12).text(`Remarks: ${card.remarks.join('; ')}`);

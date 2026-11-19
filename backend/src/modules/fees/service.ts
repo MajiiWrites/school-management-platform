@@ -451,6 +451,78 @@ export async function feeBreakdownForStudent(
   });
 }
 
+// ---------------------------------------------------------------------------
+// Perf pass (2026-11-20): batched fee-breakdown inputs.
+// feeBreakdownForStudent above runs THREE queries per student
+// (isSiblingStudent + priorArrears + hasPriorFeeRecord). That is fine for
+// one student (payFee, single-student paths), but rolloverMonth and
+// backfillMonthForClass called it once per student inside a loop — with
+// the 1100-student class that was ~3300 sequential round-trips per month
+// rollover. listFees already batches the same three inputs (Round 5 F3);
+// this helper is the same math, shared by the two bulk writers:
+//   * ONE feeRecord query for every listed student — arrears derive from
+//     the before-this-month subset (month < target, string compare on
+//     YYYY-MM, same as priorArrears' `lt`), first-record from ANY month
+//     at all (same as hasPriorFeeRecord — a record in any month counts).
+//   * ONE lightweight query for every active student's parent-phone hash
+//     — a student is a sibling when its hash appears more than once
+//     school-wide (same rule as isSiblingStudent: another active student
+//     with the same hash). feeBreakdownForStudent itself is untouched.
+// ---------------------------------------------------------------------------
+
+export interface BatchedFeeInputs {
+  arrearsByStudent: Map<string, number>;
+  hasPriorByStudent: Set<string>;
+  hashCounts: Map<string, number>;
+}
+
+export async function batchFeeBreakdownInputs(
+  db: Db,
+  schoolId: string,
+  studentIds: string[],
+  month: string,
+): Promise<BatchedFeeInputs> {
+  const empty: BatchedFeeInputs = { arrearsByStudent: new Map(), hasPriorByStudent: new Set(), hashCounts: new Map() };
+  if (studentIds.length === 0) return empty;
+  const allRecords: any[] = await db.feeRecord.findMany({
+    where: { schoolId, studentId: { in: studentIds }, deletedAt: null },
+  });
+  const arrearsByStudent = new Map<string, number>();
+  const hasPriorByStudent = new Set<string>(allRecords.map((r) => r.studentId));
+  for (const r of allRecords) {
+    if (r.month >= month) continue;
+    const bal = Math.max(0, (r.amountDue ?? 0) - (r.amountPaid ?? 0) - (r.discount ?? 0));
+    arrearsByStudent.set(r.studentId, (arrearsByStudent.get(r.studentId) ?? 0) + bal);
+  }
+  const siblingHashes: any[] = await db.student.findMany({
+    where: { schoolId, status: 'active', deletedAt: null },
+    select: { parentPhoneHash: true },
+  });
+  const hashCounts = new Map<string, number>();
+  for (const s of siblingHashes) {
+    if (!s.parentPhoneHash) continue;
+    hashCounts.set(s.parentPhoneHash, (hashCounts.get(s.parentPhoneHash) ?? 0) + 1);
+  }
+  return { arrearsByStudent, hasPriorByStudent, hashCounts };
+}
+
+/** Same math as feeBreakdownForStudent, from pre-fetched batched inputs. */
+export function feeBreakdownFromBatch(
+  student: any,
+  structure: StructureForCalc,
+  inputs: BatchedFeeInputs,
+): FeeBreakdown {
+  return computeFeeBreakdown({
+    monthlyAmount: structure.monthlyAmount,
+    admissionFee: structure.admissionFee,
+    siblingDiscountPct: structure.siblingDiscountPct,
+    isSibling: !!student.parentPhoneHash && (inputs.hashCounts.get(student.parentPhoneHash) ?? 0) > 1,
+    isFirstRecord: !inputs.hasPriorByStudent.has(student.id),
+    arrears: inputs.arrearsByStudent.get(student.id) ?? 0,
+    scholarshipDiscount: 0,
+  });
+}
+
 /**
  * Create `month` fee records for the active students of ONE class from the
  * given structure — the single-class slice of rolloverMonth, used by the
@@ -472,9 +544,12 @@ export async function backfillMonthForClass(
     where: { schoolId, classId, status: 'active', deletedAt: null },
     select: { id: true, parentPhoneHash: true },
   });
+  // Perf pass (2026-11-20): batched breakdown inputs (see
+  // batchFeeBreakdownInputs) instead of 3 queries per student.
+  const inputs = await batchFeeBreakdownInputs(db, schoolId, students.map((s) => s.id), month);
   const toCreate: Array<{ schoolId: string; studentId: string; month: string; amountDue: number; amountPaid: number; discount: number; arrears: number; scholarshipDiscount: number }> = [];
   for (const s of students) {
-    const breakdown = await feeBreakdownForStudent(db, schoolId, s, structure, month);
+    const breakdown = feeBreakdownFromBatch(s, structure, inputs);
     toCreate.push({
       schoolId,
       studentId: s.id,
@@ -1019,6 +1094,26 @@ export async function rolloverMonth(db: Db, schoolId: string, month: string, act
   const structures = await latestStructuresByClass(db, schoolId, month);
   const classes: any[] = await db.class.findMany({ where: { schoolId, deletedAt: null } });
   const classesWithoutStructure: string[] = [];
+  // Perf pass (2026-11-20): fetch every structured class's students and
+  // the batched breakdown inputs ONCE for the whole school (see
+  // batchFeeBreakdownInputs) instead of 3 queries per student inside the
+  // loop below — ~3300 sequential round-trips for an 1100-student school
+  // become 3 bulk queries. Rows are grouped back per class in memory;
+  // the per-class loop below only does arithmetic from here on.
+  const structuredClassIds = classes.filter((c) => structures.has(c.id)).map((c) => c.id);
+  const allStudents: any[] = structuredClassIds.length
+    ? await db.student.findMany({
+        where: { schoolId, classId: { in: structuredClassIds }, status: 'active', deletedAt: null },
+        select: { id: true, parentPhoneHash: true, classId: true },
+      })
+    : [];
+  const batchInputs = await batchFeeBreakdownInputs(db, schoolId, allStudents.map((s) => s.id), month);
+  const studentsByClass = new Map<string, any[]>();
+  for (const s of allStudents) {
+    const list = studentsByClass.get(s.classId) ?? [];
+    list.push(s);
+    studentsByClass.set(s.classId, list);
+  }
   const toCreate: Array<{ schoolId: string; studentId: string; month: string; amountDue: number; amountPaid: number; discount: number; arrears: number; scholarshipDiscount: number }> = [];
 
   for (const klass of classes) {
@@ -1027,15 +1122,11 @@ export async function rolloverMonth(db: Db, schoolId: string, month: string, act
       classesWithoutStructure.push(klass.id);
       continue;
     }
-    const students: any[] = await db.student.findMany({
-      where: { schoolId, classId: klass.id, status: 'active', deletedAt: null },
-      select: { id: true, parentPhoneHash: true },
-    });
-    for (const s of students) {
+    for (const s of studentsByClass.get(klass.id) ?? []) {
       // 6C-2: fold arrears + one-time admission fee − sibling discount
       // into amount_due (see computeFeeBreakdown); the GENERATED status
       // column then follows automatically.
-      const breakdown = await feeBreakdownForStudent(db, schoolId, s, structure, month);
+      const breakdown = feeBreakdownFromBatch(s, structure, batchInputs);
       toCreate.push({
         schoolId,
         studentId: s.id,

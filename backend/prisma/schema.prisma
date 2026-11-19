@@ -99,6 +99,18 @@ model School {
   schoolBackups           SchoolBackup[]
   messageDrafts           MessageDraft[]
 
+  // College Mode (2026-11-20)
+  programs              Program[]
+  semesters             Semester[]
+  courses               Course[]
+  studentEnrollments    StudentEnrollment[]
+  courseMarks           CourseMark[]
+
+  // Gaps Top 3 (2026-11-20): parent portal tokens, admissions, homework.
+  parentTokens      ParentToken[]
+  admissionInquiries AdmissionInquiry[]
+  homework          Homework[]
+
   @@map("schools")
 }
 
@@ -149,6 +161,7 @@ model User {
   accountDeletionRequests   AccountDeletionRequest[]
   deletedRecords            DeletedRecord[]
   messageDraftsCreated      MessageDraft[]
+  homeworkCreated           Homework[]
 
   @@index([schoolId, email])
   @@map("users")
@@ -190,6 +203,11 @@ model Class {
   examDatesheets        ExamDatesheet[]
   announcementsTargeted Announcement[]
   messageDraftsTargeted MessageDraft[]
+
+  // Gaps Top 3 (2026-11-20): homework set per class + admission inquiries
+  // naming the class applied for.
+  homework           Homework[]
+  admissionInquiries AdmissionInquiry[]
 
   @@unique([schoolId, name, section])
   @@index([schoolId, deletedAt])
@@ -240,6 +258,14 @@ model Student {
   // v2 relations
   results      Result[]
   certificates Certificate[]
+
+  // College Mode (2026-11-20): enrollments + course marks for College orgs.
+  enrollments StudentEnrollment[]
+  courseMarks CourseMark[]
+
+  // Gaps Top 3 (2026-11-20): parent portal tokens + admitted-from inquiries.
+  parentTokens ParentToken[]
+  admittedFrom AdmissionInquiry[] @relation("AdmittedStudent")
 
   // Postgres treats NULLs as distinct in a unique index, so this unique index
   // enforces (class_id, roll_no) only when roll_no IS NOT NULL — exactly the
@@ -670,6 +696,9 @@ model Exam {
   results      Result[]
   datesheets   ExamDatesheet[]
 
+  // College Mode (2026-11-20): per-course marks recorded against this exam.
+  courseMarks CourseMark[]
+
   @@index([schoolId, sessionId])
   @@index([schoolId, deletedAt])
   @@map("exams")
@@ -787,6 +816,9 @@ model Staff {
   classAssignments StaffClassAssignment[]
   salaryRecords    SalaryRecord[]
   timetableEntries TimetableEntry[]
+
+  // College Mode (2026-11-20): courses taught by this staff member.
+  courses Course[]
 
   @@index([schoolId, role])
   @@map("staff")
@@ -988,4 +1020,194 @@ model MessageDraft {
   @@index([schoolId, status, createdAt])
   @@index([schoolId, createdBy])
   @@map("message_drafts")
+}
+
+// ============================================================================
+// COLLEGE MODE (2026-11-20) — programs / semesters / courses / enrollments /
+// course marks, for schools whose orgType is 'College'. CHECK constraints
+// live in migration 20261120010000_college_mode SQL only (Prisma 6.x has
+// no @@check). Soft delete (deletedAt) on programs/semesters/courses via
+// the hardening helpers; enrollments are hard-deleted on unenroll.
+// ============================================================================
+
+model Program {
+  id            String   @id @default(uuid()) @db.Uuid
+  schoolId      String   @db.Uuid
+  school        School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  name          String
+  code          String
+  department    String
+  durationYears Int
+  deletedAt     DateTime? @db.Timestamptz(6)
+  createdAt     DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt     DateTime @updatedAt @db.Timestamptz(6)
+
+  semesters   Semester[]
+  enrollments StudentEnrollment[]
+
+  @@unique([schoolId, code])
+  @@index([schoolId, deletedAt])
+  @@map("programs")
+}
+
+model Semester {
+  id        String   @id @default(uuid()) @db.Uuid
+  schoolId  String   @db.Uuid
+  school    School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  programId String   @db.Uuid
+  program   Program  @relation(fields: [programId], references: [id], onDelete: Cascade)
+  number    Int
+  name      String
+  deletedAt DateTime? @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  courses     Course[]
+  enrollments StudentEnrollment[]
+
+  @@unique([programId, number])
+  @@index([schoolId, deletedAt])
+  @@map("semesters")
+}
+
+model Course {
+  id          String   @id @default(uuid()) @db.Uuid
+  schoolId    String   @db.Uuid
+  school      School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  semesterId  String   @db.Uuid
+  semester    Semester @relation(fields: [semesterId], references: [id], onDelete: Cascade)
+  code        String
+  title       String
+  creditHours Int
+  teacherId   String?  @db.Uuid
+  teacher     Staff?   @relation(fields: [teacherId], references: [id], onDelete: SetNull)
+  deletedAt   DateTime? @db.Timestamptz(6)
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+
+  marks CourseMark[]
+
+  @@unique([semesterId, code])
+  @@index([schoolId, deletedAt])
+  @@map("courses")
+}
+
+model StudentEnrollment {
+  id         String   @id @default(uuid()) @db.Uuid
+  schoolId   String   @db.Uuid
+  school     School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  studentId  String   @db.Uuid
+  student    Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  programId  String   @db.Uuid
+  program    Program  @relation(fields: [programId], references: [id], onDelete: Cascade)
+  semesterId String   @db.Uuid
+  semester   Semester @relation(fields: [semesterId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt  DateTime @updatedAt @db.Timestamptz(6)
+
+  @@unique([studentId, semesterId])
+  @@index([schoolId, studentId])
+  @@map("student_enrollments")
+}
+
+model CourseMark {
+  id            String   @id @default(uuid()) @db.Uuid
+  schoolId      String   @db.Uuid
+  school        School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  courseId      String   @db.Uuid
+  course        Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  studentId     String   @db.Uuid
+  student       Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  examId        String   @db.Uuid
+  exam          Exam     @relation(fields: [examId], references: [id], onDelete: Cascade)
+  obtainedMarks Int
+  totalMarks    Int
+  createdAt     DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt     DateTime @updatedAt @db.Timestamptz(6)
+
+  @@unique([courseId, studentId, examId])
+  @@index([schoolId, studentId])
+  @@index([schoolId, courseId])
+  @@map("course_marks")
+}
+
+// ---------------------------------------------------------------------------
+// Gaps Top 3 (2026-11-20) — parent portal, online admissions, homework.
+// CHECK constraints live in migration SQL only (Prisma 6.x has no @@check).
+// All FKs cascade from schools (ON DELETE CASCADE), matching the rest of
+// the schema. Parent phones reuse the AES-256-GCM enc + SHA-256 hash
+// pattern of students.parentPhoneEnc/Hash (see lib/crypto.ts).
+// ---------------------------------------------------------------------------
+
+model ParentToken {
+  id         String   @id @default(uuid()) @db.Uuid
+  schoolId   String   @db.Uuid
+  school     School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  studentId  String   @db.Uuid
+  student    Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  // Same storage pattern as Class attendance tokens: the raw token is
+  // stored AES-256-GCM-encrypted (so the admin UI can show the existing
+  // link after a reload) and looked up by its SHA-256 hash.
+  tokenHash  String   @unique
+  tokenEnc   String
+  expiresAt  DateTime @db.Timestamptz(6)
+  revoked    Boolean  @default(false)
+  createdAt  DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt  DateTime @updatedAt @db.Timestamptz(6)
+
+  @@index([schoolId, studentId])
+  @@map("parent_tokens")
+}
+
+model AdmissionInquiry {
+  id           String   @id @default(uuid()) @db.Uuid
+  schoolId     String   @db.Uuid
+  school       School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  studentName  String
+  // The class applied for (dropdown on the public form). Kept as a live
+  // FK when the class still exists; className is the snapshot shown even
+  // if the class is later deleted.
+  classId      String?  @db.Uuid
+  class        Class?   @relation(fields: [classId], references: [id], onDelete: SetNull)
+  className    String
+  parentName   String
+  parentPhoneEnc String
+  parentPhoneHash String
+  parentEmail  String?
+  notes        String?
+  // 'new' | 'contacted' | 'test' | 'interview' | 'admitted' | 'rejected'
+  // (CHECK in migration SQL). 'admitted' is terminal and set only by
+  // the admit flow, which also fills admittedStudentId.
+  status       String   @default("new")
+  admittedStudentId String? @db.Uuid
+  admittedStudent   Student? @relation("AdmittedStudent", fields: [admittedStudentId], references: [id], onDelete: SetNull)
+  createdAt    DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt    DateTime @updatedAt @db.Timestamptz(6)
+
+  @@index([schoolId, status, createdAt])
+  @@index([schoolId, parentPhoneHash])
+  @@map("admission_inquiries")
+}
+
+model Homework {
+  id          String   @id @default(uuid()) @db.Uuid
+  schoolId    String   @db.Uuid
+  school      School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  classId     String   @db.Uuid
+  class       Class    @relation(fields: [classId], references: [id], onDelete: Cascade)
+  subject     String
+  title       String
+  description String?
+  dueDate     DateTime @db.Date
+  teacher     String
+  createdBy   String?  @db.Uuid
+  creator     User?    @relation(fields: [createdBy], references: [id], onDelete: SetNull)
+  // v2: soft delete — list queries must exclude rows where deletedAt IS NOT NULL.
+  deletedAt   DateTime? @db.Timestamptz(6)
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+
+  @@index([schoolId, classId, dueDate])
+  @@index([schoolId, deletedAt])
+  @@map("homework")
 }

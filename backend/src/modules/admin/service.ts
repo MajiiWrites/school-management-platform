@@ -19,10 +19,31 @@ export async function getDashboard(db: Db, schoolId: string): Promise<Record<str
   const tz = school.timezone;
   const today = todayInTz(tz);
   const month = currentMonthInTz(tz);
-  const nonSchoolDay = await isNonSchoolDay(db, schoolId, today);
-
-  const classes = await db.class.findMany({ where: { schoolId: schoolId, deletedAt: null } });
-  const days = nonSchoolDay ? [] : await db.attendanceDay.findMany({ where: { schoolId: schoolId, date: dateOnly(today) } });
+  // Perf pass (2026-11-20): the 8 reads below used to run one after
+  // another (school -> holiday -> classes -> days -> records ->
+  // teacherRows -> feeRecords -> notifications) — 8 sequential round-trips
+  // to the DB on every dashboard load. Same 8 queries, same result object,
+  // now in 3 parallel waves: the holiday check, classes, fee records and
+  // notifications are independent given schoolId + today + month, so they
+  // run together; today's attendance days + teacher rows follow (they are
+  // skipped entirely on a non-school day, as before); the attendance
+  // records need the day ids, so they stay last.
+  const [nonSchoolDay, classes, feeRecords, notifications] = await Promise.all([
+    isNonSchoolDay(db, schoolId, today),
+    db.class.findMany({ where: { schoolId: schoolId, deletedAt: null } }),
+    db.feeRecord.findMany({ where: { schoolId: schoolId, month, deletedAt: null } }),
+    db.notification.findMany({
+      where: { schoolId: schoolId },
+      orderBy: [{ isRead: 'asc' }, { createdAt: 'desc' }],
+      take: 10,
+    }),
+  ]);
+  const [days, teacherRows] = nonSchoolDay
+    ? [[], []]
+    : await Promise.all([
+        db.attendanceDay.findMany({ where: { schoolId: schoolId, date: dateOnly(today) } }),
+        db.teacherAttendance.findMany({ where: { schoolId: schoolId, date: dateOnly(today) } }),
+      ]);
   const submittedIds = new Set(days.map((d: any) => d.classId));
   let present = 0;
   let absent = 0;
@@ -33,22 +54,15 @@ export async function getDashboard(db: Db, schoolId: string): Promise<Record<str
       if (r.status === 'absent') absent += 1;
     }
   }
-  const teacherRows = nonSchoolDay ? [] : await db.teacherAttendance.findMany({ where: { schoolId: schoolId, date: dateOnly(today) } });
   const teachersPresent = teacherRows.filter((r: any) => r.status === 'present').length;
   const teachersAbsent = teacherRows.filter((r: any) => r.status === 'absent').length;
 
-  const feeRecords = await db.feeRecord.findMany({ where: { schoolId: schoolId, month, deletedAt: null } });
   let feeCollected = 0;
   let feePending = 0;
   for (const r of feeRecords) {
     feeCollected += r.amountPaid ?? 0;
     feePending += Math.max(0, (r.amountDue ?? 0) - (r.discount ?? 0) - (r.amountPaid ?? 0));
   }
-  const notifications = await db.notification.findMany({
-    where: { schoolId: schoolId },
-    orderBy: [{ isRead: 'asc' }, { createdAt: 'desc' }],
-    take: 10,
-  });
   return {
     date: today,
     non_school_day: nonSchoolDay,

@@ -521,6 +521,11 @@ export default function ResultsPage() {
             (r.student_id == null && student !== undefined && r.student_name === student.name)),
       );
       setReportHtml(fillReportCardSubjectTotals(await res.text(), cardRows));
+      // College Mode: the backend report-card HTML itself contains the
+      // college section (program/semester/courses/semester GPA/CGPA) when
+      // the school is a College org and the student has an enrollment —
+      // no separate block is rendered here, so it can never appear twice.
+      // The PDF download carries the same section.
     } catch (e) {
       push('error', errText(e));
     } finally {

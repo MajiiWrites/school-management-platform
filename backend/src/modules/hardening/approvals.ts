@@ -49,6 +49,12 @@ import * as expensesSvc from '../expenses/service';
 import * as announcementsSvc from '../announcements/service';
 import * as eventsSvc from '../events/service';
 import * as certificatesSvc from '../certificates/service';
+// --- College Mode (2026-11-20): approval appliers for programs / semesters / courses / enrollments / course marks ---
+import * as collegeSvc from '../college/service';
+// --- Gaps Top 3 (2026-11-20): approval appliers for parent tokens / admissions / homework ---
+import * as portalSvc from '../portal/service';
+import * as admissionsSvc from '../admissions/service';
+import * as homeworkSvc from '../homework/service';
 import { generateVoucher } from '../fees/vouchers';
 
 const ACTION_TYPES = ['create', 'update', 'delete', 'bulk'];
@@ -601,6 +607,136 @@ export async function applyApproval(db: Db, schoolId: string, req: any, adminId:
       if (!id) throw ApiError.validation('payload.id is required for result_sheet.delete');
       await resultsSvc.deleteResultSheet(db, schoolId, id, adminId);
       return { result_sheet_id: id, soft_deleted: true };
+    }
+  }
+
+  // --- College Mode (2026-11-20) ---
+  // Payload conventions (same as classes): program.create {name, code,
+  // department, duration_years}; program.update {id, patch};
+  // program.delete {id}; semester.create {program_id, number, name?};
+  // semester.delete {id}; course.create {semester_id, code, title,
+  // credit_hours, teacher_id?}; course.update {id, patch};
+  // course.delete {id}; enrollment.create {student_id, program_id,
+  // semester_id}; enrollment.delete {id}; course_mark.create
+  // {course_id, student_id, exam_id, obtained_marks, total_marks}
+  // (upsert: approving an existing key updates it).
+  if (entity === 'program') {
+    if (actionType === 'create') {
+      const created = await collegeSvc.createProgram(db, schoolId, payload as any, adminId);
+      return { program_id: created.id };
+    }
+    const id = (payload.id as string) ?? req.entityId;
+    if (!id) throw ApiError.validation('payload.id is required for program');
+    if (actionType === 'update') {
+      const updated = await collegeSvc.updateProgram(db, schoolId, id, (payload.patch ?? {}) as any, adminId);
+      return { program_id: updated.id };
+    }
+    if (actionType === 'delete') {
+      await collegeSvc.deleteProgram(db, schoolId, id, adminId);
+      return { program_id: id, soft_deleted: true };
+    }
+  }
+
+  if (entity === 'semester') {
+    if (actionType === 'create') {
+      const programId = payload.program_id as string;
+      if (!programId) throw ApiError.validation('payload.program_id is required for semester.create');
+      const created = await collegeSvc.createSemester(db, schoolId, programId, payload as any, adminId);
+      return { semester_id: created.id };
+    }
+    const id = (payload.id as string) ?? req.entityId;
+    if (!id) throw ApiError.validation('payload.id is required for semester.delete');
+    if (actionType === 'delete') {
+      await collegeSvc.deleteSemester(db, schoolId, id, adminId);
+      return { semester_id: id, soft_deleted: true };
+    }
+  }
+
+  if (entity === 'course') {
+    if (actionType === 'create') {
+      const semesterId = payload.semester_id as string;
+      if (!semesterId) throw ApiError.validation('payload.semester_id is required for course.create');
+      const created = await collegeSvc.createCourse(db, schoolId, semesterId, payload as any, adminId);
+      return { course_id: created.id };
+    }
+    const id = (payload.id as string) ?? req.entityId;
+    if (!id) throw ApiError.validation('payload.id is required for course');
+    if (actionType === 'update') {
+      const updated = await collegeSvc.updateCourse(db, schoolId, id, (payload.patch ?? {}) as any, adminId);
+      return { course_id: updated.id };
+    }
+    if (actionType === 'delete') {
+      await collegeSvc.deleteCourse(db, schoolId, id, adminId);
+      return { course_id: id, soft_deleted: true };
+    }
+  }
+
+  if (entity === 'enrollment') {
+    if (actionType === 'create') {
+      const created = await collegeSvc.createEnrollment(db, schoolId, payload as any, adminId);
+      return { enrollment_id: created.id };
+    }
+    const id = (payload.id as string) ?? req.entityId;
+    if (!id) throw ApiError.validation('payload.id is required for enrollment.delete');
+    if (actionType === 'delete') {
+      await collegeSvc.deleteEnrollment(db, schoolId, id, adminId);
+      return { enrollment_id: id, unenrolled: true };
+    }
+  }
+
+  if (entity === 'course_mark') {
+    if (actionType === 'create') {
+      const { mark, created } = await collegeSvc.upsertCourseMark(db, schoolId, payload as any, adminId);
+      return { course_mark_id: mark.id, created };
+    }
+  }
+
+  // Gaps Top 3 (2026-11-20): parent tokens, admissions, homework.
+  // parent_token.create {student_id}; parent_token.delete {student_id}.
+  if (entity === 'parent_token') {
+    const studentId = (payload.student_id as string) ?? req.entityId;
+    if (!studentId) throw ApiError.validation('payload.student_id is required for parent_token');
+    if (actionType === 'create') {
+      const info = await portalSvc.createParentToken(db, schoolId, studentId, adminId);
+      return { student_id: studentId, url: info.url };
+    }
+    if (actionType === 'delete') {
+      const result = await portalSvc.revokeParentToken(db, schoolId, studentId, adminId);
+      return { student_id: studentId, revoked: result.revoked };
+    }
+  }
+
+  // admission_inquiry.update {id, status}; admission_inquiry.create
+  // {id, admit: true, class_id, roll_no?, admission_no?} (Admit).
+  if (entity === 'admission_inquiry') {
+    const id = (payload.id as string) ?? req.entityId;
+    if (!id) throw ApiError.validation('payload.id is required for admission_inquiry');
+    if (actionType === 'update') {
+      const updated = await admissionsSvc.updateInquiryStatus(db, schoolId, id, String(payload.status), adminId);
+      return { inquiry_id: id, status: updated.status };
+    }
+    if (actionType === 'create' && payload.admit === true) {
+      const result = await admissionsSvc.admitInquiry(db, schoolId, id, payload as any, adminId);
+      return { inquiry_id: id, student_id: result.student_id, voucher_no: result.voucher_no ?? null };
+    }
+  }
+
+  // homework.create {class_id, subject, title, description?, due_date,
+  // teacher}; homework.update {id, patch}; homework.delete {id}.
+  if (entity === 'homework') {
+    if (actionType === 'create') {
+      const created = await homeworkSvc.createHomework(db, schoolId, payload as any, adminId);
+      return { homework_id: created.id };
+    }
+    const id = (payload.id as string) ?? req.entityId;
+    if (!id) throw ApiError.validation('payload.id is required for homework');
+    if (actionType === 'update') {
+      const updated = await homeworkSvc.updateHomework(db, schoolId, id, (payload.patch ?? {}) as any, adminId);
+      return { homework_id: updated.id };
+    }
+    if (actionType === 'delete') {
+      await homeworkSvc.deleteHomework(db, schoolId, id, adminId);
+      return { homework_id: id, soft_deleted: true };
     }
   }
 
