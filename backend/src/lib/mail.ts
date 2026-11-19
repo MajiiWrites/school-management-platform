@@ -20,16 +20,30 @@ const SMTP_TIMEOUTS = {
   socketTimeout: 30_000,
 };
 
+/** Phase 1 (real email verification): the resend endpoint awaits its send
+ * so it can report honestly whether the mail went out. A 2-attempt /
+ * 20 s send is too slow to await — one attempt with short timeouts
+ * bounds it at ~10 s worst case (typically <1 s on a working SMTP
+ * path). A transient failure just means the user retries the resend. */
+const FAST_SMTP_TIMEOUTS = {
+  connectionTimeout: 5_000,
+  greetingTimeout: 5_000,
+  socketTimeout: 10_000,
+};
+
 /** Two send attempts total: the first try plus one retry. */
 const SEND_ATTEMPTS = 2;
 
-function createTransporter() {
+function createTransporter(timeouts: typeof SMTP_TIMEOUTS = SMTP_TIMEOUTS) {
   return nodemailer.createTransport({
     host: config.smtpHost,
     port: config.smtpPort,
+    // Phase 1: port 465 means implicit TLS (secure: true). Port 587
+    // (default) stays STARTTLS. The Render SMTP_PORT env var selects the
+    // path — no code change is needed to switch ports.
     secure: config.smtpPort === 465,
     auth: config.smtpUser ? { user: config.smtpUser, pass: config.smtpPass } : undefined,
-    ...SMTP_TIMEOUTS,
+    ...timeouts,
   });
 }
 
@@ -52,6 +66,19 @@ export async function sendMail(opts: { to: string; subject: string; text: string
     }
   }
   throw lastErr;
+}
+
+/** Single fast attempt (see FAST_SMTP_TIMEOUTS) — for endpoints that
+ * await the send and must report the outcome honestly (resend
+ * verification). Throws on failure like sendMail does. */
+export async function sendMailOnce(opts: { to: string; subject: string; text: string }): Promise<void> {
+  if (!config.smtpHost) {
+    // eslint-disable-next-line no-console
+    console.log(`[dev-mail] To: ${opts.to}\nSubject: ${opts.subject}\n${opts.text}\n`);
+    return;
+  }
+  const transporter = createTransporter(FAST_SMTP_TIMEOUTS);
+  await transporter.sendMail({ from: config.mailFrom, ...opts });
 }
 
 export function verificationEmailBody(schoolName: string, token: string): { subject: string; text: string } {

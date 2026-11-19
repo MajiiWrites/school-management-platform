@@ -118,6 +118,14 @@ model User {
   emailVerified   Boolean   @default(false)
   verifyTokenHash String?
   verifyExpiresAt DateTime? @db.Timestamptz(6)
+  // Phase 1 (real email verification, 2026-11-19): the outcome of the
+  // last verification-mail send, so the UI can tell the truth instead of
+  // claiming "we sent it" unconditionally. 'pending' = send in flight
+  // (signup fire-and-forget) or never attempted; 'sent' = SMTP accepted
+  // it; 'failed' = SMTP failed (verifyEmailError carries the message).
+  // CHECK constraint lives in migration SQL only (Prisma has no @@check).
+  verifyEmailStatus String @default("pending")
+  verifyEmailError  String?
   resetTokenHash  String?
   resetExpiresAt  DateTime? @db.Timestamptz(6)
   lastLoginAt     DateTime? @db.Timestamptz(6)

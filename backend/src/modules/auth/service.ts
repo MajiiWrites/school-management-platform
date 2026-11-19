@@ -3,7 +3,8 @@ import { config } from '../../config';
 import { ApiError } from '../../lib/errors';
 import { hashToken, randomToken, normalizePhone, encryptPhone, sha256Hex } from '../../lib/crypto';
 import { signAccessToken, signRefreshToken, signTemp2faToken, makeEmailToken, verifyRefreshToken } from '../../lib/tokens';
-import { sendMail, verificationEmailBody, resetPasswordEmailBody } from '../../lib/mail';
+import { sendMail, sendMailOnce, verificationEmailBody, resetPasswordEmailBody } from '../../lib/mail';
+import { assertEmailCanReceiveMail } from '../../lib/email-check';
 import { writeAudit } from '../../lib/audit';
 import { DEFAULT_TEMPLATES } from '../messaging/templates';
 import { finishLoginBookkeeping, userTotpValid } from '../hardening/twofa';
@@ -83,12 +84,26 @@ export interface PublicUser {
   role: string;
   school_id: string;
   email_verified: boolean;
+  /** Phase 1: outcome of the last verification-mail send ('pending' =
+   * in flight / never attempted, 'sent', 'failed'). The dashboard
+   * banner and /verify-email page read this so they only claim a send
+   * that really happened. */
+  email_verification_status: 'pending' | 'sent' | 'failed';
   /** 6D: the Security page needs this to render the 2FA setup/disable UI. */
   totp_enabled: boolean;
 }
 
 export function toPublicUser(u: any): PublicUser {
-  return { id: u.id, email: u.email, role: u.role, school_id: u.schoolId, email_verified: u.emailVerified, totp_enabled: u.totpEnabled ?? false };
+  const status = u.verifyEmailStatus;
+  return {
+    id: u.id,
+    email: u.email,
+    role: u.role,
+    school_id: u.schoolId,
+    email_verified: u.emailVerified,
+    email_verification_status: status === 'sent' || status === 'failed' ? status : 'pending',
+    totp_enabled: u.totpEnabled ?? false,
+  };
 }
 
 function slugify(name: string): string {
@@ -111,11 +126,21 @@ async function uniqueSlug(db: Db, name: string): Promise<string> {
 export async function signup(
   db: Db,
   input: SignupInput,
-): Promise<{ user: PublicUser; school: SignupSchool; access: string; refresh: string; dev_token?: string }> {
+): Promise<{
+  user: PublicUser;
+  school: SignupSchool;
+  email_verification: { status: 'pending' };
+  dev_token?: string;
+}> {
   const { adminName, adminPhoneE164 } = validateRegistrationProfile(input);
   const email = input.email.trim().toLowerCase();
   const existing = await db.user.findFirst({ where: { email } });
   if (existing) throw ApiError.conflict('An account with this email already exists');
+  // Phase 1: the domain must be able to receive mail at all (DNS MX
+  // check) — a typo'd or nonexistent domain can never receive the
+  // verification link, so reject it now with a clear message instead of
+  // stranding the admin at "check your inbox" forever.
+  await assertEmailCanReceiveMail(email);
 
   const passwordHash = await bcrypt.hash(input.password, config.bcryptRounds);
   const { token, hash } = makeEmailToken();
@@ -182,26 +207,30 @@ export async function signup(
   });
 
   const mail = verificationEmailBody(input.school_name, token);
-  // Round-4 fix (D1, launch blocker): a stalled/failed SMTP send used to
-  // throw here and 500 a signup that had already committed — the live
-  // re-test saw "Internal server error" after ~40 s on "Creating…" even
-  // though the account existed and login worked immediately after. Signup
-  // must succeed regardless of mail outcome: the verification email is
-  // best-effort, failures are logged server-side, and the stored token
-  // stays valid so the user can resend it once mail is back.
-  try {
-    await sendMail({ to: email, ...mail });
-  } catch (err) {
-    // eslint-disable-next-line no-console
-    console.error(`[auth] signup verification mail failed for ${email}: ${(err as Error).message}`);
-  }
+  // Phase 1 (2026-11-19): the verification send is FIRE-AND-FORGET —
+  // never awaited. Diagnosis proved the awaited send cost ~20 s per
+  // signup (two 10 s SMTP connection timeouts on Render's egress) and
+  // up to 60–110 s on a cold start, so users reloaded/retried and read
+  // the 409 "already exists" as "no account was created". The send runs
+  // in the background and its outcome is recorded on the user row
+  // (verifyEmailStatus/verifyEmailError) so the UI can tell the truth
+  // about whether the link really went out; the stored token stays valid
+  // so the user can resend it.
+  sendVerificationMailInBackground(db, user, input.school_name, token);
 
-  // Phase 9 fix: the frontend's signup handler stores data.access /
-  // data.refresh as the session (like login does), but signup used to
-  // return no tokens — so localStorage got the literal string "undefined"
-  // and every call after signup 401'd. Login-before-verification is
-  // allowed by design, so issue tokens here exactly like login does.
-  const out: { user: PublicUser; school: SignupSchool; access: string; refresh: string; dev_token?: string } = {
+  // Phase 1: signup does NOT issue a session. Login is gated until the
+  // email is verified (see login()), so issuing tokens here would let an
+  // unverified account straight onto the dashboard and defeat the gate.
+  // The caller lands on /verify-email?sent=1 and logs in after clicking
+  // the link. (The old behaviour — tokens issued at signup — was the
+  // Phase 9 fix for a 401-after-signup bug; that bug is moot now because
+  // no post-signup call happens before login.)
+  const out: {
+    user: PublicUser;
+    school: SignupSchool;
+    email_verification: { status: 'pending' };
+    dev_token?: string;
+  } = {
     user: toPublicUser(user),
     school: {
       id: school.id,
@@ -214,11 +243,105 @@ export async function signup(
       category: school.category ?? null,
       org_type: school.orgType ?? null,
     },
-    access: signAccessToken(user),
-    refresh: signRefreshToken(user),
+    // Honest status at response time: the send is in flight (see above).
+    // The dashboard banner / /verify-email page read the recorded
+    // outcome from /auth/me afterwards.
+    email_verification: { status: 'pending' },
   };
   if (config.nodeEnv !== 'production') out.dev_token = token;
   return out;
+}
+
+/** Phase 1: background verification-mail sender. Runs detached from the
+ * signup request; records 'sent' / 'failed' (+ the error) on the user
+ * row so the UI can report the real outcome. Never throws. */
+function sendVerificationMailInBackground(
+  db: Db,
+  user: { id: string; email: string },
+  schoolName: string,
+  token: string,
+): void {
+  const mail = verificationEmailBody(schoolName, token);
+  sendMail({ to: user.email, ...mail })
+    .then(async () => {
+      await recordVerificationMailOutcome(db, user.id, { status: 'sent' });
+    })
+    .catch(async (err: unknown) => {
+      const message = (err as Error).message;
+      // eslint-disable-next-line no-console
+      console.error(`[auth] signup verification mail failed for ${user.email}: ${message}`);
+      await recordVerificationMailOutcome(db, user.id, { status: 'failed', error: message.slice(0, 500) });
+    });
+}
+
+async function recordVerificationMailOutcome(
+  db: Db,
+  userId: string,
+  outcome: { status: 'sent' | 'failed'; error?: string },
+): Promise<void> {
+  try {
+    await db.user.update({
+      where: { id: userId },
+      data: {
+        verifyEmailStatus: outcome.status,
+        verifyEmailError: outcome.error ?? null,
+      },
+    });
+  } catch (err) {
+    // The send already happened (or failed); a bookkeeping failure must
+    // never surface to the user — the Render log is the ops signal.
+    // eslint-disable-next-line no-console
+    console.error(`[auth] could not record verification mail outcome for ${userId}: ${(err as Error).message}`);
+  }
+}
+
+/**
+ * Phase 1: resend the verification link. Reuses the stored token if it
+ * is still valid, otherwise issues a fresh one. The send is awaited
+ * (fast single attempt) so the caller gets an honest sent/failed answer
+ * for the UI. Unknown emails get the same generic success shape — never
+ * reveal whether the email exists.
+ */
+export async function resendVerification(db: Db, email: string): Promise<{ sent: boolean; message: string }> {
+  const normalized = email.trim().toLowerCase();
+  const user = await db.user.findFirst({ where: { email: normalized } });
+  if (!user) {
+    return { sent: false, message: 'If an account exists for this email, a verification link has been sent.' };
+  }
+  if (user.emailVerified) {
+    return { sent: false, message: 'This email is already verified — you can log in.' };
+  }
+  // Fresh token each resend (old links stop working): the stored token
+  // may have expired (24 h) or been lost with the first mail.
+  const { token, hash } = makeEmailToken();
+  await db.user.update({
+    where: { id: user.id },
+    data: {
+      verifyTokenHash: hash,
+      verifyExpiresAt: new Date(Date.now() + VERIFY_TTL_MS),
+      verifyEmailStatus: 'pending',
+      verifyEmailError: null,
+    },
+  });
+  const school = await db.school.findUnique({ where: { id: user.schoolId } });
+  const mail = verificationEmailBody(school?.name ?? 'School', token);
+  try {
+    await sendMailOnce({ to: normalized, ...mail });
+    await db.user.update({
+      where: { id: user.id },
+      data: { verifyEmailStatus: 'sent', verifyEmailError: null },
+    });
+    return { sent: true, message: 'Verification link sent — please check your inbox (and spam folder).' };
+  } catch (err) {
+    const message = (err as Error).message;
+    // eslint-disable-next-line no-console
+    console.error(`[auth] resend verification mail failed for ${normalized}: ${message}`);
+    await db.user.update({
+      where: { id: user.id },
+      data: { verifyEmailStatus: 'failed', verifyEmailError: message.slice(0, 500) },
+    });
+    return { sent: false, message: 'We could not send the verification email right now. Please try again in a few minutes.' };
+  }
 }
 
 export async function verifyEmail(db: Db, token: string): Promise<{ user: PublicUser }> {
@@ -255,6 +378,11 @@ export async function login(
   if (!user) throw ApiError.unauthorized('Invalid email or password');
   const ok = await bcrypt.compare(input.password, user.passwordHash);
   if (!ok) throw ApiError.unauthorized('Invalid email or password');
+  // Phase 1 (real email verification): an unverified account cannot log
+  // in — the password step alone is not enough. The gate sits before the
+  // 2FA step so no temp 2FA token is issued to an unverified account
+  // either. The frontend shows the resend button for this error.
+  if (!user.emailVerified) throw ApiError.emailNotVerified();
   // 2FA (6A): if TOTP is enabled, the password step alone is not enough.
   // With a valid code supplied inline the login completes; otherwise the
   // caller gets a 5-min temp token and finishes via POST /auth/2fa/login.
@@ -289,6 +417,10 @@ export async function refreshTokens(
   if (!user || user.schoolId !== payload.school_id) {
     throw ApiError.unauthorized('Invalid or expired refresh token');
   }
+  // Phase 1: a pre-Phase-1 refresh token must not keep an unverified
+  // account signed in after the gate lands — the next refresh signs the
+  // session out and the user must verify, then log in.
+  if (!user.emailVerified) throw ApiError.emailNotVerified();
   // 6D — session (idle) timeout: the refresh token is re-issued on every
   // successful refresh, so its `iat` is the last activity the server has
   // seen (the frontend only calls /refresh when the user actually makes a

@@ -64,6 +64,16 @@ authRouter.post(
 );
 
 authRouter.post(
+  '/resend-verification',
+  authLimiter,
+  asyncHandler(async (req, res) => {
+    const body = parseBody(forgotSchema, req.body);
+    const result = await service.resendVerification(getDb(), body.email);
+    res.json({ ok: true, data: result });
+  }),
+);
+
+authRouter.post(
   '/login',
   authLimiter,
   asyncHandler(async (req, res) => {

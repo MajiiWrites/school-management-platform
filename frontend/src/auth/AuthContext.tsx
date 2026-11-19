@@ -19,11 +19,24 @@ export interface SignupDetails {
   password: string;
 }
 
+/** Phase 1: what POST /auth/signup returns — no tokens. The caller
+ * (SignupPage) routes to /verify-email from this payload. */
+export interface SignupResult {
+  user: User;
+  school: { id?: string; name?: string; [key: string]: unknown };
+  email_verification: { status: string };
+}
+
 interface AuthState {
   user: User | null;
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
-  signup: (details: SignupDetails) => Promise<void>;
+  /** Phase 1: signup NO LONGER logs the user in — the backend issues
+   * no tokens and the account must verify its email first. signup()
+   * returns the signup payload ({ user, school, email_verification })
+   * so the caller can route to /verify-email; it stores no tokens and
+   * sets no user. */
+  signup: (details: SignupDetails, opts?: { timeoutMs?: number }) => Promise<SignupResult>;
   logout: () => void;
   /** 6D: true when the last logout was an idle/session expiry (server
    * rejected the refresh, or the idle timer fired). The login page shows a
@@ -157,16 +170,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     cacheUser(data.user);
   }, [clearSessionExpired]);
 
-  const signup = useCallback(async (details: SignupDetails) => {
-    const data = await api<{ access: string; refresh: string; user: User }>('/auth/signup', {
+  const signup = useCallback(async (details: SignupDetails, opts?: { timeoutMs?: number }) => {
+    // Phase 1: the backend returns no tokens — the user is NOT logged
+    // in after signup and must verify their email first. Return the
+    // payload to the caller; store nothing here.
+    return api<SignupResult>('/auth/signup', {
       method: 'POST',
       body: details,
+      timeoutMs: opts?.timeoutMs,
     });
-    clearSessionExpired();
-    setTokens(data.access, data.refresh);
-    setUser(data.user);
-    cacheUser(data.user);
-  }, [clearSessionExpired]);
+  }, []);
 
   const value = useMemo(
     () => ({ user, loading, login, signup, logout, sessionExpired, clearSessionExpired }),

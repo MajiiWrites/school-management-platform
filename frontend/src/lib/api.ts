@@ -112,6 +112,12 @@ interface RequestOptions {
    * caller cancel an outdated request so a slow reply can never
    * overwrite fresher results. */
   signal?: AbortSignal;
+  /** Phase 1 (email verification): abort the request after this many
+   * ms. A timeout throws ApiClientError(0, 'TIMEOUT', 'Request timed
+   * out') — callers distinguish it via the TIMEOUT code (or
+   * isAbortError on the raw abort). Merged with opts.signal: an
+   * external abort still wins immediately. */
+  timeoutMs?: number;
 }
 
 async function refreshAccess(): Promise<boolean> {
@@ -150,6 +156,26 @@ async function refreshAccess(): Promise<boolean> {
 export async function api<T>(path: string, opts: RequestOptions = {}): Promise<T> {
   if (MOCK_MODE) return mockRequest<T>(path, opts.method ?? 'GET', opts.body);
 
+  // Phase 1: optional timeout, merged with any caller-provided signal.
+  // The timeout abort is tracked separately so a caller-initiated abort
+  // still surfaces as a plain AbortError, while a timeout becomes the
+  // distinguishable TIMEOUT ApiClientError.
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  let signal = opts.signal;
+  if (opts.timeoutMs !== undefined) {
+    const controller = new AbortController();
+    if (opts.signal) {
+      if (opts.signal.aborted) controller.abort(opts.signal.reason);
+      else opts.signal.addEventListener('abort', () => controller.abort(opts.signal?.reason), { once: true });
+    }
+    timeoutId = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, opts.timeoutMs);
+    signal = controller.signal;
+  }
+
   const doFetch = async (): Promise<Response> => {
     const headers: Record<string, string> = { ...(opts.headers ?? {}) };
     if (!opts.public) {
@@ -161,28 +187,37 @@ export async function api<T>(path: string, opts: RequestOptions = {}): Promise<T
     return fetch(`${API_BASE}${path}`, {
       method: opts.method ?? 'GET',
       headers,
-      signal: opts.signal,
+      signal,
       body: isForm ? (opts.body as FormData) : opts.body === undefined ? undefined : JSON.stringify(opts.body),
     });
   };
 
-  let res = await doFetch();
-  if (res.status === 401 && !opts.public && !opts.noRetry) {
-    if (await refreshAccess()) res = await doFetch();
-  }
-  if (!res.ok) {
-    let err: ApiError = { code: 'UNKNOWN', message: `Request failed (${res.status})` };
-    try {
-      const json = (await res.json()) as { ok: boolean; error?: ApiError };
-      if (json.error) err = json.error;
-    } catch {
-      /* keep default */
+  try {
+    let res = await doFetch();
+    if (res.status === 401 && !opts.public && !opts.noRetry) {
+      if (await refreshAccess()) res = await doFetch();
     }
-    throw new ApiClientError(res.status, err.code, err.message);
+    if (!res.ok) {
+      let err: ApiError = { code: 'UNKNOWN', message: `Request failed (${res.status})` };
+      try {
+        const json = (await res.json()) as { ok: boolean; error?: ApiError };
+        if (json.error) err = json.error;
+      } catch {
+        /* keep default */
+      }
+      throw new ApiClientError(res.status, err.code, err.message);
+    }
+    if (res.status === 204) return undefined as T;
+    const json = (await res.json()) as { ok: boolean; data: T };
+    return json.data;
+  } catch (e) {
+    if (timedOut && isAbortError(e)) {
+      throw new ApiClientError(0, 'TIMEOUT', 'Request timed out');
+    }
+    throw e;
+  } finally {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
   }
-  if (res.status === 204) return undefined as T;
-  const json = (await res.json()) as { ok: boolean; data: T };
-  return json.data;
 }
 
 /** GET that returns a binary download (report exports). */

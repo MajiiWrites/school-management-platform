@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Link, useLocation } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { api } from '../lib/api';
 import type { DashboardData, SmsStatus } from '../lib/types';
@@ -11,17 +11,16 @@ export default function DashboardPage() {
   const [sms, setSms] = useState<SmsStatus | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
-  // R2-C: verification reminder. Signup now lands here instead of the
-  // /verify-email interstitial, so the reminder lives on the dashboard:
-  // shown when this landing follows a fresh signup (location state) or
-  // while the account's email is still unverified. Dismissing records it
-  // per user for this tab session, so it does not nag again until the
-  // next session — but it returns after a refresh until the email is
-  // actually verified, unless dismissed. "Unknown" (undefined, e.g. mock
-  // payloads) never triggers it.
+  // Phase 1: honest verification banner, driven by
+  // user.email_verification_status and shown only while the email is
+  // unverified. It never claims a send that did not happen: 'sent'
+  // means the mail went out, 'failed' means it did not, and
+  // 'pending'/unknown means the send is still in progress. Dismissing
+  // records it per user for this tab session, so it does not nag again
+  // until the next session — but it returns after a refresh until the
+  // email is actually verified, unless dismissed. "Unknown"
+  // (email_verified undefined, e.g. mock payloads) never triggers it.
   const { user } = useAuth();
-  const location = useLocation();
-  const justSignedUp = (location.state as { justSignedUp?: boolean } | null)?.justSignedUp === true;
   const [verifyDismissed, setVerifyDismissed] = useState<boolean>(() => {
     try {
       return !!user && sessionStorage.getItem(`smp_verify_dismissed_${user.id}`) === '1';
@@ -29,7 +28,25 @@ export default function DashboardPage() {
       return false;
     }
   });
-  const showVerifyReminder = !verifyDismissed && (justSignedUp || user?.email_verified === false);
+  const showVerifyReminder = !verifyDismissed && user?.email_verified === false;
+  const [verifyResendResult, setVerifyResendResult] = useState('');
+  const [verifyResendBusy, setVerifyResendBusy] = useState(false);
+  const resendVerification = async () => {
+    if (!user?.email) return;
+    setVerifyResendResult('');
+    setVerifyResendBusy(true);
+    try {
+      const data = await api<{ sent: boolean; message: string }>('/auth/resend-verification', {
+        method: 'POST',
+        body: { email: user.email },
+      });
+      setVerifyResendResult(data.message);
+    } catch {
+      setVerifyResendResult('Could not resend the verification email. Please try again.');
+    } finally {
+      setVerifyResendBusy(false);
+    }
+  };
   const dismissVerifyReminder = () => {
     try {
       if (user) sessionStorage.setItem(`smp_verify_dismissed_${user.id}`, '1');
@@ -69,12 +86,24 @@ export default function DashboardPage() {
       {showVerifyReminder && (
         <div className="flex items-start justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
           <span>
-            <strong>Verify your email.</strong> We sent a verification link to {user?.email ?? 'your inbox'} — please
-            check your inbox (and spam folder). Your school is ready to use meanwhile.
+            <strong>Verify your email.</strong>{' '}
+            {user?.email_verification_status === 'sent' ? (
+              <>We sent a verification link to {user?.email ?? 'your inbox'} — please check your inbox (and spam folder).</>
+            ) : user?.email_verification_status === 'failed' ? (
+              <>We could not send the verification email to {user?.email ?? 'your inbox'}. Please resend it.</>
+            ) : (
+              <>We&apos;re sending a verification link to {user?.email ?? 'your inbox'}… If it doesn&apos;t arrive in a few minutes, resend it.</>
+            )}
+            {verifyResendResult && <span className="mt-1 block">{verifyResendResult}</span>}
           </span>
-          <button onClick={dismissVerifyReminder} className="shrink-0 font-medium underline" aria-label="Dismiss verification reminder">
-            Dismiss
-          </button>
+          <span className="flex shrink-0 gap-3">
+            <button onClick={resendVerification} disabled={verifyResendBusy} className="font-medium underline disabled:opacity-50" aria-label="Resend verification email">
+              {verifyResendBusy ? 'Sending…' : 'Resend'}
+            </button>
+            <button onClick={dismissVerifyReminder} className="font-medium underline" aria-label="Dismiss verification reminder">
+              Dismiss
+            </button>
+          </span>
         </div>
       )}
       <div className="flex flex-wrap items-center justify-between gap-3">

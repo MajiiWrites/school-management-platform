@@ -6,6 +6,7 @@ export type ErrorCode =
   | 'CONFLICT'
   | 'RATE_LIMITED'
   | 'SESSION_EXPIRED'
+  | 'EMAIL_NOT_VERIFIED'
   | 'INTERNAL';
 
 const STATUS: Record<ErrorCode, number> = {
@@ -16,6 +17,7 @@ const STATUS: Record<ErrorCode, number> = {
   CONFLICT: 409,
   RATE_LIMITED: 429,
   SESSION_EXPIRED: 401,
+  EMAIL_NOT_VERIFIED: 403,
   INTERNAL: 500,
 };
 
@@ -49,6 +51,15 @@ export class ApiError extends Error {
    * frontend treats this code as "session expired — sign in again". */
   static sessionExpired(message = 'Session expired due to inactivity — please sign in again'): ApiError {
     return new ApiError('SESSION_EXPIRED', message);
+  }
+  /** Phase 1 (real email verification, 2026-11-19): login/refresh/2FA
+   * completion for an account whose email is not verified yet. The
+   * frontend treats this code as "verify your email first" and offers a
+   * resend button. */
+  static emailNotVerified(
+    message = 'Please verify your email before logging in. Check your inbox for the verification link, or resend it below.',
+  ): ApiError {
+    return new ApiError('EMAIL_NOT_VERIFIED', message);
   }
 }
 

@@ -18,6 +18,12 @@ export interface User {
    * the signup/login responses). Undefined for older/mock payloads that
    * do not carry it — treated as "unknown", never as unverified. */
   email_verified?: boolean;
+  /** Phase 1 (email verification): the mail-send state of the latest
+   * verification link (from GET /auth/me). 'pending' = send in
+   * progress / not yet attempted, 'sent' = mail accepted, 'failed' =
+   * the send failed. Undefined on older payloads — treated as
+   * "unknown", never as a failure. */
+  email_verification_status?: 'pending' | 'sent' | 'failed';
   /** 6D: whether TOTP 2FA is enabled (from GET /auth/me). */
   totp_enabled?: boolean;
 }

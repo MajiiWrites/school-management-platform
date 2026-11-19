@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
-import { api, ApiClientError } from '../lib/api';
+import { api, ApiClientError, isAbortError } from '../lib/api';
 import { Button, Card, ErrorBanner, Field, inputCls } from '../components/ui';
 import DeveloperFooter from '../components/DeveloperFooter';
 
@@ -29,6 +29,56 @@ function errText(e: unknown): string {
   return e instanceof ApiClientError ? e.message : 'Something went wrong. Please try again.';
 }
 
+/** Phase 1: shared "resend the verification email" control. Shows the
+ * honest result the server returns — it never claims a send that did
+ * not happen (the backend reports sent=true only when the mail
+ * actually went out). */
+function ResendVerification({ email: initialEmail = '', showInput = false }: { email?: string; showInput?: boolean }) {
+  const [email, setEmail] = useState(initialEmail);
+  const [result, setResult] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setResult('');
+    setError('');
+    setBusy(true);
+    try {
+      const data = await api<{ sent: boolean; message: string }>('/auth/resend-verification', {
+        method: 'POST',
+        body: { email: email.trim() },
+      });
+      setResult(data.message);
+    } catch (err) {
+      setError(errText(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mt-4">
+      <form onSubmit={submit} className="space-y-3">
+        {showInput && (
+          <Field label="Email">
+            <input className={inputCls} type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="admin@school.pk" autoComplete="email" />
+          </Field>
+        )}
+        <Button type="submit" disabled={busy} className="w-full">
+          {busy ? 'Sending…' : 'Resend verification email'}
+        </Button>
+      </form>
+      {result && <p className="mt-3 text-sm text-brand-700">{result}</p>}
+      {error && (
+        <div className="mt-3">
+          <ErrorBanner message={error} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function LoginPage() {
   const { login, sessionExpired, clearSessionExpired } = useAuth();
   const navigate = useNavigate();
@@ -36,16 +86,25 @@ export function LoginPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  // Phase 1: set when login is refused because the email is not
+  // verified yet — the page then offers a resend instead of a dead end.
+  const [notVerified, setNotVerified] = useState(false);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setError('');
+    setNotVerified(false);
     setBusy(true);
     try {
       await login(email.trim(), password);
       navigate('/dashboard');
     } catch (err) {
-      setError(errText(err));
+      if (err instanceof ApiClientError && err.code === 'EMAIL_NOT_VERIFIED') {
+        setError(err.message);
+        setNotVerified(true);
+      } else {
+        setError(errText(err));
+      }
     } finally {
       setBusy(false);
     }
@@ -74,6 +133,7 @@ export function LoginPage() {
           {busy ? 'Logging in…' : 'Log in'}
         </Button>
       </form>
+      {notVerified && <ResendVerification key={email} email={email.trim()} />}
       <div className="mt-4 flex justify-between text-sm">
         <Link to="/forgot-password" className="text-brand-700 hover:underline">
           Forgot password?
@@ -126,26 +186,34 @@ export function SignupPage() {
     }
     setBusy(true);
     try {
-      await signup({
-        school_name: schoolName.trim(),
-        admin_name: adminName.trim(),
-        admin_phone: adminPhone.trim(),
-        address: address.trim(),
-        tehsil: tehsil.trim(),
-        district: district.trim(),
-        province,
-        category,
-        org_type: orgType,
-        email: email.trim(),
-        password,
-      });
-      // R2-C fix: signup now issues access+refresh tokens (round-1 fix), so
-      // the session is live immediately — land straight on the dashboard.
-      // The dashboard shows a dismissible verification reminder instead
-      // of parking the new admin on the /verify-email interstitial.
-      navigate('/dashboard', { state: { justSignedUp: true } });
+      // Phase 1: signup issues no tokens and does not log the user in —
+      // the account must verify its email first. A 30s timeout guards
+      // the (possibly cold-starting) signup call.
+      await signup(
+        {
+          school_name: schoolName.trim(),
+          admin_name: adminName.trim(),
+          admin_phone: adminPhone.trim(),
+          address: address.trim(),
+          tehsil: tehsil.trim(),
+          district: district.trim(),
+          province,
+          category,
+          org_type: orgType,
+          email: email.trim(),
+          password,
+        },
+        { timeoutMs: 30000 },
+      );
+      navigate(`/verify-email?sent=1&email=${encodeURIComponent(email.trim())}`);
     } catch (err) {
-      setError(errText(err));
+      if (err instanceof ApiClientError && (err.code === 'CONFLICT' || err.status === 409)) {
+        setError('An account with this email already exists — log in instead.');
+      } else if ((err instanceof ApiClientError && err.code === 'TIMEOUT') || isAbortError(err)) {
+        setError('This is taking too long — your account may already exist, try logging in.');
+      } else {
+        setError(errText(err));
+      }
     } finally {
       setBusy(false);
     }
@@ -230,6 +298,7 @@ export function VerifyEmailPage() {
   const [message, setMessage] = useState('');
   const token = params.get('token');
   const sent = params.get('sent');
+  const email = params.get('email') ?? '';
 
   useEffect(() => {
     if (!token) return;
@@ -244,14 +313,39 @@ export function VerifyEmailPage() {
       });
   }, [token]);
 
+  // Phase 1: never claim a send that did not happen. The ?sent=1
+  // interstitial says the link is being sent (not that it was sent),
+  // and the no-token view offers a resend instead of a dead end.
   return (
-    <AuthShell title="Verify your email" sub="We sent a verification link to your inbox.">
+    <AuthShell
+      title="Verify your email"
+      sub={
+        token
+          ? 'Confirm your email address.'
+          : sent
+            ? 'Your verification link is on its way.'
+            : "We couldn't find a verification token in this link."
+      }
+    >
       {!token && sent && (
-        <div className="rounded-lg bg-brand-50 px-4 py-3 text-sm text-brand-700">
-          Check your inbox for the verification link. It is valid for 24 hours — if you can't find it, check your spam folder.
-        </div>
+        <>
+          <div className="rounded-lg bg-brand-50 px-4 py-3 text-sm text-brand-700">
+            We&apos;re sending a verification link to {email} — it usually arrives within a minute. Check your inbox
+            and spam folder. If it doesn&apos;t arrive, resend it below.
+          </div>
+          <ResendVerification email={email} />
+        </>
       )}
-      {!token && !sent && <p className="text-sm text-slate-500">No verification token in this link.</p>}
+      {!token && !sent && (
+        <>
+          <p className="text-sm text-slate-500">No verification token in this link.</p>
+          <div className="mt-5 border-t border-slate-200 pt-4">
+            <h2 className="text-sm font-semibold text-slate-900">Didn&apos;t receive the email?</h2>
+            <p className="mt-1 text-sm text-slate-500">Enter your email and we&apos;ll send a new verification link.</p>
+            <ResendVerification showInput />
+          </div>
+        </>
+      )}
       {token && status === 'idle' && <p className="text-sm text-slate-500">Verifying…</p>}
       {token && status === 'ok' && <p className="text-sm text-brand-700">{message}</p>}
       {token && status === 'error' && <ErrorBanner message={message} />}

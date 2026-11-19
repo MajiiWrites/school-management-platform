@@ -11,8 +11,19 @@
  * compound unique keys, Date equality). The live-DB twin of these probes is
  * backend/src/modules/isolation/live-cross-tenant.sh.
  */
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import crypto from 'node:crypto';
+
+/** Phase 1: signup now checks the email domain's MX records. The
+ * isolation fixtures use .test domains (no real MX), so DNS is mocked
+ * here — every domain resolves an MX record. */
+const mockedResolveMx = vi.hoisted(() =>
+  vi.fn(async (_domain: string) => [{ exchange: 'mx.test', priority: 10 }]),
+);
+vi.mock('node:dns/promises', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('node:dns/promises')>();
+  return { ...orig, resolveMx: mockedResolveMx };
+});
 import { ApiError } from '../../../lib/errors';
 import { encryptPhone, sha256Hex } from '../../../lib/crypto';
 import { requireSchool } from '../../../middleware/tenant';

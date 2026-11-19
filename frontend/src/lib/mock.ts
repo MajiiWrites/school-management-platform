@@ -99,10 +99,19 @@ export async function mockRequest<T>(path: string, method: string, body?: unknow
     throw Object.assign(new Error('Invalid email or password'), { status: 401, code: 'UNAUTHORIZED' });
   }
   if (rawPath === '/auth/signup' && method === 'POST') {
-    return { access: 'mock-access', refresh: 'mock-refresh', user: { id: 'u-1', email: (body as { email: string }).email, role: 'admin', school_id: 'sch-1', school_name: (body as { school_name: string }).school_name } } as T;
+    // Phase 1: signup issues NO tokens — the user is not logged in
+    // until their email is verified.
+    return {
+      user: { id: 'u-1', email: (body as { email: string }).email, role: 'admin', school_id: 'sch-1', school_name: (body as { school_name: string }).school_name, email_verified: false },
+      school: { id: 'sch-1', name: (body as { school_name: string }).school_name },
+      email_verification: { status: 'sent' },
+    } as T;
+  }
+  if (rawPath === '/auth/resend-verification' && method === 'POST') {
+    return { sent: true, message: 'Verification link sent.' } as T;
   }
   if (rawPath === '/auth/me') {
-    return { id: 'u-1', email: 'admin@mock.local', role: 'admin', school_id: 'sch-1', school_name: 'Demo Public School' } as T;
+    return { user: { id: 'u-1', email: 'admin@mock.local', role: 'admin', school_id: 'sch-1', school_name: 'Demo Public School', email_verified: true, email_verification_status: 'sent' } } as T;
   }
   if (rawPath === '/auth/refresh' && method === 'POST') {
     return { access: 'mock-access', refresh: 'mock-refresh' } as T;

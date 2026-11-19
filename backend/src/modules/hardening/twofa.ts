@@ -150,6 +150,10 @@ export async function completeTwofaLogin(
   if (!user || user.schoolId !== payload.school_id) {
     throw ApiError.unauthorized('Invalid or expired 2FA session — log in again');
   }
+  // Phase 1 (defense in depth): the password step already gates
+  // unverified accounts, so no temp token should exist for one — but a
+  // token issued before the gate landed must not complete a login.
+  if (!user.emailVerified) throw ApiError.emailNotVerified();
   if (!user.totpEnabled || !userTotpValid(user, code)) {
     throw ApiError.unauthorized('Invalid verification code');
   }
