@@ -575,9 +575,10 @@ export function createMessagingRouter(deps: MessagingRouterDeps): express.Router
     return draft;
   }
 
-  /** Admins may touch any draft; clerks only their own. */
+  /** Admins may touch any draft; clerks only their own. Platform admins
+   * count as admins within their own school (2026-11-20). */
   function assertDraftWritable(req: AuthedRequest, draft: DraftRow): void {
-    if (req.user?.role === 'admin') return;
+    if (req.user?.role === 'admin' || req.user?.role === 'platform_admin') return;
     if (req.user?.role === 'clerk' && draft.createdBy === req.user.sub) return;
     throw Object.assign(new Error('You can only change your own drafts'), { code: 'FORBIDDEN' });
   }

@@ -56,6 +56,12 @@ model School {
   category String?
   orgType  String?
   smsSenderNumber String?
+  // Platform Admin Panel (2026-11-20): a suspended school's users cannot
+  // log in (platform admins bypass the gate). Data is untouched; the
+  // school is reactivated by clearing suspended_at. CHECK constraints
+  // live in migration SQL only (Prisma has no @@check).
+  suspendedAt     DateTime? @db.Timestamptz(6)
+  suspendedReason String?
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
 
@@ -151,6 +157,13 @@ model User {
   totpEnabled     Boolean   @default(false)
   loginAlerts     Boolean   @default(true)
   lastLoginIp     String?
+  // Platform Admin Panel (2026-11-20): token_version is bumped by
+  // "revoke all sessions" — refresh tokens carrying an older version are
+  // rejected (access tokens live 15 min, so revocation lands at next
+  // refresh). disabled_at blocks login + refresh. There is NO server-side
+  // session store; revocation is the version check, nothing more.
+  tokenVersion    Int       @default(0)
+  disabledAt      DateTime? @db.Timestamptz(6)
   createdAt       DateTime  @default(now()) @db.Timestamptz(6)
   updatedAt       DateTime  @updatedAt @db.Timestamptz(6)
 
@@ -1149,6 +1162,37 @@ model CourseMark {
 // the schema. Parent phones reuse the AES-256-GCM enc + SHA-256 hash
 // pattern of students.parentPhoneEnc/Hash (see lib/crypto.ts).
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Platform Admin Panel (2026-11-20) — cross-school tables. Neither has a
+// school FK by design: platform_settings is global, and platform_audit_logs
+// records platform-wide actions (school-scoped platform actions ALSO write
+// a school AuditLog row via lib/audit.ts so the school's own history shows
+// them). CHECK constraints live in migration SQL only (Prisma 6.x has no
+// @@check).
+// ---------------------------------------------------------------------------
+
+model PlatformSetting {
+  key       String   @id
+  value     Json     @db.JsonB
+  updatedAt DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+
+  @@map("platform_settings")
+}
+
+model PlatformAuditLog {
+  id        String   @id @default(uuid()) @db.Uuid
+  actorId   String?  @db.Uuid
+  action    String
+  entity    String
+  entityId  String?  @db.Uuid
+  details   Json     @default("{}") @db.JsonB
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([createdAt])
+  @@index([actorId])
+  @@map("platform_audit_logs")
+}
 
 model ParentToken {
   id         String   @id @default(uuid()) @db.Uuid

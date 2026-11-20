@@ -350,3 +350,113 @@ through the approval queue (202) unless noted; every edit writes a
   “Sign out now”); on expiry the login page explains the sign-out.
 - `GET /auth/sessions` / `DELETE /auth/sessions/:id` are NOT built:
   with stateless JWTs there is no server-side session to list or revoke.
+
+# Platform Admin Panel (2026-11-20 — `backend/src/modules/platform/`)
+Cross-school administration for the platform owner (role
+`platform_admin`). Migration
+`20261120050000_platform_admin_panel`: `platform_settings`
+(`registration_open=true`, `maintenance_mode=false`,
+`platform_notice=null` seeded), `platform_audit_logs`,
+`users.tokenVersion` (default 0) + `users.disabledAt`,
+`schools.suspendedAt` + `schools.suspendedReason`,
+`users_role_check` widened to
+`('admin','clerk','principal','platform_admin')`, and a one-time
+idempotent promotion of `majidalioffical0@gmail.com` from `admin` to
+`platform_admin` (only that email, only if currently `admin`; creates no
+account, password, or backdoor; `adminmailx@gmail.com` is never touched).
+A second platform admin is promoted from the panel itself
+(`POST /platform/users/:id/promote`, target must have 2FA enabled).
+
+## Access rules
+- All `/platform/*` routes except `/status` and `/notice` require
+  `requirePlatformAdmin`: valid JWT + user row with role
+  `platform_admin` + TOTP enabled, else 403. A platform admin WITHOUT
+  2FA gets 403 `Enable two-factor authentication in Security before
+  using the Platform Admin Panel` — the 2FA gate is on panel routes,
+  NOT on login (a platform admin without 2FA can still log in and enable
+  it in Security).
+- `GET /platform/status` is PUBLIC (no auth): the signup page reads it.
+  `GET /platform/notice` needs any authenticated user (any role).
+- Never use `requireSchool`/tenant middleware on platform routes:
+  platform admins are cross-school by design. On SCHOOL routes the
+  platform admin is a full admin of their OWN school only:
+  `requireAdmin`/`requireAdminOrClerk`, the permission bypass and the
+  approval/draft admin checks all treat `platform_admin` like `admin`,
+  but `requireSchool` still scopes everything by the JWT's `school_id`
+  — so a platform-admin token on school routes sees ONLY its own
+  school, never another school. Cross-school work goes through
+  `/platform/*` instead.
+- Every mutating platform action writes a `platform_audit_logs` row;
+  school-scoped actions ALSO write a school `audit_logs` row so the
+  school's own history shows it.
+- Envelope `{ok:true, data}`; lists are
+  `{items, total, page, pages}`.
+
+## Login / session gates (auth service)
+- Disabled account (`users.disabledAt` set): login, refresh and the
+  2FA-completion path all return `403 {code:'ACCOUNT_DISABLED'}`.
+- Suspended school (`schools.suspendedAt` set): non-platform-admin
+  users get `403 {code:'SCHOOL_SUSPENDED'}` on login, refresh and
+  2FA completion. Suspension only blocks login — data is untouched.
+  Platform admins bypass the suspension gate.
+- Refresh tokens carry a `token_version` claim (missing on pre-change
+  tokens = 0). `POST /auth/refresh` rejects when it differs from the
+  user's current `token_version` (`401`, "Session revoked — please sign
+  in again"). "Revoke all sessions" = bump `token_version`; revocation
+  takes effect at the next refresh (access tokens live 15 min). There
+  is NO server-side session store.
+- Signup gates: `registration_open=false` → `409` `Registration is
+  currently closed by the platform administrator`; `maintenance_mode=true`
+  → `503 {code:'MAINTENANCE'}` `The platform is under maintenance`.
+  Defaults (no settings row) = open / not maintenance.
+
+## Maintenance gate (`app.ts`)
+- Mounted after the platform router and BEFORE the school routers.
+  When `maintenance_mode` is on, an authenticated non-platform-admin
+  request gets `503 {code:'MAINTENANCE'}`. Authentication is tolerant:
+  a missing/invalid token passes through (downstream routers 401 as
+  usual) and device-key polls (no JWT) keep working.
+- Public teacher links (`/t/:token`), the parent portal (`/p/:token`)
+  and admissions forms are mounted BEFORE the gate and stay up during
+  maintenance. Signup is gated in the auth service, not the middleware.
+- `GET /admin/dashboard` now also returns
+  `platform_notice:{text,created_at}|null` (read from
+  `platform_settings`); nothing else in that response changed.
+
+## Endpoints (`/api/v1/platform`, platform admin + 2FA unless noted)
+| Method & path | Description |
+|---|---|
+| `GET /overview` | `{totals:{schools,students,users,verified_users,unverified_users}, signups:{this_week,this_month}, health:{api:'up', mail:{sent,failed,pending}, queue:{held,approved,queued,failed}, last_backup_at\|null}}` |
+| `GET /status` | PUBLIC. `{registration_open, maintenance_mode, notice:{text,created_at}\|null}` |
+| `GET /notice` | Any authenticated user. `{notice:{text,created_at}\|null}` |
+| `GET /schools?search=&org_type=&province=&category=&verified=&suspended=&page=&limit=` | Items `{id,name,slug,org_type,province,category,created_at,admin_email,admin_name,email_verified,students_count,users_count,suspended}` |
+| `GET /schools/:id` | Detail + counts + admin contact + verification/mail status |
+| `POST /schools/:id/suspend {reason?}` | Sets `suspendedAt`/`suspendedReason`. Audited (both logs). |
+| `POST /schools/:id/activate` | Clears suspension. Audited (both logs). |
+| `DELETE /schools/:id {confirm:"<exact school name>"}` | 400 unless `confirm` matches the school name exactly. One transaction deleting the school's rows explicitly in dependency order, then the school row. No pre-existing account-deletion execution existed (`POST /account/delete-request` only records a request) — this is the real delete. Audited. |
+| `GET /users?search=&role=&verified=&disabled=&page=` | Items `{id,email,name,role,school_id,school_name,email_verified,totp_enabled,disabled,last_login_at,last_login_ip,created_at}` |
+| `GET /users/:id` | As above + `verify_email_status`, `verify_email_error`, `token_version` |
+| `POST /users/:id/disable` / `/enable` | 400 when disabling the LAST enabled platform admin. |
+| `POST /users/:id/reverify` | Sets `emailVerified=false`, `verifyEmailStatus='pending'`, reuses `resendVerification`. Login blocks until verified. |
+| `POST /users/:id/reset-password` | Reuses `forgotPassword` (sends the reset email). NEVER sets a password directly. |
+| `POST /users/:id/promote {role:'platform_admin'}` | Target must have TOTP enabled, else 400 `Enable two-factor authentication first`. |
+| `POST /users/:id/demote {role:'admin'}` | 400 when demoting the last platform admin. |
+| `GET /schools/:id/data/:entity?search=&page=` | `entity` in `students\|classes\|fees\|messages\|admissions\|homework\|programs`. Read-only; phones masked like the school list endpoints, encrypted/hash/secret fields never returned. |
+| `GET /schools/:id/data/:entity/export?format=csv` | CSV download of the same rows (max 5000). Secrets scrubbed; never includes `passwordHash`/token hashes/TOTP secrets. `format` must be `csv`. |
+| `GET /schools/:id/export` | Full JSON export, reuses `exportSchoolData`. |
+| `GET /recycle-bin?school_id=&entity=&page=` | Cross-school `deleted_records` (reuses `toPublicDeletedRecord`). |
+| `POST /recycle-bin/:id/restore` | Reuses `restoreDeletedRecord` with the record's `schoolId`. |
+| `POST /recycle-bin/:id/permanent-delete {confirm:"<entity>:<entityId>"}` | 400 unless `confirm` equals `<entity>:<entityId>`; reuses `permanentDeleteRecord` (boolean second confirmation inside). |
+| `GET /audit-logs?school_id=&user_id=&action=&from=&to=&page=` | Merged `platform_audit_logs` + `audit_logs`, newest first, each item tagged `source:'platform'\|'school'`. With `school_id`, only platform rows about that school are included. |
+| `GET /messaging/queue?status=&school_id=&page=` | `message_queue` rows + school name; phones masked. |
+| `GET /messaging/failed` | Same, `status='failed'`. |
+| `POST /messaging/queue/:id/retry` | Failed → `queued`, `attempts=0`, `error=null`, `scheduledFor=now`. Audited (both logs). NOTE: the school-side `retryFailed()` helper preserves `attempts`; the panel resets it per this contract, so the panel updates the row directly instead of reusing that helper. |
+| `GET /mail-health` | `{transport:'smtp', recent_verification_mail:{sent,failed,pending}, recent_failures:[{email,error,at}] (latest 10), note}` — counts derived from `users.verifyEmailStatus`; the note states Gmail SMTP is timing out from Render until a transactional-mail provider is wired in. No probe is faked. |
+| `GET /settings` | `{registration_open, maintenance_mode, notice}` |
+| `PATCH /settings {registration_open?, maintenance_mode?, notice?:{text}\|null}` | Audited. Notice stores `{text, created_at, created_by}`. |
+| `GET /security/logins?days=7` | `{note, items:[{user_id,email,school_name,last_login_at,last_login_ip}]}` ordered by `last_login_at` desc. The note states this is last-login info, not a live session list (stateless JWTs). |
+| `GET /security/platform-admins` | All `platform_admin` users `{id,email,totp_enabled,disabled,last_login_at}`. |
+| `GET /security/sessions` | Latest 50 users `{id,email,role,last_login_at,last_login_ip,token_version}` + note (revocation at next refresh; access tokens expire within 15 minutes). |
+| `POST /security/users/:id/revoke-sessions` | Bumps `token_version`. Audited. |
+| `GET /backups` | `{latest:{file_ref,size_bytes,created_at,school_name}\|null, per_school:[{school_id,school_name,latest_at,total}], total}` from `school_backups` rows. `latest=null` when no backup ever ran. No new backup system is built. |
+

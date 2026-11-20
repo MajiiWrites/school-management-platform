@@ -8,6 +8,7 @@ import { assertEmailCanReceiveMail } from '../../lib/email-check';
 import { writeAudit } from '../../lib/audit';
 import { DEFAULT_TEMPLATES } from '../messaging/templates';
 import { finishLoginBookkeeping, userTotpValid } from '../hardening/twofa';
+import { readPlatformSettings } from '../../lib/platformSettings';
 import type { Db } from '../../lib/db';
 
 const VERIFY_TTL_MS = 24 * 60 * 60 * 1000;
@@ -123,6 +124,26 @@ async function uniqueSlug(db: Db, name: string): Promise<string> {
   return slug;
 }
 
+/** Platform Admin Panel (2026-11-20): login gates shared by login(),
+ * refreshTokens() and the 2FA-completion path. Disabled accounts can never
+ * log in; users of a suspended school cannot log in (their data is
+ * untouched — suspension only blocks login). Platform admins bypass the
+ * suspension gate: they are the owner, not a school user. */
+export async function assertLoginAllowed(db: Db, user: any): Promise<void> {
+  if (user.disabledAt) throw ApiError.accountDisabled();
+  if (user.role !== 'platform_admin') {
+    const school: any = await db.school.findUnique({ where: { id: user.schoolId } });
+    if (school?.suspendedAt) {
+      const reason = typeof school.suspendedReason === 'string' && school.suspendedReason.trim()
+        ? ` Reason: ${school.suspendedReason.trim()}`
+        : '';
+      throw ApiError.schoolSuspended(
+        `Your school has been suspended by the platform administrator. Please contact support.${reason}`,
+      );
+    }
+  }
+}
+
 export async function signup(
   db: Db,
   input: SignupInput,
@@ -133,6 +154,14 @@ export async function signup(
   dev_token?: string;
 }> {
   const { adminName, adminPhoneE164 } = validateRegistrationProfile(input);
+  // Platform Admin Panel (2026-11-20): signup gates. Defaults (no
+  // settings row) = open / not maintenance. Maintenance wins over the
+  // registration flag — a closed platform under maintenance says so.
+  const platform = await readPlatformSettings(db);
+  if (platform.maintenance_mode) throw ApiError.maintenance();
+  if (!platform.registration_open) {
+    throw ApiError.conflict('Registration is currently closed by the platform administrator');
+  }
   const email = input.email.trim().toLowerCase();
   const existing = await db.user.findFirst({ where: { email } });
   if (existing) throw ApiError.conflict('An account with this email already exists');
@@ -378,6 +407,9 @@ export async function login(
   if (!user) throw ApiError.unauthorized('Invalid email or password');
   const ok = await bcrypt.compare(input.password, user.passwordHash);
   if (!ok) throw ApiError.unauthorized('Invalid email or password');
+  // Platform Admin Panel (2026-11-20): disabled / suspended-school gates,
+  // before the verification and 2FA steps.
+  await assertLoginAllowed(db, user);
   // Phase 1 (real email verification): an unverified account cannot log
   // in — the password step alone is not enough. The gate sits before the
   // 2FA step so no temp 2FA token is issued to an unverified account
@@ -398,7 +430,7 @@ export async function login(
   await finishLoginBookkeeping(db, user, opts?.ip);
   return {
     access: signAccessToken(user),
-    refresh: signRefreshToken(user),
+    refresh: signRefreshToken({ ...user, tokenVersion: user.tokenVersion ?? 0 }),
     user: toPublicUser(user),
   };
 }
@@ -416,6 +448,16 @@ export async function refreshTokens(
   const user = await db.user.findUnique({ where: { id: payload.sub } });
   if (!user || user.schoolId !== payload.school_id) {
     throw ApiError.unauthorized('Invalid or expired refresh token');
+  }
+  // Platform Admin Panel (2026-11-20): disabled / suspended-school gates,
+  // then the token-version check — "revoke all sessions" bumps
+  // token_version, so a refresh token issued before the bump is rejected
+  // (pre-change tokens carry no version claim, which reads as 0). Access
+  // tokens live 15 min, so revocation takes effect at the next refresh.
+  // There is NO server-side session store; this check is the mechanism.
+  await assertLoginAllowed(db, user);
+  if ((payload.token_version ?? 0) !== (user.tokenVersion ?? 0)) {
+    throw ApiError.unauthorized('Session revoked — please sign in again');
   }
   // Phase 1: a pre-Phase-1 refresh token must not keep an unverified
   // account signed in after the gate lands — the next refresh signs the
@@ -439,7 +481,7 @@ export async function refreshTokens(
   }
   return {
     access: signAccessToken(user),
-    refresh: signRefreshToken(user),
+    refresh: signRefreshToken({ ...user, tokenVersion: user.tokenVersion ?? 0 }),
     user: toPublicUser(user),
   };
 }

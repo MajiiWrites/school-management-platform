@@ -91,7 +91,9 @@ export async function getEffectivePermissions(db: Db, schoolId: string, role: st
   return [...defaults.values()];
 }
 
-/** Admin bypasses with all allowed; principal is view-only; otherwise read the matrix. */
+/** Admin bypasses with all allowed; principal is view-only; otherwise read the matrix.
+ * Platform Admin Panel (2026-11-20): platform_admin bypasses like admin
+ * (own school only — callers scope by school first). */
 export async function isAllowed(
   db: Db,
   schoolId: string,
@@ -99,7 +101,7 @@ export async function isAllowed(
   resource: string,
   action: string,
 ): Promise<boolean> {
-  if (role === 'admin') return true;
+  if (role === 'admin' || role === 'platform_admin') return true;
   if (role === 'principal') return action === 'view' && VIEW_ONLY_RESOURCES.includes(resource as Resource);
   const perms = await getEffectivePermissions(db, schoolId, role);
   return perms.some((p) => p.resource === resource && p.action === action && p.allowed);

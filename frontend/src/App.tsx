@@ -57,6 +57,8 @@ const CollegeProgramsPage = lazy(() => import('./pages/CollegePrograms'));
 const CollegeProgramDetailPage = lazy(() => import('./pages/CollegeProgramDetail'));
 const CollegeSemesterDetailPage = lazy(() => import('./pages/CollegeSemesterDetail'));
 const CollegeStudentGpaPage = lazy(() => import('./pages/CollegeStudentGpa'));
+// Platform Admin panel (2026-11-20) — lazy chunk like the other heavy routes.
+const PlatformAdminPage = lazy(() => import('./pages/Platform/PlatformAdmin'));
 
 /** Redirects to /login when there is no signed-in user. */
 function RequireAuth({ children }: { children: ReactNode }) {
@@ -85,7 +87,25 @@ function RequireAuth({ children }: { children: ReactNode }) {
 
 function RequireAdmin({ children }: { children: ReactNode }) {
   const { user } = useAuth();
-  if (user?.role !== 'admin') return <Navigate to="/dashboard" replace />;
+  // Platform Admin Panel (2026-11-20): a platform_admin is a full admin
+  // of their OWN school on school routes (backend requireAdmin treats
+  // them like admin, still scoped by the JWT school_id), so the school
+  // admin pages must not redirect them away.
+  if (user?.role !== 'admin' && user?.role !== 'platform_admin') return <Navigate to="/dashboard" replace />;
+  return <>{children}</>;
+}
+
+/**
+ * Platform Admin guard — fail-closed. While the session is loading
+ * with no user yet, or the role is anything other than
+ * 'platform_admin' (including unknown), the panel never renders: the
+ * user is sent to /dashboard. RequireAuth above already guarantees a
+ * signed-in user reaches this point.
+ */
+export function RequirePlatformAdmin({ children }: { children: ReactNode }) {
+  const { user, loading } = useAuth();
+  if (loading && !user) return null;
+  if (!user || user.role !== 'platform_admin') return <Navigate to="/dashboard" replace />;
   return <>{children}</>;
 }
 
@@ -265,6 +285,15 @@ export default function App() {
               <RequireAdmin>
                 <SecurityPage />
               </RequireAdmin>
+            }
+          />
+          {/* Platform Admin panel (2026-11-20) — platform_admin only. */}
+          <Route
+            path="platform"
+            element={
+              <RequirePlatformAdmin>
+                <PlatformAdminPage />
+              </RequirePlatformAdmin>
             }
           />
           <Route path="*" element={<NotFound />} />

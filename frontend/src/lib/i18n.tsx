@@ -42,6 +42,8 @@ const NAV_LABELS: Record<string, { en: string; ur: string }> = {
   // D1: Recycle Bin + Change History nav labels.
   'recycle-bin': { en: 'Recycle Bin', ur: 'ری سائیکل بن' },
   'change-history': { en: 'Change History', ur: 'تبدیلیوں کی تاریخ' },
+  // Platform Admin panel (2026-11-20) — visible only to platform_admin.
+  'platform-admin': { en: 'Platform Admin', ur: 'پلیٹ فارم ایڈمن' },
   // College Mode — visible only when org_type === 'College'.
   college: { en: 'College', ur: 'کالج' },
   'college-programs': { en: 'Programs', ur: 'پروگرامز' },

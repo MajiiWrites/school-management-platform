@@ -34,7 +34,7 @@ const idParams = z.object({ id: uuidSchema });
 hardeningRouter.get(
   '/approvals',
   asyncHandler(async (req, res) => {
-    const isAdmin = req.user!.role === 'admin';
+    const isAdmin = req.user!.role === 'admin' || req.user!.role === 'platform_admin';
     const result = await approvals.listApprovalRequests(
       getDb(),
       schoolIdOf(req),
@@ -50,7 +50,7 @@ hardeningRouter.get(
   asyncHandler(async (req, res) => {
     const { id } = parseBody(idParams, req.params);
     const row = await approvals.getApprovalRequest(getDb(), schoolIdOf(req), id);
-    if (req.user!.role !== 'admin' && row.requestedBy !== req.user!.sub) {
+    if (req.user!.role !== 'admin' && req.user!.role !== 'platform_admin' && row.requestedBy !== req.user!.sub) {
       throw ApiError.forbidden('You can only view your own approval requests');
     }
     res.json({ ok: true, data: approvals.toPublicApproval(row) });

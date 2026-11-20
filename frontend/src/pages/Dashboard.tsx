@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { api } from '../lib/api';
+import { platformApi } from '../lib/platform';
 import type { DashboardData, SmsStatus } from '../lib/types';
 import { fmtDateTime, fmtPKR } from '../lib/utils';
 import { Badge, Card, EmptyState, ErrorBanner, Spinner, StatCard } from '../components/ui';
@@ -9,6 +10,11 @@ import { Badge, Card, EmptyState, ErrorBanner, Spinner, StatCard } from '../comp
 export default function DashboardPage() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [sms, setSms] = useState<SmsStatus | null>(null);
+  // Platform Admin notice (2026-11-20): GET /dashboard carries
+  // platform_notice when one is published; otherwise fall back to
+  // GET /platform/notice. A failed fallback is silent — no notice
+  // is shown rather than an error.
+  const [platformNotice, setPlatformNotice] = useState<{ text: string; created_at: string } | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   // Phase 1: honest verification banner, driven by
@@ -66,6 +72,11 @@ export default function DashboardPage() {
       .then((d) => {
         setData(d);
         setError('');
+        if (d.platform_notice) {
+          setPlatformNotice(d.platform_notice);
+        } else {
+          platformApi.getNotice().then((n) => setPlatformNotice(n.notice)).catch(() => undefined);
+        }
       })
       .catch(() => setError('Could not load the dashboard.'))
       .finally(() => setLoading(false));
@@ -83,6 +94,12 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-5">
+      {platformNotice && (
+        <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+          <strong>Notice from the platform team.</strong> {platformNotice.text}
+          <span className="mt-0.5 block text-xs text-blue-700">{fmtDateTime(platformNotice.created_at)}</span>
+        </div>
+      )}
       {showVerifyReminder && (
         <div className="flex items-start justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
           <span>

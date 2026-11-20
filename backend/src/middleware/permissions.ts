@@ -81,7 +81,7 @@ export function requireQueueable(resource: string, action: string) {
       next(ApiError.unauthorized());
       return;
     }
-    if (req.user.role === 'admin') {
+    if (req.user.role === 'admin' || req.user.role === 'platform_admin') {
       next();
       return;
     }
@@ -103,7 +103,9 @@ export function requirePermission(resource: string, action: string) {
       next(ApiError.unauthorized());
       return;
     }
-    if (req.user.role === 'admin') {
+    // Platform Admin Panel (2026-11-20): the owner bypasses like an admin
+    // — within their own school only (requireSchool already scoped it).
+    if (req.user.role === 'admin' || req.user.role === 'platform_admin') {
       next();
       return;
     }

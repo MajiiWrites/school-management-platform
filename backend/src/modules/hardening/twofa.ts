@@ -150,6 +150,12 @@ export async function completeTwofaLogin(
   if (!user || user.schoolId !== payload.school_id) {
     throw ApiError.unauthorized('Invalid or expired 2FA session — log in again');
   }
+  // Platform Admin Panel (2026-11-20): disabled / suspended-school gates
+  // (same as login() — the password step ran before the temp token was
+  // issued, so re-check here in case the account was disabled/suspended
+  // in between). Lazy import avoids an auth <-> twofa import cycle.
+  const { assertLoginAllowed } = await import('../auth/service');
+  await assertLoginAllowed(db, user);
   // Phase 1 (defense in depth): the password step already gates
   // unverified accounts, so no temp token should exist for one — but a
   // token issued before the gate landed must not complete a login.
@@ -158,7 +164,11 @@ export async function completeTwofaLogin(
     throw ApiError.unauthorized('Invalid verification code');
   }
   await finishLoginBookkeeping(db, user, ip);
-  return { access: signAccessToken(user), refresh: signRefreshToken(user), user };
+  return {
+    access: signAccessToken(user),
+    refresh: signRefreshToken({ ...user, tokenVersion: user.tokenVersion ?? 0 }),
+    user,
+  };
 }
 
 /**

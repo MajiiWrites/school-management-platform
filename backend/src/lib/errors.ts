@@ -7,6 +7,9 @@ export type ErrorCode =
   | 'RATE_LIMITED'
   | 'SESSION_EXPIRED'
   | 'EMAIL_NOT_VERIFIED'
+  | 'ACCOUNT_DISABLED'
+  | 'SCHOOL_SUSPENDED'
+  | 'MAINTENANCE'
   | 'INTERNAL';
 
 const STATUS: Record<ErrorCode, number> = {
@@ -18,6 +21,9 @@ const STATUS: Record<ErrorCode, number> = {
   RATE_LIMITED: 429,
   SESSION_EXPIRED: 401,
   EMAIL_NOT_VERIFIED: 403,
+  ACCOUNT_DISABLED: 403,
+  SCHOOL_SUSPENDED: 403,
+  MAINTENANCE: 503,
   INTERNAL: 500,
 };
 
@@ -60,6 +66,24 @@ export class ApiError extends Error {
     message = 'Please verify your email before logging in. Check your inbox for the verification link, or resend it below.',
   ): ApiError {
     return new ApiError('EMAIL_NOT_VERIFIED', message);
+  }
+  /** Platform Admin Panel (2026-11-20): account disabled by the platform admin. */
+  static accountDisabled(
+    message = 'Your account has been disabled by the platform administrator. Please contact support.',
+  ): ApiError {
+    return new ApiError('ACCOUNT_DISABLED', message);
+  }
+  /** Platform Admin Panel (2026-11-20): the user's school is suspended. */
+  static schoolSuspended(
+    message = 'Your school has been suspended by the platform administrator. Please contact support.',
+  ): ApiError {
+    return new ApiError('SCHOOL_SUSPENDED', message);
+  }
+  /** Platform Admin Panel (2026-11-20): signup attempted while maintenance mode is on. */
+  static maintenance(
+    message = 'The platform is under maintenance. Please try again later.',
+  ): ApiError {
+    return new ApiError('MAINTENANCE', message);
   }
 }
 

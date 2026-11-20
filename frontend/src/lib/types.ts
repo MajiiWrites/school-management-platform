@@ -1,6 +1,6 @@
 // Shared types — mirror contracts/API.md + contracts/SCHEMA.md (CONTRACT v1.0)
 
-export type Role = 'admin' | 'clerk' | 'principal';
+export type Role = 'admin' | 'clerk' | 'principal' | 'platform_admin';
 export type AttendanceStatus = 'present' | 'absent';
 export type TeacherStatus = 'present' | 'absent';
 export type FeeStatus = 'unpaid' | 'partial' | 'paid';
@@ -64,6 +64,9 @@ export interface DashboardData {
   fee_collected_this_month: number;
   fee_pending_this_month: number;
   recent_notifications: NotificationItem[];
+  /** Platform Admin notice (GET /dashboard carries it when set; the
+   * Dashboard falls back to GET /platform/notice when it is absent). */
+  platform_notice?: { text: string; created_at: string } | null;
 }
 
 export interface NotificationItem {

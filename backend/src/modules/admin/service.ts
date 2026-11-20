@@ -4,6 +4,7 @@ import { ApiError } from '../../lib/errors';
 import { decryptPhone, maskPhone } from '../../lib/crypto';
 import { todayInTz, currentMonthInTz, isValidDateString, isNonSchoolDay, dateOnly } from '../../lib/dates';
 import { writeAudit } from '../../lib/audit';
+import { readPlatformNotice } from '../../lib/platformSettings';
 import { writeChangeLogs, logCreate, logDelete } from '../hardening/helpers';
 import { paginatedResponse, parsePagination } from '../../lib/pagination';
 import type { Db } from '../../lib/db';
@@ -66,6 +67,9 @@ export async function getDashboard(db: Db, schoolId: string): Promise<Record<str
   return {
     date: today,
     non_school_day: nonSchoolDay,
+    // Platform Admin Panel (2026-11-20): the platform notice, if the
+    // platform admin set one. Nothing else in this response changed.
+    platform_notice: await readPlatformNotice(db),
     classes_total: classes.length,
     classes_submitted: days.length,
     classes_pending: nonSchoolDay ? 0 : classes.length - submittedIds.size,

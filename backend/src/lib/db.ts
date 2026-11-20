@@ -86,6 +86,11 @@ export interface Db {
   parentToken: Delegate;
   admissionInquiry: Delegate;
   homework: Delegate;
+  // Messaging Center wiring (2026-11-20): portal inbox read marks.
+  parentMessageRead: Delegate;
+  // Platform Admin Panel (2026-11-20).
+  platformSetting: Delegate;
+  platformAuditLog: Delegate;
   $transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T>;
   $disconnect: () => Promise<void>;
 }
@@ -139,6 +144,9 @@ const MODEL_KEYS: Array<keyof Omit<Db, '$transaction' | '$disconnect'>> = [
   'parentToken',
   'admissionInquiry',
   'homework',
+  'parentMessageRead',
+  'platformSetting',
+  'platformAuditLog',
 ];
 
 const PLURAL_FALLBACK: Record<string, string[]> = {
@@ -190,6 +198,9 @@ const PLURAL_FALLBACK: Record<string, string[]> = {
   parentToken: ['parentTokens'],
   admissionInquiry: ['admissionInquiries'],
   homework: ['homework'],
+  parentMessageRead: ['parentMessageReads'],
+  platformSetting: ['platformSettings'],
+  platformAuditLog: ['platformAuditLogs'],
 };
 
 function resolveDelegate(client: any, key: string): any {

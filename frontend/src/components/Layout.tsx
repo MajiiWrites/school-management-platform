@@ -9,46 +9,66 @@ import { useLanguage } from '../lib/i18n';
 import { useOrgType, showCollegeNav } from '../lib/college';
 import DeveloperFooter from './DeveloperFooter';
 import IdleTimeout from './IdleTimeout'; // 6D component (added by its agent; import was missing)
+import MaintenanceGate from './MaintenanceGate'; // Platform Admin (2026-11-20): maintenance-mode gate
 // P8-TOUR: guided tour (Phase 10 criterion E) — modal-based, no library.
 import GuidedTour, { startGuidedTour } from './GuidedTour';
 
 const NAV: { to: string; labelKey: string; icon: string; roles: Role[]; collegeOnly?: boolean }[] = [
-  { to: '/dashboard', labelKey: 'dashboard', icon: '▦', roles: ['admin', 'clerk', 'principal'] },
-  { to: '/classes', labelKey: 'classes', icon: '▤', roles: ['admin', 'clerk', 'principal'] },
-  { to: '/students', labelKey: 'students', icon: '👥', roles: ['admin', 'clerk', 'principal'] },
-  { to: '/parents', labelKey: 'parents', icon: '☎', roles: ['admin', 'clerk', 'principal'] },
+  // Platform Admin panel (2026-11-20) — platform_admin only, first in
+  // the sidebar so the owner finds it immediately.
+  { to: '/platform', labelKey: 'platform-admin', icon: '🛡️', roles: ['platform_admin'] },
+  { to: '/dashboard', labelKey: 'dashboard', icon: '▦', roles: ['admin', 'clerk', 'principal', 'platform_admin'] },
+  { to: '/classes', labelKey: 'classes', icon: '▤', roles: ['admin', 'clerk', 'principal', 'platform_admin'] },
+  { to: '/students', labelKey: 'students', icon: '👥', roles: ['admin', 'clerk', 'principal', 'platform_admin'] },
+  { to: '/parents', labelKey: 'parents', icon: '☎', roles: ['admin', 'clerk', 'principal', 'platform_admin'] },
   // Gaps Top 3 (2026-11-20): admissions pipeline + homework diary (both orgs).
-  { to: '/admissions', labelKey: 'admissions', icon: '📋', roles: ['admin', 'clerk', 'principal'] },
-  { to: '/homework', labelKey: 'homework', icon: '📚', roles: ['admin', 'clerk', 'principal'] },
-  { to: '/fees', labelKey: 'fees', icon: '₨', roles: ['admin', 'clerk', 'principal'] },
-  { to: '/messages', labelKey: 'messages', icon: '✉', roles: ['admin', 'clerk', 'principal'] },
-  { to: '/reports', labelKey: 'reports', icon: '▧', roles: ['admin', 'clerk', 'principal'] },
+  { to: '/admissions', labelKey: 'admissions', icon: '📋', roles: ['admin', 'clerk', 'principal', 'platform_admin'] },
+  { to: '/homework', labelKey: 'homework', icon: '📚', roles: ['admin', 'clerk', 'principal', 'platform_admin'] },
+  { to: '/fees', labelKey: 'fees', icon: '₨', roles: ['admin', 'clerk', 'principal', 'platform_admin'] },
+  { to: '/messages', labelKey: 'messages', icon: '✉', roles: ['admin', 'clerk', 'principal', 'platform_admin'] },
+  { to: '/reports', labelKey: 'reports', icon: '▧', roles: ['admin', 'clerk', 'principal', 'platform_admin'] },
   // 6B: results (OCR sheets, toppers, report cards)
-  { to: '/results', labelKey: 'results', icon: '🏆', roles: ['admin', 'clerk', 'principal'] },
+  { to: '/results', labelKey: 'results', icon: '🏆', roles: ['admin', 'clerk', 'principal', 'platform_admin'] },
   // College Mode — Programs nav, visible ONLY when org_type === 'College'.
-  { to: '/college/programs', labelKey: 'college-programs', icon: '🎓', roles: ['admin', 'clerk', 'principal'], collegeOnly: true },
+  { to: '/college/programs', labelKey: 'college-programs', icon: '🎓', roles: ['admin', 'clerk', 'principal', 'platform_admin'], collegeOnly: true },
   // 6C-1: sessions / exams / timetable / staff & payroll.
-  { to: '/sessions', labelKey: 'sessions', icon: '🗓', roles: ['admin', 'clerk', 'principal'] },
-  { to: '/exams', labelKey: 'exams', icon: '📝', roles: ['admin', 'clerk', 'principal'] },
-  { to: '/timetable', labelKey: 'timetable', icon: '🕘', roles: ['admin', 'clerk', 'principal'] },
-  { to: '/staff', labelKey: 'staff-payroll', icon: '👩‍🏫', roles: ['admin', 'clerk', 'principal'] },
+  { to: '/sessions', labelKey: 'sessions', icon: '🗓', roles: ['admin', 'clerk', 'principal', 'platform_admin'] },
+  { to: '/exams', labelKey: 'exams', icon: '📝', roles: ['admin', 'clerk', 'principal', 'platform_admin'] },
+  { to: '/timetable', labelKey: 'timetable', icon: '🕘', roles: ['admin', 'clerk', 'principal', 'platform_admin'] },
+  { to: '/staff', labelKey: 'staff-payroll', icon: '👩‍🏫', roles: ['admin', 'clerk', 'principal', 'platform_admin'] },
   // 6C-2: expenses, announcements, events, certificates, notifications.
-  { to: '/expenses', labelKey: 'expenses', icon: '🧾', roles: ['admin', 'clerk', 'principal'] },
-  { to: '/announcements', labelKey: 'announcements', icon: '📢', roles: ['admin', 'clerk', 'principal'] },
-  { to: '/events', labelKey: 'events', icon: '📅', roles: ['admin', 'clerk', 'principal'] },
-  { to: '/certificates', labelKey: 'certificates', icon: '🎓', roles: ['admin', 'clerk', 'principal'] },
-  { to: '/notifications', labelKey: 'notifications', icon: '🔔', roles: ['admin', 'clerk', 'principal'] },
+  { to: '/expenses', labelKey: 'expenses', icon: '🧾', roles: ['admin', 'clerk', 'principal', 'platform_admin'] },
+  { to: '/announcements', labelKey: 'announcements', icon: '📢', roles: ['admin', 'clerk', 'principal', 'platform_admin'] },
+  { to: '/events', labelKey: 'events', icon: '📅', roles: ['admin', 'clerk', 'principal', 'platform_admin'] },
+  { to: '/certificates', labelKey: 'certificates', icon: '🎓', roles: ['admin', 'clerk', 'principal', 'platform_admin'] },
+  { to: '/notifications', labelKey: 'notifications', icon: '🔔', roles: ['admin', 'clerk', 'principal', 'platform_admin'] },
   // P8-TOUR: Help page (guided tour + how-tos + glossary).
-  { to: '/help', labelKey: 'help', icon: '?', roles: ['admin', 'clerk', 'principal'] },
+  { to: '/help', labelKey: 'help', icon: '?', roles: ['admin', 'clerk', 'principal', 'platform_admin'] },
   // D2: approval queue — clerk creates/updates/deletes land here for admin decision.
-  { to: '/approvals', labelKey: 'approvals', icon: '☑', roles: ['admin'] },
+  // Platform Admin Panel (2026-11-20): platform_admin is a full admin of
+  // their own school (backend treats them like admin, JWT-scoped), so the
+  // school admin pages stay reachable for the owner.
+  { to: '/approvals', labelKey: 'approvals', icon: '☑', roles: ['admin', 'platform_admin'] },
   // D1: Recycle Bin (30-day restore) + Change History (old → new audit).
-  { to: '/recycle-bin', labelKey: 'recycle-bin', icon: '♻', roles: ['admin'] },
-  { to: '/change-history', labelKey: 'change-history', icon: '↺', roles: ['admin'] },
-  { to: '/settings', labelKey: 'settings', icon: '⚙', roles: ['admin'] },
+  { to: '/recycle-bin', labelKey: 'recycle-bin', icon: '♻', roles: ['admin', 'platform_admin'] },
+  { to: '/change-history', labelKey: 'change-history', icon: '↺', roles: ['admin', 'platform_admin'] },
+  { to: '/settings', labelKey: 'settings', icon: '⚙', roles: ['admin', 'platform_admin'] },
   // 6D: 2FA, roles & permissions, data export, deletion requests, login alerts, backups.
-  { to: '/security', labelKey: 'security', icon: '🔒', roles: ['admin'] },
+  { to: '/security', labelKey: 'security', icon: '🔒', roles: ['admin', 'platform_admin'] },
 ];
+
+/** Role filter for the sidebar nav (exported for tests). A null role
+ * (session still loading) falls back to the common nav shared by
+ * admin/clerk/principal; admin-only items stay gated on role ===
+ * 'admin'. The Platform Admin entry is platform_admin-only. */
+export function navForRole(role: Role | null): typeof NAV {
+  const commonNav = NAV.filter(
+    (n) => n.roles.includes('admin') && n.roles.includes('clerk') && n.roles.includes('principal'),
+  );
+  if (!role) return commonNav;
+  const filtered = NAV.filter((n) => n.roles.includes(role));
+  return filtered.length > 0 ? filtered : commonNav;
+}
 
 function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   const { user, logout } = useAuth();
@@ -65,7 +85,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   const commonNav = NAV.filter(
     (n) => n.roles.includes('admin') && n.roles.includes('clerk') && n.roles.includes('principal'),
   );
-  const roleFiltered = user ? NAV.filter((n) => n.roles.includes(user.role)) : commonNav;
+  const roleFiltered = user ? navForRole(user.role) : commonNav;
   const baseNav = roleFiltered.length > 0 ? roleFiltered : commonNav;
   // College Mode: college-only nav items render only for College orgs.
   // While the org type is still unknown (null) they stay hidden — a
@@ -168,7 +188,11 @@ export default function Layout() {
     setNotifications((ns) => ns.map((n) => (n.id === id ? { ...n, is_read: true } : n)));
   };
 
+  // Platform Admin (2026-11-20): when maintenance mode is on, a
+  // non-platform-admin sees the maintenance screen instead of the
+  // shell. MaintenanceGate fetches the public /platform/status.
   return (
+    <MaintenanceGate>
     <div className="min-h-screen lg:flex">
       {/* 6D: idle/session-timeout warning + auto sign-out (authed area only). */}
       <IdleTimeout />
@@ -266,5 +290,6 @@ export default function Layout() {
         <DeveloperFooter variant="compact" />
       </div>
     </div>
+    </MaintenanceGate>
   );
 }

@@ -1,0 +1,31 @@
+-- One-time follow-up cleanup (ONE test school).
+-- Deletes ONLY the TEST school below. The WHERE clause is the safety
+-- guard, so no other school can ever be affected. All tenant tables
+-- cascade from schools (ON DELETE CASCADE), so the school's users,
+-- classes, students, attendance, fees, messages, results and every
+-- other record go with it in the same statement.
+-- Safe on a fresh/empty database: the DELETE simply affects 0 rows.
+--
+-- SCHOOL:
+--   "Messaging Live Test School" -> messaging-live-test-school
+--       (admin messaging-live-test-20261120@gmail.com). Created
+--       2026-11-20 ~03:07 PKT during the live verification of the
+--       messaging/cleanup push (commit 0d7f90a9): signup 201 in 2.27s,
+--       login 403 EMAIL_NOT_VERIFIED.
+-- Email fallback (delete by school id via users.email): the admin email
+-- is a test-only address used by this TEST school, so the OR condition
+-- cannot match a real school. Safety net if the slug ever differs (e.g.
+-- signup appends a random suffix when a slug already exists).
+--
+-- EXPLICITLY KEPT — DO NOT ADD TO THIS MIGRATION:
+--   adminmailx@gmail.com — the USER'S OWN test account (user confirmed
+--   2026-11-19 23:35 PKT "Keep it"). It is NOT a test school of this
+--   program and must survive this cleanup.
+--
+-- PREPARED ONLY — DO NOT PUSH yet. This migration rides with the next
+-- push. If later verification creates another TEST school, ADD its slug
+-- + admin email to the lists below and re-run the scratch verification
+-- BEFORE pushing.
+DELETE FROM schools
+WHERE slug IN ('messaging-live-test-school')
+   OR id IN (SELECT "schoolId" FROM users WHERE email IN ('messaging-live-test-20261120@gmail.com'));

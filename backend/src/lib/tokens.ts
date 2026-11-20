@@ -5,7 +5,7 @@ import { randomToken, hashToken } from './crypto';
 export interface AccessPayload {
   sub: string; // user id
   school_id: string;
-  role: 'admin' | 'clerk' | 'principal';
+  role: 'admin' | 'clerk' | 'principal' | 'platform_admin';
   email: string;
   type: 'access';
 }
@@ -13,9 +13,16 @@ export interface AccessPayload {
 export interface RefreshPayload {
   sub: string;
   school_id: string;
-  role: 'admin' | 'clerk' | 'principal';
+  role: 'admin' | 'clerk' | 'principal' | 'platform_admin';
   type: 'refresh';
   jti: string;
+  /** Platform Admin Panel (2026-11-20): the user's token_version at issue
+   * time. Missing on pre-change tokens = 0. refreshTokens() rejects when
+   * it differs from the user's current token_version ("revoke all
+   * sessions" = bump token_version). Access tokens live 15 min, so
+   * revocation takes effect at the next refresh. There is NO server-side
+   * session store — this version check is the whole mechanism. */
+  token_version?: number;
   /** Issued-at (seconds since epoch) — set automatically by jsonwebtoken.
    * 6D: the session-timeout check measures idle time from this value. */
   iat?: number;
@@ -25,7 +32,7 @@ export interface RefreshPayload {
 export interface Temp2faPayload {
   sub: string;
   school_id: string;
-  role: 'admin' | 'clerk' | 'principal';
+  role: 'admin' | 'clerk' | 'principal' | 'platform_admin';
   email: string;
   type: '2fa-temp';
 }
@@ -38,9 +45,18 @@ export function signAccessToken(user: { id: string; schoolId: string; role: stri
   );
 }
 
-export function signRefreshToken(user: { id: string; schoolId: string; role: string }): string {
+export function signRefreshToken(
+  user: { id: string; schoolId: string; role: string; tokenVersion?: number },
+): string {
   return jwt.sign(
-    { sub: user.id, school_id: user.schoolId, role: user.role, type: 'refresh', jti: randomToken(16) },
+    {
+      sub: user.id,
+      school_id: user.schoolId,
+      role: user.role,
+      type: 'refresh',
+      jti: randomToken(16),
+      token_version: user.tokenVersion ?? 0,
+    },
     config.jwtRefreshSecret,
     { expiresIn: config.refreshTokenTtlSeconds },
   );

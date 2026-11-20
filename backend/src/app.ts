@@ -35,6 +35,10 @@ import { sessionsRouter } from './modules/sessions/routes';
 import { examsRouter } from './modules/exams/routes';
 import { timetableRouter } from './modules/timetable/routes';
 import { staffRouter } from './modules/staff/routes';
+import { platformRouter } from './modules/platform/routes';
+import { verifyAccessToken } from './lib/tokens';
+import { readPlatformSettings } from './lib/platformSettings';
+import { ApiError } from './lib/errors';
 
 export const app = express();
 
@@ -64,6 +68,60 @@ app.use('/api/v1', attendanceRouter); // /t/:token (public) + /classes/:id/atten
 // link so their public routes are never 401'd by later routers.
 app.use('/api/v1', portalRouter);
 app.use('/api/v1', admissionsRouter);
+
+// --- Platform Admin Panel (2026-11-20): /api/v1/platform -------------------
+// Mounted BEFORE the maintenance gate below so the panel (and the public
+// /platform/status endpoint) stays reachable during maintenance.
+app.use('/api/v1/platform', platformRouter);
+
+// --- Maintenance gate (2026-11-20) ------------------------------------------
+// Runs after the platform router and BEFORE the school routers. When
+// maintenance_mode is on, any authenticated non-platform-admin request
+// gets 503 MAINTENANCE. Authentication is TOLERANT here: a missing/invalid
+// token passes through and the downstream router 401s as usual, so this
+// gate never changes an unauthenticated response.
+// Public teacher links (/t/:token), the parent portal (/p/:token) and
+// admissions forms are mounted ABOVE this gate and stay up during
+// maintenance — a parent checking a child's messages or a family applying
+// for admission is not blocked by admin maintenance. Signup is gated in
+// the auth service, not here.
+const maintenanceGate: express.RequestHandler = (req, res, next) => {
+  void (async () => {
+    let settings;
+    try {
+      settings = await readPlatformSettings(getDb());
+    } catch {
+      // Settings unreadable (DB down) — pass through; downstream calls
+      // fail on their own terms instead of masking the real error.
+      next();
+      return;
+    }
+    if (!settings.maintenance_mode) {
+      next();
+      return;
+    }
+    const header = req.headers.authorization;
+    if (!header || !header.startsWith('Bearer ')) {
+      // No staff JWT (e.g. the Android companion's device-key polls, or an
+      // unauthenticated call): pass through — downstream auth 401s as
+      // usual, and device endpoints keep working during maintenance.
+      next();
+      return;
+    }
+    try {
+      if (verifyAccessToken(header.slice('Bearer '.length).trim()).role === 'platform_admin') {
+        next();
+        return;
+      }
+    } catch {
+      // Invalid token: pass through; downstream authenticate() 401s.
+      next();
+      return;
+    }
+    next(ApiError.maintenance('The platform is under maintenance. Please try again later.'));
+  })();
+};
+app.use('/api/v1', maintenanceGate);
 
 // Messaging is mounted HERE (before studentsRouter/adminRouter): its
 // /sms/devices/* endpoints authenticate with the device key ONLY (no staff

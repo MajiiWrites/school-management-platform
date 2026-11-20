@@ -477,6 +477,72 @@ export async function mockRequest<T>(path: string, method: string, body?: unknow
   }
   if (rawPath === '/promotions' && method === 'POST') return { ok: true } as T;
 
+  // Platform Admin panel (2026-11-20) — minimal stubs so mock mode
+  // renders the panel with empty lists instead of crashing on
+  // MOCK_MISSING. Real data comes from the backend.
+  if (seg[0] === 'platform') {
+    if (rawPath === '/platform/status') {
+      return { registration_open: true, maintenance_mode: false, notice: null } as T;
+    }
+    if (rawPath === '/platform/notice') return { notice: null } as T;
+    if (rawPath === '/platform/overview') {
+      return {
+        totals: { schools: 0, students: 0, users: 0, verified_users: 0, unverified_users: 0 },
+        signups: { this_week: 0, this_month: 0 },
+        health: {
+          api: 'up',
+          mail: { sent: 0, failed: 0, pending: 0 },
+          queue: { held: 0, approved: 0, queued: 0, failed: 0 },
+          last_backup_at: null,
+        },
+      } as T;
+    }
+    if (rawPath === '/platform/schools' && method === 'GET') return page([]) as T;
+    if (seg[1] === 'schools' && seg.length === 3 && method === 'GET') {
+      return { id: seg[2], name: 'Demo Public School', org_type: 'School', province: 'Punjab', category: 'Private', verified: true, suspended: false, student_count: 15, user_count: 2, admin_name: 'Demo Admin', admin_email: 'admin@mock.local' } as T;
+    }
+    if (seg[1] === 'schools' && (seg[3] === 'suspend' || seg[3] === 'activate') && method === 'POST') {
+      return { school: { id: seg[2], name: 'Demo Public School', suspended: seg[3] === 'suspend' } } as T;
+    }
+    if (seg[1] === 'schools' && seg.length === 3 && method === 'DELETE') return { deleted: true } as T;
+    if (seg[1] === 'schools' && seg[3] === 'data' && method === 'GET') return page([]) as T;
+    if (rawPath === '/platform/users' && method === 'GET') return page([]) as T;
+    if (seg[1] === 'users' && seg.length === 3 && method === 'GET') {
+      return { id: seg[2], email: 'admin@mock.local', role: 'admin', school_id: 'sch-1', school_name: 'Demo Public School', email_verified: true, disabled: false, totp_enabled: false } as T;
+    }
+    if (seg[1] === 'users' && ['disable', 'enable', 'reverify', 'reset-password', 'promote', 'demote'].includes(seg[3] ?? '') && method === 'POST') {
+      return { ok: true } as T;
+    }
+    if (rawPath === '/platform/recycle-bin' && method === 'GET') return page([]) as T;
+    if (seg[1] === 'recycle-bin' && (seg[3] === 'restore' || seg[3] === 'permanent-delete') && method === 'POST') {
+      return { ok: true } as T;
+    }
+    if (rawPath === '/platform/audit-logs' && method === 'GET') return page([]) as T;
+    if (rawPath === '/platform/messaging/queue' && method === 'GET') return page([]) as T;
+    if (rawPath === '/platform/messaging/failed' && method === 'GET') return { items: [] } as T;
+    if (seg[1] === 'messaging' && seg[2] === 'queue' && seg[4] === 'retry' && method === 'POST') {
+      return { ok: true } as T;
+    }
+    if (rawPath === '/platform/mail-health') {
+      return { transport: 'mock', recent_verification_mail: { sent: 0, failed: 0, pending: 0 }, recent_failures: [], note: 'Mock mode — no real mail transport.' } as T;
+    }
+    if (rawPath === '/platform/settings' && method === 'GET') {
+      return { registration_open: true, maintenance_mode: false, notice: null } as T;
+    }
+    if (rawPath === '/platform/settings' && method === 'PATCH') {
+      return { registration_open: true, maintenance_mode: false, notice: null, ...(body as object) } as T;
+    }
+    if (rawPath === '/platform/security/logins' && method === 'GET') return page([]) as T;
+    if (rawPath === '/platform/security/platform-admins') return { admins: [] } as T;
+    if (rawPath === '/platform/security/sessions') return page([]) as T;
+    if (seg[1] === 'security' && seg[2] === 'users' && seg[4] === 'revoke-sessions' && method === 'POST') {
+      return { ok: true } as T;
+    }
+    if (rawPath === '/platform/backups') {
+      return { latest: null, per_school: [], total: 0 } as T;
+    }
+  }
+
   // Fallback: unknown mock route
   throw Object.assign(new Error(`Mock route not implemented: ${method} ${rawPath}`), { status: 501, code: 'MOCK_MISSING' });
 }
