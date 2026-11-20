@@ -50,6 +50,12 @@ export interface AppConfig {
   smtpUser: string | undefined;
   smtpPass: string | undefined;
   mailFrom: string;
+  /** Brevo (HTTPS) mail transport — see src/lib/mail.ts. When brevoApiKey
+   * is set it wins over SMTP (Render's free tier blocks outbound SMTP
+   * ports, so Gmail SMTP times out from Render on 587 and 465). */
+  brevoApiKey: string | undefined;
+  brevoSenderEmail: string;
+  brevoSenderName: string;
   bcryptRounds: number;
 }
 
@@ -70,5 +76,10 @@ export const config: AppConfig = {
   smtpUser: process.env.SMTP_USER,
   smtpPass: process.env.SMTP_PASS,
   mailFrom: process.env.MAIL_FROM ?? 'School Management <no-reply@school.local>',
+  brevoApiKey: process.env.BREVO_API_KEY,
+  // Default sender is the Brevo-verified sender for this platform
+  // (verified by an email click in the Brevo dashboard); override via env.
+  brevoSenderEmail: process.env.BREVO_SENDER_EMAIL ?? 'majidalioffical0@gmail.com',
+  brevoSenderName: process.env.BREVO_SENDER_NAME ?? 'Student Manager',
   bcryptRounds: 12,
 };
