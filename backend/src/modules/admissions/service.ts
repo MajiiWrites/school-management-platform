@@ -213,6 +213,9 @@ export async function admitInquiry(
         name: inquiry.studentName,
         parent_name: inquiry.parentName,
         parent_phone: parentPhone,
+        // Messaging Center wiring: carry the inquiry's parent email onto
+        // the student so email delivery works without re-typing it.
+        parent_email: inquiry.parentEmail ?? null,
         roll_no: input.roll_no ?? null,
         admission_no: (input.admission_no ?? '').trim() || null,
         admission_date: todayInTz(school.timezone ?? 'Asia/Karachi'),

@@ -15,6 +15,7 @@ import {
   getPendingApproval,
   reportDelivery,
   retryFailed,
+  sendQueueRowByEmail,
   type ServiceDeps,
 } from '../service';
 import type {
@@ -70,10 +71,13 @@ export class FakeStore implements MessagingStore {
   async getStudentsByIds(ids: string[], schoolId: string) {
     // Fake mirrors the fixed Prisma store: only this school's students.
     // (This fake has no student table, so it fabricates names for ids the
-    // caller derived from its own school's queue rows.)
+    // caller derived from its own school's queue rows.) Saved parent
+    // emails come from `studentEmails` (Messaging Center wiring).
     void schoolId;
-    return ids.map((id) => ({ id, name: `Student ${id}` }));
+    return ids.map((id) => ({ id, name: `Student ${id}`, parentEmail: this.studentEmails[id] ?? null }));
   }
+  /** Saved parent emails by student id (Messaging Center wiring). */
+  studentEmails: Record<string, string> = {};
   async isHoliday(_schoolId: string, date: string) {
     return this.holidays.has(date);
   }
@@ -144,10 +148,10 @@ export class FakeStore implements MessagingStore {
       className: string; section: string; parentPhoneEnc: string | null; parentOptOut: boolean;
     }>;
   }
-  async listDeliveriesForQueueIds(queueIds: string[]) {
+  async listDeliveriesForQueueIds(queueIds: string[], _schoolId?: string) {
     return this.deliveries
       .filter((d) => queueIds.includes(String(d.queueId)))
-      .map((d) => ({ queueId: String(d.queueId), provider: 'sim', status: String(d.status), deliveredAt: null, error: (d.error as string | null) ?? null, createdAt: new Date() }));
+      .map((d) => ({ queueId: String(d.queueId), provider: String((d as any).provider ?? 'sim'), status: String(d.status), deliveredAt: null, error: (d.error as string | null) ?? null, createdAt: new Date() }));
   }
   async getDraftApproval(draftId: string, schoolId: string) {
     const rows = this.approvals.filter((a) => a.entityId === draftId && a.schoolId === schoolId);
@@ -226,7 +230,7 @@ export class FakeStore implements MessagingStore {
   }
   async createDelivery(input: {
     queueId: string;
-    provider: 'sim' | 'gateway';
+    provider: string;
     deviceId?: string | null;
     status: string;
     error?: string | null;
@@ -587,5 +591,93 @@ describe('buildFeeReminderDrafts', () => {
     expect(r2.created).toBe(0);
     expect(store.queue[0].dedupeKey).toBe('fee:s1:2026-11');
     expect(store.queue[0].body).toContain('5000');
+  });
+});
+
+describe('sendQueueRowByEmail (Messaging Center wiring — saved parent email fallback)', () => {
+  let store: FakeStore;
+  let deps: ServiceDeps;
+
+  const queuedRow = (overrides: Partial<QueueRow> = {}): QueueRow => ({
+    id: 'q-1',
+    schoolId: 'school-1',
+    type: 'custom',
+    studentId: 's1',
+    classId: null,
+    parentPhoneEnc: '',
+    body: 'Hello parent — fee reminder.',
+    status: 'queued',
+    attempts: 0,
+    dedupeKey: 'test:q-1',
+    scheduledFor: new Date(),
+    sentAt: null,
+    error: null,
+    approvedBy: null,
+    approvedAt: null,
+    createdAt: new Date(),
+    ...overrides,
+  });
+
+  beforeEach(() => {
+    store = new FakeStore();
+    deps = { store, crypto: testCrypto, now: () => new Date(`${FRIDAY}T09:00:00Z`) };
+    store.queue.push(queuedRow());
+  });
+
+  it('uses the student’s saved parent email when `to` is blank', async () => {
+    store.studentEmails = { s1: 'Father@Example.com' };
+    const sent: Array<{ to: string }> = [];
+    const res = await sendQueueRowByEmail(
+      deps,
+      { schoolId: 'school-1', queueId: 'q-1', sentBy: 'admin-1' },
+      async ({ to }) => {
+        sent.push({ to });
+      },
+    );
+    expect(res.sent).toBe(true);
+    expect(sent).toEqual([{ to: 'father@example.com' }]);
+    expect(store.queue[0].status).toBe('sent');
+    expect(store.deliveries).toContainEqual(
+      expect.objectContaining({ queueId: 'q-1', provider: 'email', status: 'sent' }),
+    );
+  });
+
+  it('a typed address wins over the saved email', async () => {
+    store.studentEmails = { s1: 'saved@example.com' };
+    const sent: Array<{ to: string }> = [];
+    const res = await sendQueueRowByEmail(
+      deps,
+      { schoolId: 'school-1', queueId: 'q-1', to: 'Typed@Example.com', sentBy: 'admin-1' },
+      async ({ to }) => {
+        sent.push({ to });
+      },
+    );
+    expect(res.sent).toBe(true);
+    expect(sent).toEqual([{ to: 'typed@example.com' }]);
+  });
+
+  it('blank `to` with no saved email fails with a clear VALIDATION error — never a silent no-op', async () => {
+    await expect(
+      sendQueueRowByEmail(deps, { schoolId: 'school-1', queueId: 'q-1', sentBy: 'admin-1' }, async () => {}),
+    ).rejects.toMatchObject({ code: 'VALIDATION' });
+    expect(store.queue[0].status).toBe('queued');
+  });
+
+  it('a mailer failure stays failed with the error — never claimed as sent', async () => {
+    store.studentEmails = { s1: 'father@example.com' };
+    const res = await sendQueueRowByEmail(
+      deps,
+      { schoolId: 'school-1', queueId: 'q-1', sentBy: 'admin-1' },
+      async () => {
+        throw new Error('Connection timeout');
+      },
+    );
+    expect(res.sent).toBe(false);
+    expect(res.error).toBe('Connection timeout');
+    expect(store.queue[0].status).toBe('queued');
+    expect(store.queue[0].error).toBe('Connection timeout');
+    expect(store.deliveries).toContainEqual(
+      expect.objectContaining({ queueId: 'q-1', provider: 'email', status: 'failed' }),
+    );
   });
 });

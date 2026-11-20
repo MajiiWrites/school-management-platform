@@ -252,8 +252,8 @@ export interface QueueFilters {
 
 export interface MessagingStore {
   getSchool(schoolId: string): Promise<SchoolInfo | null>;
-  /** Minimal student lookup (id + name) for the pending-approval list. Scoped: only students of `schoolId` are ever returned. */
-  getStudentsByIds(ids: string[], schoolId: string): Promise<Array<{ id: string; name: string }>>;
+  /** Minimal student lookup (id + name + saved parent email) for the pending-approval list and the email fallback. Scoped: only students of `schoolId` are ever returned. */
+  getStudentsByIds(ids: string[], schoolId: string): Promise<Array<{ id: string; name: string; parentEmail?: string | null }>>;
   isHoliday(schoolId: string, date: string): Promise<boolean>;
   getActiveTemplate(
     schoolId: string,
@@ -317,7 +317,8 @@ export interface MessagingStore {
   updateQueue(id: string, patch: Partial<QueueRow>, schoolId?: string): Promise<QueueRow>;
   createDelivery(input: {
     queueId: string;
-    provider: 'sim' | 'gateway';
+    /** 'sim' | 'gateway' for the companion app; 'whatsapp' | 'email' for the in-website channels (Messaging Center). */
+    provider: string;
     deviceId?: string | null;
     status: string;
     error?: string | null;
@@ -492,9 +493,9 @@ export function createPrismaMessagingStore(prisma: any): MessagingStore {
     async getStudentsByIds(ids, schoolId) {
       const rows = await prisma.student.findMany({
         where: { schoolId: schoolId, id: { in: ids } },
-        select: { id: true, name: true },
+        select: { id: true, name: true, parentEmail: true },
       });
-      return rows.map((r: any) => ({ id: r.id, name: r.name }));
+      return rows.map((r: any) => ({ id: r.id, name: r.name, parentEmail: r.parentEmail ?? null }));
     },
 
     async isHoliday(schoolId, date) {

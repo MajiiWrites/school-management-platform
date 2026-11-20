@@ -64,6 +64,7 @@ const { getPortalMock, admissionsListMock, homeworkListMock, MockApiError } = vi
 
 vi.mock('../lib/api', () => ({
   ApiClientError: MockApiError,
+  API_BASE: 'http://test-api',
   portalApi: { getPortal: getPortalMock },
   admissionsApi: { list: admissionsListMock, setStatus: vi.fn(), admit: vi.fn() },
   homeworkApi: { list: homeworkListMock, create: vi.fn(), update: vi.fn(), remove: vi.fn(), notify: vi.fn() },
@@ -99,6 +100,73 @@ describe('parent portal page', () => {
     fireEvent.click(screen.getByText('Fees'));
     expect(screen.getByText('2026-11')).toBeTruthy();
     expect(screen.getByText(/Balance Rs 2,000/)).toBeTruthy();
+  });
+
+  it('Messages tab shows the portal inbox with a New badge, and marks what was seen as read', async () => {
+    const fetchMock = vi.fn((_url: string, opts?: { method?: string; body?: string }) => {
+      if (opts?.method === 'POST') {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, data: { marked: 1 } }) });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            ok: true,
+            data: {
+              school: { name: 'Test School' },
+              student: { id: 'stu-1', name: 'Ayesha Khan', class_name: '5-A' },
+              messages: [
+                {
+                  id: 'q-1',
+                  kind: 'message',
+                  channel: 'WhatsApp',
+                  type: 'absent',
+                  body: 'Ayesha was absent.',
+                  sent_at: '2026-11-19T08:00:00Z',
+                  delivery_status: 'opened',
+                  read: false,
+                },
+                {
+                  id: 'ann-1',
+                  kind: 'announcement',
+                  title: 'PTM Friday',
+                  body: 'Meeting at 10am.',
+                  sent_at: '2026-11-18T00:00:00Z',
+                  read: true,
+                },
+              ],
+            },
+          }),
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      render(
+        <MemoryRouter initialEntries={['/p/abc123token']}>
+          <Routes>
+            <Route path="/p/:token" element={<ParentPortalPage />} />
+          </Routes>
+        </MemoryRouter>,
+      );
+      await waitFor(() => expect(screen.getByText('Ayesha Khan')).toBeTruthy());
+      fireEvent.click(screen.getByText('Messages'));
+      await waitFor(() => expect(screen.getByText('Ayesha was absent.')).toBeTruthy());
+      expect(screen.getByText('Meeting at 10am.')).toBeTruthy();
+      expect(screen.getByText('Opened in WhatsApp — delivery not confirmed.')).toBeTruthy();
+      expect(screen.getByText('New')).toBeTruthy();
+      // The unread item was marked read after the parent saw it.
+      await waitFor(() =>
+        expect(fetchMock).toHaveBeenCalledWith(
+          'http://test-api/portal/abc123token/inbox/read',
+          expect.objectContaining({
+            method: 'POST',
+            body: JSON.stringify({ items: [{ kind: 'message', id: 'q-1' }] }),
+          }),
+        ),
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('shows the invalid-link state when the token is rejected', async () => {

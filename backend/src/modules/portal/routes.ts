@@ -86,4 +86,20 @@ authed.post(
   }),
 );
 
+// WhatsApp click-to-send link for the parent link (Messaging Center wiring).
+// Builds the wa.me link server-side (the frontend only sees the masked
+// number). Queues nothing — the admin opens the link and taps send in
+// WhatsApp themselves.
+authed.post(
+  '/students/:id/send-parent-link-whatsapp',
+  authenticate,
+  requireSchool,
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const { id } = parseBody(idParams, req.params);
+    const result = await service.getParentLinkWhatsApp(getDb(), schoolIdOf(req), id, req.user!.sub);
+    res.json({ ok: true, data: result });
+  }),
+);
+
 portalRouter.use(authed);

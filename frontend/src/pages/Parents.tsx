@@ -438,6 +438,24 @@ function ParentLinkModal({
     }
   };
 
+  const sendWhatsApp = async () => {
+    setBusy(true);
+    try {
+      const res = await portalApi.sendLinkWhatsApp(student.id);
+      const opened = window.open(res.wa_url, '_blank', 'noopener');
+      onToast(
+        'success',
+        opened
+          ? 'WhatsApp opened with the link ready — tap send in WhatsApp.'
+          : 'Popup blocked — copy the link from the address bar instead.',
+      );
+    } catch (e) {
+      setError(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const revoke = async () => {
     setConfirmRevoke(false);
     setBusy(true);
@@ -467,8 +485,8 @@ function ParentLinkModal({
       ) : info?.exists && info.url ? (
         <div className="space-y-4">
           <p className="text-sm text-slate-600">
-            Anyone with this link can view {student.name}'s attendance, results, fees, timetable, announcements and
-            homework — read-only, no login. It expires{' '}
+            Anyone with this link can view {student.name}'s attendance, results, fees, timetable, announcements,
+            homework and messages — read-only, no login. It expires{' '}
             {info.expires_at ? new Date(info.expires_at).toLocaleDateString() : 'in one year'}.
           </p>
           <p className="break-all rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-xs text-slate-700">
@@ -479,14 +497,17 @@ function ParentLinkModal({
             <Button variant="secondary" disabled={busy || !hasValidPhone || optedOut} onClick={sendSms}>
               Send link via SMS
             </Button>
+            <Button variant="secondary" disabled={busy || !hasValidPhone || optedOut} onClick={sendWhatsApp}>
+              Send link via WhatsApp
+            </Button>
             <Button variant="secondary" disabled={busy} onClick={create}>Create new link</Button>
             <Button variant="secondary" disabled={busy} onClick={() => setConfirmRevoke(true)}>Revoke link</Button>
           </div>
           {(!hasValidPhone || optedOut) && (
             <p className="text-xs text-slate-500">
               {optedOut
-                ? 'This parent opted out of SMS, so the link cannot be sent by text — copy it instead.'
-                : 'No valid parent number on file, so the link cannot be sent by SMS — copy it instead.'}
+                ? 'This parent opted out of messages, so the link cannot be sent by text or WhatsApp — copy it instead.'
+                : 'No valid parent number on file, so the link cannot be sent by SMS or WhatsApp — copy it instead.'}
             </p>
           )}
         </div>
@@ -494,7 +515,7 @@ function ParentLinkModal({
         <div className="space-y-4">
           <p className="text-sm text-slate-600">
             No parent link exists for {student.name} yet. Creating one gives the parent a read-only link to attendance,
-            results, fees, timetable, announcements and homework.
+            results, fees, timetable, announcements, homework and messages.
           </p>
           <div className="flex justify-end gap-2">
             <Button variant="secondary" onClick={onClose}>Cancel</Button>

@@ -7,9 +7,35 @@ import Tooltip from '../components/Tooltip'; // P8-TOUR: plain-word tooltip on "
 import ConfirmDialog from '../components/ConfirmDialog';
 import CustomMessages from '../components/CustomMessages';
 import TemplateManager from '../components/TemplateManager';
+import WhatsAppSendPanel, { type WhatsAppLinkItem } from '../components/WhatsAppSendPanel';
 
 function errText(e: unknown): string {
   return e instanceof ApiClientError ? e.message : 'Something went wrong.';
+}
+
+/** Log rows carry two fields the shared type does not declare yet
+ * (backend-added): approval time + delivery provider. Cast at use-site. */
+type LogItemWithChannel = MessageLogItem & {
+  approved_at?: string | null;
+  delivery?: {
+    provider?: string;
+    status: string;
+    delivered_at?: string | null;
+    deliveredAt?: string | null;
+    error: string | null;
+  } | null;
+};
+
+function deliveryLabel(d: NonNullable<LogItemWithChannel['delivery']>): string {
+  if (d.status === 'opened') return 'Opened in WhatsApp — delivery not confirmed';
+  if (d.status === 'pending') return 'Waiting in WhatsApp';
+  if (d.status === 'sent') {
+    if (d.provider === 'email') return 'Sent by email';
+    if (d.provider === 'whatsapp') return 'Opened in WhatsApp';
+    return 'Sent by SMS';
+  }
+  if (d.status === 'failed') return 'Delivery failed';
+  return `Delivery: ${d.status}`;
 }
 
 function statusBadge(s: MessageLogItem['status']) {
@@ -32,7 +58,10 @@ export default function MessagesPage() {
   const [logType, setLogType] = useState<'all' | MessageType>('all');
   const [logClass, setLogClass] = useState('');
   const [pendingApprove, setPendingApprove] = useState<PendingGroup | null>(null);
+  const [pendingWhatsApp, setPendingWhatsApp] = useState<PendingGroup | null>(null);
   const [pendingRetry, setPendingRetry] = useState<MessageLogItem | null>(null);
+  const [waLinks, setWaLinks] = useState<WhatsAppLinkItem[] | null>(null);
+  const [emailFor, setEmailFor] = useState<{ id: string; to: string } | null>(null);
   const { push, view } = useToast();
 
   // Section 11: the delivery log is filtered server-side by status +
@@ -88,6 +117,54 @@ export default function MessagesPage() {
         body: { dedupe_keys: g.messages.map((m) => m.dedupe_key) },
       });
       push('success', `${g.messages.length} message(s) approved and queued for sending.`);
+      load();
+    } catch (e) {
+      push('error', errText(e));
+    }
+  };
+
+  // Messaging Center: ONE TAP — approve the held drafts AND get wa.me
+  // links. WhatsApp is the default channel now; the SIM path above stays
+  // for schools with a linked companion device.
+  const approveWhatsApp = async (g: PendingGroup) => {
+    try {
+      const res = await api<{ approved: number; cancelled: number; links: WhatsAppLinkItem[]; skipped: Array<{ queueId: string; reason: string }> }>('/messages/whatsapp-links', {
+        method: 'POST',
+        body: { group_id: g.group_id },
+      });
+      setWaLinks(res.links ?? []);
+      if (res.cancelled > 0) {
+        push('error', `${res.cancelled} message(s) were for a non-school day and were cancelled.`);
+      }
+      push('success', `${res.approved} message(s) approved — tap each WhatsApp link below to send.`);
+      load();
+    } catch (e) {
+      push('error', errText(e));
+    }
+  };
+
+  const whatsappRow = async (m: MessageLogItem) => {
+    try {
+      const res = await api<{ links: WhatsAppLinkItem[] }>('/messages/whatsapp-links', {
+        method: 'POST',
+        body: { queue_ids: [m.id] },
+      });
+      setWaLinks(res.links ?? []);
+      push('success', 'WhatsApp link ready below — tap it to send.');
+    } catch (e) {
+      push('error', errText(e));
+    }
+  };
+
+  const sendEmail = async (id: string, to: string) => {
+    try {
+      const res = await api<{ sent: boolean; error?: string }>(`/messages/queue/${id}/send-email`, {
+        method: 'POST',
+        body: { to },
+      });
+      if (res.sent) push('success', 'Email sent.');
+      else push('error', `Email could not be sent: ${res.error ?? 'unknown error'}`);
+      setEmailFor(null);
       load();
     } catch (e) {
       push('error', errText(e));
@@ -162,7 +239,17 @@ export default function MessagesPage() {
           {' · '}
           <a className="font-medium text-brand-700 hover:underline" href="/settings">Change sender number</a>
         </p>
+        {/* Messaging Center: the companion app is legacy — WhatsApp is now
+            the default. The device/SIM path stays for schools already set up. */}
+        <p className="mt-2 text-xs text-slate-500">
+          Companion app (legacy): the Android app is no longer needed — WhatsApp is now the default way to
+          send. Schools with a linked device can keep using it for SMS.
+        </p>
       </Card>
+
+      {waLinks && (
+        <WhatsAppSendPanel links={waLinks} onClose={() => setWaLinks(null)} />
+      )}
 
       <Tabs
         tabs={[
@@ -188,7 +275,7 @@ export default function MessagesPage() {
             />
           ) : (
             pending.map((g) => (
-              <PendingGroupCard key={g.group_id ?? `${g.class}-${g.date}`} group={g} onApprove={() => setPendingApprove(g)} onEditBody={editBody} />
+              <PendingGroupCard key={g.group_id ?? `${g.class}-${g.date}`} group={g} onApprove={() => setPendingApprove(g)} onApproveWhatsApp={() => setPendingWhatsApp(g)} onEditBody={editBody} />
             ))
           )}
         </>
@@ -247,7 +334,10 @@ export default function MessagesPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {log.map((m) => (
+                  {log.map((m) => {
+                    const item = m as LogItemWithChannel;
+                    const approved = Boolean(item.approved_at);
+                    return (
                     <tr key={m.id} className="align-top hover:bg-slate-50">
                       <td className="px-4 py-2.5 capitalize">{m.type.replace('_', ' ')}</td>
                       <td className="px-4 py-2.5 font-medium">{m.student_name ?? '—'}</td>
@@ -256,21 +346,43 @@ export default function MessagesPage() {
                       <td className="px-4 py-2.5">
                         {statusBadge(m.status)}
                         {m.error && <p className="mt-1 text-xs text-red-600">{m.error}</p>}
-                        {m.delivery && (
+                        {item.delivery && (
                           <p className="mt-1 text-xs text-slate-500">
-                            Delivery: {m.delivery.status}
-                            {m.delivery.error ? ` — ${m.delivery.error}` : ''}
+                            {deliveryLabel(item.delivery)}
+                            {item.delivery.error ? ` — ${item.delivery.error}` : ''}
                           </p>
                         )}
                       </td>
                       <td className="px-4 py-2.5 text-xs">{fmtDateTime(m.sent_at)}</td>
                       <td className="px-4 py-2.5 text-right">
-                        {m.status === 'failed' && (
-                          <Button variant="secondary" onClick={() => setPendingRetry(m)}>Retry</Button>
+                        <div className="flex flex-wrap justify-end gap-2">
+                          {m.status === 'queued' && approved && (
+                            <Button variant="secondary" onClick={() => void whatsappRow(m)}>WhatsApp</Button>
+                          )}
+                          {(m.status === 'queued' || m.status === 'failed') && (
+                            <Button variant="secondary" onClick={() => setEmailFor({ id: m.id, to: '' })}>Email</Button>
+                          )}
+                          {m.status === 'failed' && (
+                            <Button variant="secondary" onClick={() => setPendingRetry(m)}>Retry</Button>
+                          )}
+                        </div>
+                        {emailFor?.id === m.id && (
+                          <div className="mt-2 flex gap-2">
+                            <input
+                              className={inputCls}
+                              type="email"
+                              placeholder="Leave blank to use the parent's saved email"
+                              value={emailFor.to}
+                              onChange={(e) => setEmailFor({ id: m.id, to: e.target.value })}
+                              autoComplete="off"
+                            />
+                            <Button onClick={() => void sendEmail(m.id, emailFor.to)}>Send</Button>
+                          </div>
                         )}
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -300,6 +412,23 @@ export default function MessagesPage() {
         onCancel={() => setPendingApprove(null)}
       />
       <ConfirmDialog
+        open={pendingWhatsApp !== null}
+        title="Approve & send via WhatsApp?"
+        message={
+          pendingWhatsApp
+            ? `Are you sure? This will approve ${pendingWhatsApp.messages.length} message(s) for Class ${pendingWhatsApp.class} (${pendingWhatsApp.date}) and show a WhatsApp link for each parent — tap a link, WhatsApp opens with the message ready, and you send it there. No companion app needed.`
+            : ''
+        }
+        confirmLabel={`Approve & WhatsApp ${pendingWhatsApp?.messages.length ?? 0}`}
+        tone="primary"
+        onConfirm={() => {
+          const g = pendingWhatsApp;
+          setPendingWhatsApp(null);
+          if (g) void approveWhatsApp(g);
+        }}
+        onCancel={() => setPendingWhatsApp(null)}
+      />
+      <ConfirmDialog
         open={pendingRetry !== null}
         title="Retry this message?"
         message={
@@ -324,10 +453,12 @@ export default function MessagesPage() {
 function PendingGroupCard({
   group,
   onApprove,
+  onApproveWhatsApp,
   onEditBody,
 }: {
   group: PendingGroup;
   onApprove: () => void;
+  onApproveWhatsApp: () => void;
   onEditBody: (id: string, body: string) => void;
 }) {
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -345,7 +476,10 @@ function PendingGroupCard({
             {group.absent_count} absent student{group.absent_count === 1 ? '' : 's'} — messages will go only to their parents.
           </p>
         </div>
-        <Button onClick={onApprove}>Approve & send all ({group.messages.length})</Button>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="secondary" onClick={onApproveWhatsApp}>Approve & WhatsApp ({group.messages.length})</Button>
+          <Button onClick={onApprove}>Approve & send all ({group.messages.length})</Button>
+        </div>
       </div>
       <ul className="mt-4 space-y-3">
         {group.messages.map((m) => (

@@ -568,6 +568,8 @@ function StudentForm({
   const [parentNameUr, setParentNameUr] = useState(initial?.parent_name_ur ?? '');
   const [parentPhone, setParentPhone] = useState(initial?.parent_phone_masked ?? initial?.parent_phone ?? '');
   const [optOut, setOptOut] = useState(initial?.parent_opt_out ?? false);
+  // Messaging Center wiring (2026-11-20): parent email for email delivery.
+  const [parentEmail, setParentEmail] = useState(initial?.parent_email ?? '');
   // 6B extended profile fields.
   const [fatherName, setFatherName] = useState(initial?.father_name ?? '');
   const [admissionNo, setAdmissionNo] = useState(initial?.admission_no ?? '');
@@ -600,6 +602,10 @@ function StudentForm({
       setError("Gender must be male, female or other.");
       return;
     }
+    if (parentEmail.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(parentEmail.trim())) {
+      setError('Parent email looks invalid — use an address like father@example.com.');
+      return;
+    }
     setConfirming(true);
   };
 
@@ -616,6 +622,7 @@ function StudentForm({
         // Masked numbers are "unchanged" — never send them back.
         parent_phone: parentPhone.trim() && !isMaskedPhone(parentPhone.trim()) ? parentPhone.trim() : undefined,
         parent_opt_out: optOut,
+        parent_email: parentEmail.trim() || undefined,
         father_name: fatherName.trim() || undefined,
         admission_no: admissionNo.trim() || undefined,
         date_of_birth: dateOfBirth || undefined,
@@ -693,6 +700,9 @@ function StudentForm({
         </Field>
         <Field label="Parent phone" hint="Pakistan mobile — 0300…, +92…, or 92…. Masked numbers are left unchanged.">
           <input className={inputCls} type="tel" value={parentPhone} onChange={(e) => setParentPhone(e.target.value)} placeholder="03001234567" autoComplete="off" />
+        </Field>
+        <Field label="Parent email (optional)" hint="Used to email messages when you don't type an address per send.">
+          <input className={inputCls} type="email" value={parentEmail} onChange={(e) => setParentEmail(e.target.value)} placeholder="father@example.com" autoComplete="off" />
         </Field>
         <label className="flex items-center gap-2 text-sm text-slate-700">
           <input type="checkbox" checked={optOut} onChange={(e) => setOptOut(e.target.checked)} />

@@ -34,6 +34,8 @@ const studentSchema = z.object({
   parent_name_ur: z.string().max(120).optional().nullable(),
   parent_phone: z.string().optional().nullable(),
   parent_opt_out: z.boolean().optional(),
+  // Messaging Center wiring (2026-11-20): parent email for email delivery.
+  parent_email: z.string().email('Enter a valid parent email address').max(254).optional().nullable(),
   // v2 extended profile (contracts/SCHEMA.md §1)
   father_name: z.string().max(120).optional().nullable(),
   admission_no: z.string().max(60).optional().nullable(),
@@ -54,6 +56,7 @@ const parentSchema = z.object({
   parent_name_ur: z.string().max(120).optional().nullable(),
   parent_phone: z.string().optional().nullable(),
   opt_out: z.boolean().optional(),
+  parent_email: z.string().email('Enter a valid parent email address').max(254).optional().nullable(),
 });
 const idParams = z.object({ id: uuidSchema });
 const classIdParams = z.object({ id: uuidSchema });

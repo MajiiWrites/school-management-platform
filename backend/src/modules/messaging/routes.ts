@@ -43,12 +43,17 @@ import {
   getPendingApproval,
   getSenderSettings,
   getSmsStatus,
+  prepareWhatsAppLinks,
+  recordWhatsAppOpened,
   reportDelivery,
   retryFailed,
+  sendQueueRowByEmail,
   updateSenderNumber,
   type PhoneCrypto,
   type ServiceDeps,
 } from './service';
+import { getPortalInbox, markPortalInboxRead } from './portal-inbox';
+import { publicLinkLimiter } from '../../middleware/rateLimit';
 import type { MessagingStore } from './store';
 
 /**
@@ -119,6 +124,41 @@ export function createMessagingRouter(deps: MessagingRouterDeps): express.Router
     now: deps.now,
   };
   const router = express.Router();
+
+  /* ------------- Messaging Center: parent-portal inbox ------------- */
+  /* Public (token only, rate-limited) — same pattern as the portal's
+   * /p/:token. Read-only: one token sees exactly one student's messages. */
+
+  router.get(
+    '/portal/:token/inbox',
+    publicLinkLimiter,
+    wrap(async (req, res) => {
+      const data = await getPortalInbox(getDb(), param(req, 'token'));
+      ok(res, data);
+    }),
+  );
+
+  // Mark inbox items read for one token (public, token only). Items that
+  // do not belong to this token's student are skipped, never an error.
+  router.post(
+    '/portal/:token/inbox/read',
+    publicLinkLimiter,
+    wrap(async (req, res) => {
+      const body = (req.body ?? {}) as { items?: unknown };
+      const items = Array.isArray(body.items) ? body.items : [];
+      const clean = items
+        .filter(
+          (it): it is { kind: string; id: string } =>
+            typeof it === 'object' &&
+            it !== null &&
+            typeof (it as any).kind === 'string' &&
+            typeof (it as any).id === 'string',
+        )
+        .slice(0, 100);
+      const data = await markPortalInboxRead(getDb(), param(req, 'token'), clean);
+      ok(res, data);
+    }),
+  );
 
   /** Device auth: X-Device-Key must match the school-scoped derived key. */
   const deviceAuth: express.RequestHandler = async (req, _res, next) => {
@@ -216,6 +256,80 @@ export function createMessagingRouter(deps: MessagingRouterDeps): express.Router
     }),
   );
 
+  /* ------------- Messaging Center: WhatsApp + email ---------------- */
+  /* WhatsApp is the DEFAULT delivery channel now — no companion app, no
+   * paid gateway. Approve + wa.me links in one tap; opening a link is
+   * recorded as 'opened', never 'delivered'. Email reuses the existing
+   * mail service; the parent address comes from the request (students
+   * have no parent-email field yet) and failures stay failed. */
+
+  router.post(
+    '/messages/whatsapp-links',
+    deps.requireAuth,
+    deps.requireAdmin,
+    wrap(async (req, res) => {
+      const schoolId = requireSchool(req);
+      const { dedupe_keys, group_id, queue_ids } = req.body as {
+        dedupe_keys?: string[];
+        group_id?: string;
+        queue_ids?: string[];
+      };
+      if (
+        (!Array.isArray(dedupe_keys) || dedupe_keys.length === 0) &&
+        typeof group_id !== 'string' &&
+        (!Array.isArray(queue_ids) || queue_ids.length === 0)
+      ) {
+        throw Object.assign(
+          new Error('Provide dedupe_keys[] or group_id or queue_ids[]'),
+          { code: 'VALIDATION' },
+        );
+      }
+      const result = await prepareWhatsAppLinks(serviceDeps, {
+        schoolId,
+        approvedBy: req.user?.sub ?? 'unknown',
+        dedupeKeys: dedupe_keys,
+        groupId: group_id,
+        queueIds: queue_ids,
+      });
+      ok(res, result);
+    }),
+  );
+
+  router.post(
+    '/messages/queue/:id/whatsapp-opened',
+    deps.requireAuth,
+    deps.requireAdmin,
+    wrap(async (req, res) => {
+      const schoolId = requireSchool(req);
+      const updated = await recordWhatsAppOpened(serviceDeps, {
+        schoolId,
+        queueId: param(req, 'id'),
+        openedBy: req.user?.sub ?? 'unknown',
+      });
+      ok(res, { queue: updated });
+    }),
+  );
+
+  router.post(
+    '/messages/queue/:id/send-email',
+    deps.requireAuth,
+    deps.requireAdmin,
+    wrap(async (req, res) => {
+      const schoolId = requireSchool(req);
+      // `to` is optional: when blank, the student's saved parentEmail is
+      // used (Student.parentEmail, migration 20261120030000). The service
+      // throws a clear VALIDATION error when neither exists.
+      const { to } = (req.body ?? {}) as { to?: unknown };
+      const result = await sendQueueRowByEmail(serviceDeps, {
+        schoolId,
+        queueId: param(req, 'id'),
+        to: typeof to === 'string' ? to : undefined,
+        sentBy: req.user?.sub ?? 'unknown',
+      });
+      ok(res, result);
+    }),
+  );
+
   router.patch(
     '/messages/queue/:id',
     deps.requireAuth,
@@ -290,10 +404,12 @@ export function createMessagingRouter(deps: MessagingRouterDeps): express.Router
           status: i.status,
           created_at: i.createdAt.toISOString(),
           sent_at: i.sentAt ? i.sentAt.toISOString() : null,
+          approved_at: i.approvedAt ? i.approvedAt.toISOString() : null,
           error: i.error,
           dedupe_key: i.dedupeKey,
           delivery: delivery
             ? {
+                provider: delivery.provider,
                 status: delivery.status,
                 delivered_at: delivery.deliveredAt ? delivery.deliveredAt.toISOString() : null,
                 error: delivery.error,

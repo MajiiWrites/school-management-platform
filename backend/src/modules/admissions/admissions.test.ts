@@ -195,6 +195,14 @@ describe('admit (one transaction: student + fee record + voucher)', () => {
     expect(db.__inquiries[0].admittedStudentId).toBe(db.__students[0].id);
   });
 
+  it('carries the inquiry parent email onto the new student (Messaging Center wiring)', async () => {
+    const db = fakeDb();
+    await seedInquiry(db); // VALID has parent_email 'father@example.com'
+    const id = db.__inquiries[0].id;
+    await svc.admitInquiry(db as any, 'school-1', id, { class_id: 'class-1' }, 'admin-1');
+    expect(db.__students[0].parentEmail).toBe('father@example.com');
+  });
+
   it('a second admit is a conflict and creates nothing more', async () => {
     const db = fakeDb();
     await seedInquiry(db);

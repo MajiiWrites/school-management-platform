@@ -14,6 +14,9 @@ export interface StudentInput {
   parent_name_ur?: string | null;
   parent_phone?: string | null;
   parent_opt_out?: boolean;
+  // Messaging Center wiring (2026-11-20): parent email for email delivery
+  // when the admin does not type an address per send.
+  parent_email?: string | null;
   // v2 extended profile (contracts/SCHEMA.md §1)
   father_name?: string | null;
   admission_no?: string | null;
@@ -77,6 +80,7 @@ export function toPublicStudent(s: any): Record<string, unknown> {
     parent_has_phone: Boolean(s.parentPhoneEnc),
     phone_flag: phoneFlag,
     parent_opt_out: s.parentOptOut,
+    parent_email: s.parentEmail ?? null,
     status: s.status,
     father_name: s.fatherName ?? null,
     admission_no: s.admissionNo ?? null,
@@ -106,6 +110,7 @@ function changeView(s: any): Record<string, unknown> {
     parent_name: s.parentName ?? null,
     parent_phone: s.parentPhoneEnc ? maskPhone(decryptPhone(s.parentPhoneEnc)) : null,
     parent_opt_out: s.parentOptOut,
+    parent_email: s.parentEmail ?? null,
     status: s.status,
     father_name: s.fatherName ?? null,
     admission_no: s.admissionNo ?? null,
@@ -124,6 +129,16 @@ function parentPhoneFields(phone: string | null | undefined): { enc: string | nu
   const normalized = normalizePhone(phone);
   if (!normalized) throw ApiError.validation('Parent phone is not a valid Pakistani mobile number');
   return { enc: encryptPhone(normalized), hash: sha256Hex(normalized) };
+}
+
+/** Normalize + validate an optional parent email (lowercased, blank → null). */
+function normalizeParentEmail(email: string | null | undefined): string | null {
+  const v = (email ?? '').trim().toLowerCase();
+  if (!v) return null;
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v)) {
+    throw ApiError.validation('Parent email is not a valid email address');
+  }
+  return v;
 }
 
 async function assertClassInSchool(db: Db, schoolId: string, classId: string): Promise<any> {
@@ -239,6 +254,7 @@ export async function createStudent(db: Db, schoolId: string, classId: string, i
         parentPhoneEnc: phone.enc,
         parentPhoneHash: phone.hash,
         parentOptOut: input.parent_opt_out ?? false,
+        parentEmail: normalizeParentEmail(input.parent_email),
         status: 'active',
         fatherName: input.father_name?.trim() || null,
         admissionNo: input.admission_no?.trim() || null,
@@ -393,6 +409,7 @@ export async function updateStudent(db: Db, schoolId: string, id: string, patch:
   if (patch.parent_name !== undefined) data.parentName = patch.parent_name?.trim() || null;
   if (patch.parent_name_ur !== undefined) data.parentNameUr = patch.parent_name_ur?.trim() || null;
   if (patch.parent_opt_out !== undefined) data.parentOptOut = patch.parent_opt_out;
+  if (patch.parent_email !== undefined) data.parentEmail = normalizeParentEmail(patch.parent_email);
   if (patch.status !== undefined) {
     if (!['active', 'left', 'struck_off', 'graduated'].includes(patch.status)) throw ApiError.validation('Invalid status');
     data.status = patch.status;
@@ -545,7 +562,7 @@ export async function updateParent(
   db: Db,
   schoolId: string,
   id: string,
-  input: { parent_name?: string | null; parent_name_ur?: string | null; parent_phone?: string | null; opt_out?: boolean },
+  input: { parent_name?: string | null; parent_name_ur?: string | null; parent_phone?: string | null; opt_out?: boolean; parent_email?: string | null },
   actorId?: string,
 ): Promise<any> {
   const existing = await getStudent(db, schoolId, id);
@@ -553,6 +570,7 @@ export async function updateParent(
   if (input.parent_name !== undefined) data.parentName = input.parent_name?.trim() || null;
   if (input.parent_name_ur !== undefined) data.parentNameUr = input.parent_name_ur?.trim() || null;
   if (input.opt_out !== undefined) data.parentOptOut = input.opt_out;
+  if (input.parent_email !== undefined) data.parentEmail = normalizeParentEmail(input.parent_email);
   if (input.parent_phone !== undefined) {
     const phone = parentPhoneFields(input.parent_phone);
     data.parentPhoneEnc = phone.enc;

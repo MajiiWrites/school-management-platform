@@ -111,6 +111,9 @@ model School {
   admissionInquiries AdmissionInquiry[]
   homework          Homework[]
 
+  // Messaging Center wiring (2026-11-20): portal inbox read marks.
+  messageReads      ParentMessageRead[]
+
   @@map("schools")
 }
 
@@ -227,6 +230,11 @@ model Student {
   parentNameUr     String? // Urdu-script parent name (OCR transliteration, editable on review)
   parentPhoneEnc   String?
   parentPhoneHash  String?
+  // Messaging Center wiring (2026-11-20): parent email for email delivery
+  // — used when the admin does not type an address per send. Optional,
+  // plain text (not encrypted: email is not a secret like a phone number,
+  // and the admin sees it in the UI when sending).
+  parentEmail      String?
   parentOptOut     Boolean   @default(false)
   status           String    @default("active")
   // v2: extended profile. admissionNo is unique per school (NULLs distinct in
@@ -266,6 +274,9 @@ model Student {
   // Gaps Top 3 (2026-11-20): parent portal tokens + admitted-from inquiries.
   parentTokens ParentToken[]
   admittedFrom AdmissionInquiry[] @relation("AdmittedStudent")
+
+  // Messaging Center wiring (2026-11-20): portal inbox read marks.
+  messageReads ParentMessageRead[]
 
   // Postgres treats NULLs as distinct in a unique index, so this unique index
   // enforces (class_id, roll_no) only when roll_no IS NOT NULL — exactly the
@@ -1155,8 +1166,34 @@ model ParentToken {
   createdAt  DateTime @default(now()) @db.Timestamptz(6)
   updatedAt  DateTime @updatedAt @db.Timestamptz(6)
 
+  // Messaging Center wiring (2026-11-20): portal inbox read marks.
+  reads ParentMessageRead[]
+
   @@index([schoolId, studentId])
   @@map("parent_tokens")
+}
+
+// Messaging Center wiring (2026-11-20): read state for the parent-portal
+// inbox. One row per (token, item): a parent opening the Messages tab
+// marks the listed items read. itemKind is 'message' (a message_queue row)
+// or 'announcement'. A token only ever marks its own student's items —
+// the service checks ownership before inserting. Unique (tokenId,
+// itemKind, itemId) makes re-marking a no-op.
+model ParentMessageRead {
+  id        String      @id @default(uuid()) @db.Uuid
+  schoolId  String      @db.Uuid
+  school    School      @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  tokenId   String      @db.Uuid
+  token     ParentToken @relation(fields: [tokenId], references: [id], onDelete: Cascade)
+  studentId String      @db.Uuid
+  student   Student     @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  itemKind  String
+  itemId    String      @db.Uuid
+  readAt    DateTime    @default(now()) @db.Timestamptz(6)
+
+  @@unique([tokenId, itemKind, itemId])
+  @@index([schoolId, studentId])
+  @@map("parent_message_reads")
 }
 
 model AdmissionInquiry {

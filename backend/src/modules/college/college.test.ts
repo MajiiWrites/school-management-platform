@@ -8,7 +8,7 @@
 import { describe, it, expect } from 'vitest';
 import { gradeForPercentage, computeGpa, latestMarksOnly } from './gpa';
 import * as svc from './service';
-import { getReportCard, renderReportCardHtml } from '../results/service';
+import { getReportCard, renderReportCardHtml, renderReportCardPdf } from '../results/service';
 
 function fakeDb() {
   const schools: any[] = [
@@ -28,6 +28,7 @@ function fakeDb() {
     { id: 'stu-inactive', schoolId: 'college-1', classId: 'class-1', rollNo: 4, name: 'Inactive One', fatherName: null, status: 'inactive', deletedAt: null },
     { id: 'stu-other', schoolId: 'college-3', classId: 'class-3', rollNo: 1, name: 'Other College Student', fatherName: null, status: 'active', deletedAt: null },
     { id: 'stu-s', schoolId: 'school-2', classId: 'class-s', rollNo: 1, name: 'School Kid', fatherName: 'Father S', status: 'active', deletedAt: null },
+    { id: 'stu-s2', schoolId: 'school-2', classId: 'class-s', rollNo: 2, name: 'School No Results', fatherName: 'Father S2', status: 'active', deletedAt: null },
   ];
   const staff: any[] = [
     { id: 'teacher-1', schoolId: 'college-1', name: 'Prof. Sana', role: 'teacher' },
@@ -463,5 +464,79 @@ describe('report-card college block', () => {
     const db = fakeDb();
     const card = await getReportCard(db as any, 'college-1', 'stu-1', 'exam-1');
     expect('college' in card).toBe(false);
+  });
+
+  // Pure-College report card (2026-11-20 fix): a College student whose
+  // ONLY marks are college course marks (no school-style result rows)
+  // used to 404 before the college block was ever built.
+  it('pure-College student with only college marks: 200 with college block + GPA, empty school sections', async () => {
+    const db = fakeDb();
+    const seed = await seedCollege(db);
+    // stu-2 (Bilal) has NO school-style result row; enroll + give him the
+    // same Sem 1 marks as stu-1: CS101 85% A (4.0, 3cr), MTH101 70% B-
+    // (2.66, 3cr), ENG101 40% F (0, 2cr) -> GPA (12 + 7.98 + 0) / 8 = 2.5.
+    await svc.createEnrollment(db as any, 'college-1', { student_id: 'stu-2', program_id: seed.program.id, semester_id: seed.sem1.id }, 'admin-1');
+    await svc.upsertCourseMark(db as any, 'college-1', { course_id: seed.cs101.id, student_id: 'stu-2', exam_id: 'exam-1', obtained_marks: 85, total_marks: 100 }, 'admin-1');
+    await svc.upsertCourseMark(db as any, 'college-1', { course_id: seed.mth101.id, student_id: 'stu-2', exam_id: 'exam-1', obtained_marks: 70, total_marks: 100 }, 'admin-1');
+    await svc.upsertCourseMark(db as any, 'college-1', { course_id: seed.eng101.id, student_id: 'stu-2', exam_id: 'exam-1', obtained_marks: 40, total_marks: 100 }, 'admin-1');
+    const card = await getReportCard(db as any, 'college-1', 'stu-2', 'exam-1');
+    expect(card.student.name).toBe('Bilal Ahmed');
+    expect(card.results).toEqual([]);
+    expect(card.obtained).toBeNull();
+    expect(card.total).toBeNull();
+    expect(card.percentage).toBeNull();
+    expect(card.grade).toBeNull();
+    expect(card.position).toBeNull();
+    expect(card.remarks).toEqual([]);
+    expect(card.college).toBeDefined();
+    expect(card.college!.program_name).toBe('BS Computer Science');
+    expect(card.college!.semester_number).toBe(1);
+    expect(card.college!.courses).toHaveLength(3);
+    expect(card.college!.semester_gpa).toBe(2.5);
+    expect(card.college!.cgpa).toBe(2.5);
+    const html = renderReportCardHtml(card);
+    expect(html).toContain('BS Computer Science');
+    expect(html).toContain('Semester GPA: 2.5');
+    expect(html).toContain('CS101');
+    const pdf = await renderReportCardPdf(card);
+    expect(pdf.length).toBeGreaterThan(0);
+  });
+
+  it('College student with enrollment but NO marks at all: still 404', async () => {
+    const db = fakeDb();
+    const seed = await seedCollege(db);
+    // stu-3 is enrolled in Sem 1 but has no course marks for exam-1 (and
+    // no school-style results): the college block would be course-less,
+    // so the 404 must stand.
+    await svc.createEnrollment(db as any, 'college-1', { student_id: 'stu-3', program_id: seed.program.id, semester_id: seed.sem1.id }, 'admin-1');
+    await expect(getReportCard(db as any, 'college-1', 'stu-3', 'exam-1')).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+      message: 'No results for this student in this exam',
+    });
+  });
+
+  it('School-org student with no results: still 404', async () => {
+    const db = fakeDb();
+    await expect(getReportCard(db as any, 'school-2', 'stu-s2', 'exam-s')).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+      message: 'No results for this student in this exam',
+    });
+  });
+
+  it('College student with BOTH school + college results: 200, school sections unchanged', async () => {
+    const db = fakeDb();
+    const seed = await seedCollege(db);
+    await seedSem1Marks(db, seed);
+    const card = await getReportCard(db as any, 'college-1', 'stu-1', 'exam-1');
+    expect(card.results).toHaveLength(1);
+    expect(card.obtained).toBe(80);
+    expect(card.total).toBe(100);
+    expect(card.percentage).toBe(80);
+    expect(card.grade).toBe('A');
+    expect(card.college).toBeDefined();
+    expect(card.college!.semester_gpa).toBe(2.5);
+    const html = renderReportCardHtml(card);
+    expect(html).toContain('Total: 80 / 100');
+    expect(html).toContain('CS101');
   });
 });

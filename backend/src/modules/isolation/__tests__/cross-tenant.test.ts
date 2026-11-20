@@ -1023,8 +1023,12 @@ describe('messaging store (Prisma adapter on the fake DB)', () => {
   });
 
   it('getStudentsByIds returns only the requesting school students', async () => {
-    expect(await store.getStudentsByIds(['stu-a1', 'stu-b1'], B)).toEqual([{ id: 'stu-b1', name: 'Bilal Ahmed' }]);
-    expect(await store.getStudentsByIds(['stu-a1', 'stu-b1'], A)).toEqual([{ id: 'stu-a1', name: 'Ahmed Raza' }]);
+    expect(await store.getStudentsByIds(['stu-a1', 'stu-b1'], B)).toEqual([
+      { id: 'stu-b1', name: 'Bilal Ahmed', parentEmail: null },
+    ]);
+    expect(await store.getStudentsByIds(['stu-a1', 'stu-b1'], A)).toEqual([
+      { id: 'stu-a1', name: 'Ahmed Raza', parentEmail: null },
+    ]);
   });
 
   it('template lookups/updates are school-scoped', async () => {

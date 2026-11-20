@@ -114,6 +114,7 @@ export interface Student {
   parent_phone_masked?: string | null;
   parent_has_phone?: boolean;
   parent_opt_out?: boolean;
+  parent_email?: string | null;
   status: 'active' | 'left' | 'struck_off' | 'graduated';
   phone_flag?: PhoneFlag;
   // 6B extended profile (contracts/SCHEMA.md §1)

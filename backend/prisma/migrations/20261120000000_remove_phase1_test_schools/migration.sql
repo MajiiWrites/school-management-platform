@@ -1,0 +1,60 @@
+-- One-time Phase 1 cleanup (SIX test schools).
+-- Deletes ONLY the six TEST schools below. The WHERE clause is the
+-- safety guard, so no other school can ever be affected. All tenant
+-- tables cascade from schools (ON DELETE CASCADE), so each school's
+-- users, classes, students, attendance, fees, messages, results and
+-- every other record go with it in the same statement.
+-- Safe on a fresh/empty database: the DELETE simply affects 0 rows.
+--
+-- TIMING — CRITICAL: push this migration ONLY AFTER all live
+-- verification has finished (union push live verification + the
+-- local E2E). Prisma migrations run once, at deploy time: if this is
+-- pushed before a test school is created, it deletes 0 rows for that
+-- school and will NOT clean it up later. If any later verification
+-- creates another TEST school, ADD its slug + admin email to the
+-- lists below and re-run the scratch verification BEFORE pushing.
+-- The site must end clean-empty again after this migration is pushed.
+--
+-- SCHOOLS:
+--   (1) "Diagnosis Test School Nov 2026" -> diagnosis-test-school-nov-2026
+--       (school id c0d7b8e1-408b-4041-8708-5eb33639bcbd; admin
+--       diagnosis-test-20261119@example.com, user id
+--       a21c5bc4-1234-47da-81f6-e2edc0438706). Created 2026-11-19 during
+--       the signup-slowness diagnosis (live API signup, 201 in 22.2s).
+--   (2) "Formfill Test School Nov 2026" -> formfill-test-school-nov-2026
+--       (admin formfill-test-20261119@example.com). Created 2026-11-19
+--       during the live form-fill test (signup works, banner claims a
+--       verification mail was sent — it never was).
+--   (3) "Phase1 Live Test School" -> phase1-live-test-school
+--       (admin phase1-test-20261119@gmail.com). Created 2026-11-19
+--       ~19:32 UTC during the Phase 1 live verification (signup 201 in
+--       2.34s, no tokens; login 403 EMAIL_NOT_VERIFIED; resend
+--       sent:false on SMTP 587).
+--   (4) "Phase1 465 Test School" -> phase1-465-test-school
+--       (admin phase1-465-test-20261120@gmail.com). Created 2026-11-20
+--       ~00:33 PKT during the SMTP 465 re-test (signup 201 in 2.38s;
+--       resend sent:false — port 465 also times out).
+--   (5) "Union Live Test School" -> union-live-test-school
+--       (school id f5633ea9-1e1f-494e-abe1-eedab6f4c719; admin
+--       union-school-20261120@gmail.com). Created 2026-11-20 ~01:25 PKT
+--       during the union-push live verification (signup 201 in 2.02s;
+--       login 403 EMAIL_NOT_VERIFIED; public admissions form GET 200).
+--   (6) "Union Live Test College" -> union-live-test-college
+--       (school id 05a09afa-3b82-4737-b34c-8f9cb9b30d1b; admin
+--       union-college-20261120@gmail.com). Created 2026-11-20 ~01:25 PKT
+--       during the union-push live verification (signup 201 in 2.04s;
+--       login 403 EMAIL_NOT_VERIFIED).
+-- Email fallbacks (delete by school id via users.email): the admin
+-- emails are fake/test-only addresses used by these TEST schools, so
+-- the OR condition cannot match a real school. Safety net if a slug
+-- ever differs (e.g. signup appends a random suffix when a slug
+-- already exists).
+--
+-- EXPLICITLY KEPT — DO NOT ADD TO THIS MIGRATION:
+--   adminmailx@gmail.com — the USER'S OWN test account (a signup
+--   attempt hit the logs 2026-11-19 18:01 UTC; user confirmed
+--   2026-11-19 23:35 PKT "Keep it"). It is NOT a diagnosis/test
+--   school of this program and must survive this cleanup.
+DELETE FROM schools
+WHERE slug IN ('diagnosis-test-school-nov-2026', 'formfill-test-school-nov-2026', 'phase1-live-test-school', 'phase1-465-test-school', 'union-live-test-school', 'union-live-test-college')
+   OR id IN (SELECT "schoolId" FROM users WHERE email IN ('diagnosis-test-20261119@example.com', 'formfill-test-20261119@example.com', 'phase1-test-20261119@gmail.com', 'phase1-465-test-20261120@gmail.com', 'union-school-20261120@gmail.com', 'union-college-20261120@gmail.com'));

@@ -8,11 +8,12 @@ import { portalApi } from '../lib/api';
 import { ApiClientError } from '../lib/api';
 import type { ParentPortalData } from '../lib/types';
 import { Badge, Card, EmptyState, Spinner, Tabs } from '../components/ui';
+import PortalInbox from '../components/PortalInbox';
 import DeveloperFooter from '../components/DeveloperFooter';
 
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
-type TabKey = 'attendance' | 'results' | 'fees' | 'timetable' | 'announcements' | 'homework';
+type TabKey = 'attendance' | 'results' | 'fees' | 'timetable' | 'announcements' | 'homework' | 'messages';
 
 export default function ParentPortalPage() {
   const { token } = useParams<{ token: string }>();
@@ -86,6 +87,7 @@ export default function ParentPortalPage() {
           { key: 'timetable', label: 'Timetable' },
           { key: 'announcements', label: 'Announcements' },
           { key: 'homework', label: 'Homework' },
+          { key: 'messages', label: 'Messages' },
         ]}
         active={tab}
         onChange={(k) => setTab(k as TabKey)}
@@ -98,6 +100,7 @@ export default function ParentPortalPage() {
         {tab === 'timetable' && <TimetableTab data={data} />}
         {tab === 'announcements' && <AnnouncementsTab data={data} />}
         {tab === 'homework' && <HomeworkTab data={data} />}
+        {tab === 'messages' && token && <PortalInbox token={token} />}
       </div>
 
       <p className="mt-4 text-center text-xs text-slate-400">

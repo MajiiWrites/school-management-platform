@@ -740,7 +740,42 @@ export async function getReportCard(db: Db, schoolId: string, studentId: string,
     where: { schoolId, examId, studentId, deletedAt: null },
     orderBy: [{ rollNo: 'asc' }],
   });
-  if (rows.length === 0) throw ApiError.notFound('No results for this student in this exam');
+  // Pure-College fallback (2026-11-20): a College student whose ONLY marks
+  // are college course marks has no school-style result rows, so the 404
+  // below would fire before the college block was ever built. When the
+  // college block exists AND carries >= 1 course for THIS exam, return a
+  // card built from the college data with the school sections empty. The
+  // courses-length guard matters: buildCollegeReportCardBlock returns a
+  // (course-less) block for an enrolled student with no marks for this
+  // exam, and that student must still 404 — as must a School-org student
+  // (block is null) and a student with no marks of either kind.
+  if (rows.length === 0) {
+    const { buildCollegeReportCardBlock } = await import('../college/service');
+    const collegeOnly = await buildCollegeReportCardBlock(db, schoolId, studentId, examId);
+    if (!collegeOnly || collegeOnly.courses.length === 0) {
+      throw ApiError.notFound('No results for this student in this exam');
+    }
+    return {
+      school_name: (school as any)?.name ?? 'School',
+      exam_name: exam.name,
+      student: {
+        id: student.id,
+        name: student.name,
+        father_name: student.fatherName,
+        admission_no: student.admissionNo ?? null,
+        roll_no: student.rollNo ?? null,
+      },
+      class_name: klass ? `${klass.name}-${klass.section}` : '—',
+      results: [],
+      obtained: null,
+      total: null,
+      percentage: null,
+      grade: null,
+      position: null,
+      remarks: [],
+      college: collegeOnly,
+    };
+  }
   const first = rows[0]!;
   const obtained = rows.reduce((a: number, r: any) => a + (r.obtainedMarks ?? 0), 0);
   const total = rows.reduce((a: number, r: any) => a + (r.totalMarks ?? 0), 0);

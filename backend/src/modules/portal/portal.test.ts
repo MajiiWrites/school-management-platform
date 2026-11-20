@@ -244,3 +244,26 @@ describe('send parent link via SMS (held draft, never auto-sent)', () => {
     await expect(svc.sendParentLinkSms(db as any, 'school-1', 'stu-optout', 'admin-1')).rejects.toMatchObject({ status: 400 });
   });
 });
+
+describe('parent link via WhatsApp (Messaging Center wiring — click-to-send, queues nothing)', () => {
+  it('returns a wa.me link with the portal URL pre-filled, and creates the token when none exists', async () => {
+    const db = fakeDb();
+    const res = await svc.getParentLinkWhatsApp(db as any, 'school-1', 'stu-1', 'admin-1');
+    expect(typeof res.wa_url).toBe('string');
+    expect(res.wa_url as string).toMatch(/^https:\/\/wa\.me\/923001234567\?text=/);
+    const text = decodeURIComponent((res.wa_url as string).split('text=')[1]);
+    expect(text).toContain('/p/');
+    expect(text).toContain('Ayesha Khan');
+    expect(res.phone_masked).toBeTruthy();
+    // A token was created (none existed) — and NO queue row was made.
+    expect(db.__parentTokens.length).toBe(1);
+    expect(db.__messageQueue.length).toBe(0);
+    expect(db.__auditLogs.some((a: any) => a.action === 'parent_token.whatsapp_link')).toBe(true);
+  });
+
+  it('refuses students with no number or an opted-out parent — same rules as SMS', async () => {
+    const db = fakeDb();
+    await expect(svc.getParentLinkWhatsApp(db as any, 'school-1', 'stu-nophone', 'admin-1')).rejects.toMatchObject({ status: 400 });
+    await expect(svc.getParentLinkWhatsApp(db as any, 'school-1', 'stu-optout', 'admin-1')).rejects.toMatchObject({ status: 400 });
+  });
+});

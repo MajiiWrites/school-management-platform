@@ -44,6 +44,8 @@ import {
   type SchoolInfo,
   type TemplateRow,
 } from './store';
+import { sendMailOnce } from '../../lib/mail';
+import { waLink } from './whatsapp';
 
 export interface PhoneCrypto {
   encrypt(e164: string): string;
@@ -616,8 +618,18 @@ export async function getDeviceQueue(
   await store.touchDevice(input.deviceId);
 
   const rows = await store.listDueApproved(input.schoolId, input.limit ?? 10);
+  // Messaging Center: a row handed to WhatsApp (or email) must never also
+  // go out over the SIM — one channel per message. Rows with a WhatsApp
+  // delivery record are excluded here even though they are still 'queued'.
+  const deliveries = rows.length
+    ? await store.listDeliveriesForQueueIds(rows.map((r) => r.id), input.schoolId)
+    : [];
+  const waIds = new Set(
+    deliveries.filter((d) => d.provider === 'whatsapp').map((d) => d.queueId),
+  );
   const out: Array<{ queueId: string; to: string; body: string; type: string }> = [];
   for (const row of rows) {
+    if (waIds.has(row.id)) continue;
     let to: string | null = null;
     try {
       to = normalizePK(decryptWith(row.parentPhoneEnc, cryptoImpl));
@@ -804,6 +816,347 @@ export async function updateSenderNumber(
     details: { sender_number_masked: normalized ? maskPhone(normalized) : null },
   });
   return getSenderSettings(deps, { schoolId: input.schoolId });
+}
+
+/* ------------------------------------------------------------------ */
+/* Messaging Center (2026-11-20) — in-website delivery: WhatsApp +    */
+/* email. No companion app, no paid gateway.                           */
+/*                                                                     */
+/* Channel rule: a queue row is handed to exactly ONE channel. The     */
+/* device queue (getDeviceQueue, below) never returns a row that       */
+/* already has a WhatsApp delivery, so a message approved for          */
+/* WhatsApp can never also go out over the SIM.                        */
+/*                                                                     */
+/* Honesty rule: WhatsApp "delivery" is recorded as status 'opened'   */
+/* (the admin opened the wa.me link) — never 'sent' in the delivery   */
+/* row, because the site cannot confirm WhatsApp delivery. The queue   */
+/* row itself moves to 'sent' (handed off) so it leaves every other    */
+/* channel's pickup list; the delivery row is the truth.               */
+/* ------------------------------------------------------------------ */
+
+export interface WhatsAppLink {
+  queueId: string;
+  studentId: string | null;
+  studentName: string | null;
+  parentPhoneMasked: string;
+  body: string;
+  waUrl: string;
+}
+
+export interface WhatsAppLinkSkip {
+  queueId: string;
+  studentName: string | null;
+  reason: 'invalid_phone';
+}
+
+export interface PrepareWhatsAppResult {
+  approved: number;
+  cancelled: number;
+  alreadyApproved: number;
+  links: WhatsAppLink[];
+  skipped: WhatsAppLinkSkip[];
+}
+
+/**
+ * Approve held drafts AND return wa.me links for them in one tap (the
+ * "Approve & WhatsApp" action). Already-approved rows passed by queue id
+ * just get links — but a still-held row passed by id is rejected: approval
+ * must go through the pending-review UI, never silently from the log.
+ * Every linked row gets a pending WhatsApp delivery row first, so the SIM
+ * device can never pick it up afterwards (see getDeviceQueue).
+ */
+export async function prepareWhatsAppLinks(
+  deps: ServiceDeps,
+  input: {
+    schoolId: string;
+    approvedBy: string;
+    dedupeKeys?: string[];
+    groupId?: string;
+    queueIds?: string[];
+  },
+): Promise<PrepareWhatsAppResult> {
+  const { store } = deps;
+  const cryptoImpl = deps.crypto ?? defaultCrypto;
+  const now = deps.now ?? (() => new Date());
+
+  const wanted = new Set(input.dedupeKeys ?? []);
+  const pending = await store.listPendingApproval(input.schoolId);
+  const selected: QueueRow[] = pending.filter((row) => {
+    if (wanted.has(row.dedupeKey)) return true;
+    if (input.groupId && groupIdFor(row) === input.groupId) return true;
+    return false;
+  });
+
+  let alreadyApproved = 0;
+  if (input.queueIds) {
+    for (const id of input.queueIds) {
+      const row = await store.getQueueById(id, input.schoolId);
+      if (!row || row.schoolId !== input.schoolId) {
+        throw Object.assign(new Error('Message not found'), { code: 'NOT_FOUND' });
+      }
+      if (row.status !== 'queued') {
+        throw Object.assign(new Error('Only queued messages can be sent via WhatsApp'), {
+          code: 'VALIDATION',
+        });
+      }
+      if (!row.approvedAt) {
+        throw Object.assign(
+          new Error('This message is still waiting for approval — approve it first'),
+          { code: 'VALIDATION' },
+        );
+      }
+      selected.push(row);
+      alreadyApproved += 1;
+    }
+  }
+
+  if (selected.length === 0) {
+    throw Object.assign(new Error('No messages selected'), { code: 'VALIDATION' });
+  }
+
+  let approved = 0;
+  let cancelled = 0;
+  const approvedAt = now();
+  const toLink: QueueRow[] = [];
+
+  for (const row of selected) {
+    if (!row.approvedAt) {
+      // Rule 3 re-check, same as approveMessages: a date that became a
+      // holiday/Sunday after drafting is cancelled instead of sent.
+      const date = rowDate(row);
+      const schoolDay = await isSchoolDay(store, input.schoolId, date);
+      if (!schoolDay) {
+        await store.updateQueue(row.id, { status: 'cancelled', error: 'not_a_school_day' }, input.schoolId);
+        await store.createAuditLog({
+          schoolId: input.schoolId,
+          actorId: input.approvedBy,
+          actorType: 'user',
+          action: 'message.cancel',
+          entity: 'message_queue',
+          entityId: row.id,
+          details: { dedupeKey: row.dedupeKey, reason: 'not_a_school_day' },
+        });
+        cancelled += 1;
+        continue;
+      }
+      await store.updateQueue(row.id, {
+        approvedBy: input.approvedBy,
+        approvedAt,
+        scheduledFor: approvedAt,
+      }, input.schoolId);
+      approved += 1;
+    }
+    toLink.push(row);
+  }
+
+  if (approved > 0) {
+    await store.createAuditLog({
+      schoolId: input.schoolId,
+      actorId: input.approvedBy,
+      actorType: 'user',
+      action: 'message.approve',
+      entity: 'message_queue',
+      entityId: null,
+      details: { approved, channel: 'whatsapp', dedupeKeys: toLink.map((r) => r.dedupeKey) },
+    });
+  }
+
+  // Attach the WhatsApp channel + build the links (names for display).
+  const studentIds = [...new Set(toLink.map((r) => r.studentId).filter(Boolean))] as string[];
+  const students = studentIds.length
+    ? await store.getStudentsByIds(studentIds, input.schoolId)
+    : [];
+  const studentNames = new Map(students.map((s) => [s.id, s.name]));
+  const existingDeliveries = await store.listDeliveriesForQueueIds(
+    toLink.map((r) => r.id),
+    input.schoolId,
+  );
+  const hasWaDelivery = new Set(
+    existingDeliveries.filter((d) => d.provider === 'whatsapp').map((d) => d.queueId),
+  );
+
+  const links: WhatsAppLink[] = [];
+  const skipped: WhatsAppLinkSkip[] = [];
+  for (const row of toLink) {
+    const studentName = row.studentId ? studentNames.get(row.studentId) ?? null : null;
+    if (!hasWaDelivery.has(row.id)) {
+      await store.createDelivery({ queueId: row.id, provider: 'whatsapp', status: 'pending' });
+    }
+    let e164: string | null = null;
+    let masked = '+92 3XX XXXX???';
+    try {
+      e164 = normalizePK(decryptWith(row.parentPhoneEnc, cryptoImpl));
+      if (e164) masked = maskPhone(e164) ?? masked;
+    } catch {
+      e164 = null;
+    }
+    const url = waLink(e164, row.body);
+    if (!url) {
+      skipped.push({ queueId: row.id, studentName, reason: 'invalid_phone' });
+      continue;
+    }
+    links.push({
+      queueId: row.id,
+      studentId: row.studentId,
+      studentName,
+      parentPhoneMasked: masked,
+      body: row.body,
+      waUrl: url,
+    });
+  }
+
+  return { approved, cancelled, alreadyApproved, links, skipped };
+}
+
+/**
+ * The admin opened a wa.me link (WhatsApp opened with the message
+ * pre-filled). Recorded HONESTLY as delivery status 'opened' — the site
+ * cannot confirm the admin then tapped send in WhatsApp, so it is never
+ * recorded as delivered. The queue row moves to 'sent' (handed off) so it
+ * leaves the SIM pickup list. Idempotent: opening the same link twice
+ * records once.
+ */
+export async function recordWhatsAppOpened(
+  deps: ServiceDeps,
+  input: { schoolId: string; queueId: string; openedBy: string },
+): Promise<QueueRow> {
+  const { store } = deps;
+  const now = deps.now ?? (() => new Date());
+  const row = await store.getQueueById(input.queueId, input.schoolId);
+  if (!row || row.schoolId !== input.schoolId) {
+    throw Object.assign(new Error('Message not found'), { code: 'NOT_FOUND' });
+  }
+  const deliveries = await store.listDeliveriesForQueueIds([row.id], input.schoolId);
+  const waOpened = deliveries.some((d) => d.provider === 'whatsapp' && d.status === 'opened');
+  if (waOpened) return row; // idempotent — already recorded
+  if (row.status === 'cancelled') {
+    throw Object.assign(new Error('A cancelled message cannot be sent'), { code: 'VALIDATION' });
+  }
+  if (row.status === 'sent' && !deliveries.some((d) => d.provider === 'whatsapp')) {
+    throw Object.assign(new Error('This message was already sent through another channel'), {
+      code: 'VALIDATION',
+    });
+  }
+  if (row.status !== 'queued' && row.status !== 'failed' && row.status !== 'sent') {
+    throw Object.assign(new Error(`A ${row.status} message cannot be sent via WhatsApp`), {
+      code: 'VALIDATION',
+    });
+  }
+  const updated = await store.updateQueue(row.id, {
+    status: 'sent',
+    attempts: row.attempts + 1,
+    sentAt: now(),
+    error: null,
+  }, input.schoolId);
+  await store.createDelivery({
+    queueId: row.id,
+    provider: 'whatsapp',
+    status: 'opened',
+  });
+  await store.createAuditLog({
+    schoolId: input.schoolId,
+    actorId: input.openedBy,
+    actorType: 'user',
+    action: 'message.whatsapp_opened',
+    entity: 'message_queue',
+    entityId: row.id,
+    details: { dedupeKey: row.dedupeKey },
+  });
+  return updated;
+}
+
+/* ------------------------- email channel --------------------------- */
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+export interface EmailSendResult {
+  sent: boolean;
+  error?: string;
+}
+
+/**
+ * Send one queued message by email, reusing the existing mail service
+ * (sendMailOnce — the same single-attempt, honest-failure path as the
+ * verification resend). The address comes from the request when the admin
+ * types one; when `to` is omitted/blank, the student's saved parentEmail
+ * (Student.parentEmail, migration 20261120030000) is used instead — and
+ * when neither exists the call fails with a clear VALIDATION error, never
+ * a silent no-op. The outcome is recorded honestly — a failed send stays
+ * failed with its error, never claimed as sent. `mailer` is injectable
+ * for tests.
+ */
+export async function sendQueueRowByEmail(
+  deps: ServiceDeps,
+  input: { schoolId: string; queueId: string; to?: string | null; sentBy: string },
+  mailer: (opts: { to: string; subject: string; text: string }) => Promise<void> = sendMailOnce,
+): Promise<EmailSendResult> {
+  const { store } = deps;
+  const now = deps.now ?? (() => new Date());
+  const row = await store.getQueueById(input.queueId, input.schoolId);
+  if (!row || row.schoolId !== input.schoolId) {
+    throw Object.assign(new Error('Message not found'), { code: 'NOT_FOUND' });
+  }
+  if (row.status !== 'queued' && row.status !== 'failed') {
+    throw Object.assign(new Error(`A ${row.status} message cannot be emailed`), {
+      code: 'VALIDATION',
+    });
+  }
+  // Resolve the address: typed address wins; otherwise the student's
+  // saved parent email; otherwise a clear error (never a silent no-op).
+  let to = (input.to ?? '').trim().toLowerCase();
+  if (!to && row.studentId) {
+    const students = await store.getStudentsByIds([row.studentId], input.schoolId);
+    to = (students[0]?.parentEmail ?? '').trim().toLowerCase();
+  }
+  if (!EMAIL_RE.test(to)) {
+    throw Object.assign(
+      new Error(
+        row.studentId
+          ? 'No valid parent email on file for this student — type one to send'
+          : 'Enter a valid email address',
+      ),
+      { code: 'VALIDATION' },
+    );
+  }
+  const school = await store.getSchool(input.schoolId);
+  const schoolName = school?.name ?? 'School';
+  let studentName: string | null = null;
+  if (row.studentId) {
+    const students = await store.getStudentsByIds([row.studentId], input.schoolId);
+    studentName = students[0]?.name ?? null;
+  }
+  const subject = `Message from ${schoolName}${studentName ? ` — for ${studentName}` : ''}`;
+  try {
+    await mailer({ to, subject, text: row.body });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    await store.createDelivery({
+      queueId: row.id,
+      provider: 'email',
+      status: 'failed',
+      error: message,
+    });
+    await store.updateQueue(row.id, { error: message }, input.schoolId);
+    return { sent: false, error: message };
+  }
+  const updated = await store.updateQueue(row.id, {
+    status: 'sent',
+    attempts: row.attempts + 1,
+    sentAt: now(),
+    error: null,
+  }, input.schoolId);
+  void updated;
+  await store.createDelivery({ queueId: row.id, provider: 'email', status: 'sent' });
+  await store.createAuditLog({
+    schoolId: input.schoolId,
+    actorId: input.sentBy,
+    actorType: 'user',
+    action: 'message.email_sent',
+    entity: 'message_queue',
+    entityId: row.id,
+    details: { dedupeKey: row.dedupeKey, to_domain: to.split('@')[1] ?? null },
+  });
+  return { sent: true };
 }
 
 export { hashPhone, maskPhone };

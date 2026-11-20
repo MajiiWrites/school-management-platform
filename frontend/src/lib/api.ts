@@ -351,6 +351,11 @@ export const portalApi = {
     api<{ queued: boolean; already_queued: boolean; queue_id: string }>(`/students/${studentId}/send-parent-link`, {
       method: 'POST',
     }),
+  /** Builds the wa.me click-to-send link (server-side: the frontend only sees the masked number). Queues nothing. */
+  sendLinkWhatsApp: (studentId: string) =>
+    api<{ wa_url: string; phone_masked: string | null }>(`/students/${studentId}/send-parent-link-whatsapp`, {
+      method: 'POST',
+    }),
 };
 
 export const admissionsApi = {

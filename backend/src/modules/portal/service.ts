@@ -8,8 +8,9 @@ import { config } from '../../config';
 import { ApiError } from '../../lib/errors';
 import { writeAudit } from '../../lib/audit';
 import { logCreate } from '../hardening/helpers';
-import { randomToken, hashToken, encryptToken, decryptToken } from '../../lib/crypto';
+import { randomToken, hashToken, encryptToken, decryptToken, decryptPhone, maskPhone } from '../../lib/crypto';
 import { todayInTz } from '../../lib/dates';
+import { waLink } from '../messaging/whatsapp';
 import type { Db } from '../../lib/db';
 
 const TOKEN_TTL_DAYS = 365;
@@ -271,4 +272,46 @@ export async function sendParentLinkSms(db: Db, schoolId: string, studentId: str
     details: { student_id: studentId, dedupe_key: dedupeKey },
   });
   return { queued: true, already_queued: false, queue_id: created.id };
+}
+
+/**
+ * Build the parent-link WhatsApp click-to-send link (Messaging Center
+ * wiring, 2026-11-20). Unlike the SMS path this queues NOTHING — the
+ * admin opens the wa.me link themselves and taps send in WhatsApp, so
+ * there is no held draft and no approval step. The link is built
+ * server-side because the frontend only ever sees the MASKED parent
+ * phone. Same number rules as SMS (valid number, not opted out). The
+ * outcome is NOT recorded as sent anywhere — opening the link is the
+ * admin's own WhatsApp send, and the audit log is the only trace.
+ */
+export async function getParentLinkWhatsApp(
+  db: Db,
+  schoolId: string,
+  studentId: string,
+  actorId?: string,
+): Promise<Record<string, unknown>> {
+  const student = await getStudentInSchool(db, schoolId, studentId);
+  if (!student.parentPhoneEnc || student.parentOptOut) {
+    throw ApiError.validation('This student has no valid parent number on file (or the parent opted out of messages)');
+  }
+  const school = await db.school.findUnique({ where: { id: schoolId } });
+  if (!school) throw ApiError.notFound('School not found');
+  const info = await getParentTokenInfo(db, schoolId, studentId);
+  const url = info.exists ? (info.url as string) : (await createParentToken(db, schoolId, studentId, actorId)).url as string;
+  const phone = decryptPhone(student.parentPhoneEnc);
+  const body = `Dear Parent, view ${student.name}'s attendance, results, fees and homework here: ${url} – ${school.name}`;
+  const link = waLink(phone, body);
+  if (!link) {
+    throw ApiError.validation('This student has no valid parent number on file');
+  }
+  await writeAudit(db, {
+    schoolId,
+    actorId: actorId ?? null,
+    actorType: 'user',
+    action: 'parent_token.whatsapp_link',
+    entity: 'parent_token',
+    entityId: null,
+    details: { student_id: studentId },
+  });
+  return { wa_url: link, phone_masked: maskPhone(phone) };
 }
