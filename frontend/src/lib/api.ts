@@ -11,6 +11,23 @@ export const API_BASE =
   (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:3000/api/v1';
 export const MOCK_MODE = import.meta.env.VITE_MOCK_API === 'true';
 
+/** Cold-start warmup (2026-11-23): the free Render service sleeps after
+ * 15 minutes idle and takes 30–60s to wake, so the first login/signup
+ * after a quiet spell paid the whole wake-up inside the submit. Firing
+ * one best-effort /health request the moment the app mounts starts the
+ * wake while the visitor is still reading the page, so the server is
+ * usually up by the time they submit. Once per page load; failures are
+ * ignored — a later request retries the wake on its own. */
+let warmupStarted = false;
+export function warmupServer(): void {
+  if (warmupStarted || MOCK_MODE) return;
+  warmupStarted = true;
+  const base = API_BASE.replace(/\/api\/v1\/?$/, '');
+  fetch(`${base}/health`, { cache: 'no-store', keepalive: true }).catch(() => {
+    /* best-effort only: the wake is retried by the next real request */
+  });
+}
+
 const ACCESS_KEY = 'smp_access';
 const REFRESH_KEY = 'smp_refresh';
 

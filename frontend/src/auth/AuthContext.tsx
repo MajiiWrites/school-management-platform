@@ -160,9 +160,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const login = useCallback(async (email: string, password: string) => {
+    // Cold-start guard (2026-11-23): login had NO timeout, so a
+    // sleeping server left the button on "Logging in…" for over a
+    // minute with no explanation. 120s covers the worst Render wake
+    // (~70s) plus the request itself; the page shows a waking-up note
+    // while it waits and a plain retry message on timeout.
     const data = await api<{ access: string; refresh: string; user: User }>('/auth/login', {
       method: 'POST',
       body: { email, password },
+      timeoutMs: 120_000,
     });
     clearSessionExpired();
     setTokens(data.access, data.refresh);
@@ -174,10 +180,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Phase 1: the backend returns no tokens — the user is NOT logged
     // in after signup and must verify their email first. Return the
     // payload to the caller; store nothing here.
+    // Cold-start guard (2026-11-23): the old 30s timeout fired during
+    // a normal Render wake (30–70s) and told the user the account "may
+    // already exist". Default 120s; callers may still override.
     return api<SignupResult>('/auth/signup', {
       method: 'POST',
       body: details,
-      timeoutMs: opts?.timeoutMs,
+      timeoutMs: opts?.timeoutMs ?? 120_000,
     });
   }, []);
 

@@ -89,12 +89,17 @@ export function LoginPage() {
   // Phase 1: set when login is refused because the email is not
   // verified yet — the page then offers a resend instead of a dead end.
   const [notVerified, setNotVerified] = useState(false);
+  // Cold-start note (2026-11-23): after 5s of waiting, say the server
+  // is waking up so a slow first login does not look like the site is
+  // down. Cleared with `busy` in the finally below.
+  const [waking, setWaking] = useState(false);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setError('');
     setNotVerified(false);
     setBusy(true);
+    const slowTimer = setTimeout(() => setWaking(true), 5000);
     try {
       await login(email.trim(), password);
       navigate('/dashboard');
@@ -102,10 +107,14 @@ export function LoginPage() {
       if (err instanceof ApiClientError && err.code === 'EMAIL_NOT_VERIFIED') {
         setError(err.message);
         setNotVerified(true);
+      } else if ((err instanceof ApiClientError && err.code === 'TIMEOUT') || isAbortError(err)) {
+        setError('The server took too long to respond — it may have been waking up. Please try again.');
       } else {
         setError(errText(err));
       }
     } finally {
+      clearTimeout(slowTimer);
+      setWaking(false);
       setBusy(false);
     }
   };
@@ -132,6 +141,9 @@ export function LoginPage() {
         <Button type="submit" disabled={busy} className="w-full">
           {busy ? 'Logging in…' : 'Log in'}
         </Button>
+        {busy && waking && (
+          <p className="text-center text-sm text-slate-500">Waking up the server — this can take up to a minute the first time. Please don’t refresh.</p>
+        )}
       </form>
       {notVerified && <ResendVerification key={email} email={email.trim()} />}
       <div className="mt-4 flex justify-between text-sm">
@@ -176,6 +188,9 @@ export function SignupPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  // Cold-start note (2026-11-23): same waking-up message as the login
+  // page — a slow first signup must not look like the site is down.
+  const [waking, setWaking] = useState(false);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -185,10 +200,11 @@ export function SignupPage() {
       return;
     }
     setBusy(true);
+    const slowTimer = setTimeout(() => setWaking(true), 5000);
     try {
       // Phase 1: signup issues no tokens and does not log the user in —
-      // the account must verify its email first. A 30s timeout guards
-      // the (possibly cold-starting) signup call.
+      // the account must verify its email first. A 120s timeout covers
+      // a full cold-start wake (30–70s) plus the request itself.
       await signup(
         {
           school_name: schoolName.trim(),
@@ -203,18 +219,20 @@ export function SignupPage() {
           email: email.trim(),
           password,
         },
-        { timeoutMs: 30000 },
+        { timeoutMs: 120_000 },
       );
       navigate(`/verify-email?sent=1&email=${encodeURIComponent(email.trim())}`);
     } catch (err) {
       if (err instanceof ApiClientError && (err.code === 'CONFLICT' || err.status === 409)) {
         setError('An account with this email already exists — log in instead.');
       } else if ((err instanceof ApiClientError && err.code === 'TIMEOUT') || isAbortError(err)) {
-        setError('This is taking too long — your account may already exist, try logging in.');
+        setError('The server took too long to respond — it may have been waking up. Please try again; if your account was created, logging in will tell you.');
       } else {
         setError(errText(err));
       }
     } finally {
+      clearTimeout(slowTimer);
+      setWaking(false);
       setBusy(false);
     }
   };
@@ -281,6 +299,9 @@ export function SignupPage() {
         <Button type="submit" disabled={busy} className="w-full">
           {busy ? 'Creating…' : 'Create account'}
         </Button>
+        {busy && waking && (
+          <p className="text-center text-sm text-slate-500">Waking up the server — this can take up to a minute the first time. Please don’t refresh.</p>
+        )}
       </form>
       <p className="mt-4 text-center text-sm text-slate-500">
         Already have an account?{' '}

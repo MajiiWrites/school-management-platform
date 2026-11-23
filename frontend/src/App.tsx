@@ -1,7 +1,8 @@
-import { lazy } from 'react';
+import { lazy, useEffect } from 'react';
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import type { ReactNode } from 'react';
 import { AuthProvider, useAuth } from './auth/AuthContext';
+import { warmupServer } from './lib/api';
 import Layout from './components/Layout';
 import ErrorBoundary from './components/ErrorBoundary';
 import { Spinner } from './components/ui';
@@ -138,6 +139,12 @@ function NotFound() {
 }
 
 export default function App() {
+  // Cold-start warmup: start waking the (possibly sleeping) API the
+  // moment the app mounts, while the visitor is still reading.
+  useEffect(() => {
+    warmupServer();
+  }, []);
+
   return (
     <AuthProvider>
       {/* A single page's render error must never blank the whole app again. */}

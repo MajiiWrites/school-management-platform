@@ -2,7 +2,8 @@
 // registration profile (school + admin details) and sends it in ONE
 // signup() call. Phase 1: signup issues NO tokens and does NOT log
 // the user in — on success the page routes to /verify-email, and
-// signup() is called with a 30s timeout.
+// signup() is called with a 120s timeout (cold-start guard: a Render
+// wake takes 30–70s, so the old 30s timeout fired mid-wake).
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -129,7 +130,7 @@ describe('signup form', () => {
     expect(screen.getByRole('link', { name: 'Log in' }).getAttribute('href')).toBe('/login');
   });
 
-  it('submits all fields in one signup() call with a 30s timeout and navigates to /verify-email', async () => {
+  it('submits all fields in one signup() call with a 120s timeout and navigates to /verify-email', async () => {
     renderSignup();
     fillSignupForm();
 
@@ -150,7 +151,7 @@ describe('signup form', () => {
         email: 'admin@school.pk',
         password: 'secret123',
       },
-      { timeoutMs: 30000 },
+      { timeoutMs: 120000 },
     );
     await waitFor(() =>
       expect(screen.getByText('Verify stub /verify-email?sent=1&email=admin%40school.pk')).toBeTruthy(),
@@ -188,7 +189,9 @@ describe('signup form', () => {
 
     await waitFor(() =>
       expect(
-        screen.getByText('This is taking too long — your account may already exist, try logging in.'),
+        screen.getByText(
+          'The server took too long to respond — it may have been waking up. Please try again; if your account was created, logging in will tell you.',
+        ),
       ).toBeTruthy(),
     );
   });
