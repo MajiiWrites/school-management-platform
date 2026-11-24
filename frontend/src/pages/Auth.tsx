@@ -80,7 +80,7 @@ function ResendVerification({ email: initialEmail = '', showInput = false }: { e
 }
 
 export function LoginPage() {
-  const { login, sessionExpired, clearSessionExpired } = useAuth();
+  const { login, completeTwofaLogin, sessionExpired, clearSessionExpired } = useAuth();
   const navigate = useNavigate();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -93,6 +93,12 @@ export function LoginPage() {
   // is waking up so a slow first login does not look like the site is
   // down. Cleared with `busy` in the finally below.
   const [waking, setWaking] = useState(false);
+  // 2FA code step (2026-11-23): shown when the password step answers
+  // needs_2fa (TOTP enabled). The old page had no code step at all, so
+  // it stored undefined tokens, navigated to /dashboard, and got
+  // bounced back to a cleared login form.
+  const [step, setStep] = useState<'password' | 'code'>('password');
+  const [code, setCode] = useState('');
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -101,12 +107,46 @@ export function LoginPage() {
     setBusy(true);
     const slowTimer = setTimeout(() => setWaking(true), 5000);
     try {
-      await login(email.trim(), password);
-      navigate('/dashboard');
+      const result = await login(email.trim(), password);
+      if (result.needs2fa) {
+        setStep('code');
+      } else {
+        navigate('/dashboard');
+      }
     } catch (err) {
       if (err instanceof ApiClientError && err.code === 'EMAIL_NOT_VERIFIED') {
         setError(err.message);
         setNotVerified(true);
+      } else if ((err instanceof ApiClientError && err.code === 'TIMEOUT') || isAbortError(err)) {
+        setError('The server took too long to respond — it may have been waking up. Please try again.');
+      } else {
+        setError(errText(err));
+      }
+    } finally {
+      clearTimeout(slowTimer);
+      setWaking(false);
+      setBusy(false);
+    }
+  };
+
+  const submitCode = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!/^\d{6}$/.test(code)) {
+      setError('Enter the 6-digit code from your authenticator app.');
+      return;
+    }
+    setError('');
+    setBusy(true);
+    const slowTimer = setTimeout(() => setWaking(true), 5000);
+    try {
+      await completeTwofaLogin(code);
+      navigate('/dashboard');
+    } catch (err) {
+      if (err instanceof ApiClientError && /expired|log in again/i.test(err.message)) {
+        // Temp token expired (5 min) — back to the password step.
+        setError(err.message);
+        setStep('password');
+        setCode('');
       } else if ((err instanceof ApiClientError && err.code === 'TIMEOUT') || isAbortError(err)) {
         setError('The server took too long to respond — it may have been waking up. Please try again.');
       } else {
@@ -131,20 +171,59 @@ export function LoginPage() {
         </div>
       )}
       {error && <ErrorBanner message={error} />}
-      <form onSubmit={submit} className="space-y-4">
-        <Field label="Email">
-          <input className={inputCls} type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="admin@school.pk" autoComplete="email" />
-        </Field>
-        <Field label="Password">
-          <input className={inputCls} type="password" required value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" autoComplete="current-password" />
-        </Field>
-        <Button type="submit" disabled={busy} className="w-full">
-          {busy ? 'Logging in…' : 'Log in'}
-        </Button>
-        {busy && waking && (
-          <p className="text-center text-sm text-slate-500">Waking up the server — this can take up to a minute the first time. Please don’t refresh.</p>
-        )}
-      </form>
+      {step === 'code' ? (
+        <form onSubmit={submitCode} className="space-y-4">
+          <p className="text-sm text-slate-500">
+            Your account uses two-factor authentication. Enter the 6-digit code from your authenticator app for {email.trim()}.
+          </p>
+          <Field label="Verification code">
+            <input
+              className={inputCls}
+              type="text"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              required
+              maxLength={6}
+              autoFocus
+              value={code}
+              onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+              placeholder="••••••"
+            />
+          </Field>
+          <Button type="submit" disabled={busy} className="w-full">
+            {busy ? 'Verifying…' : 'Verify & log in'}
+          </Button>
+          {busy && waking && (
+            <p className="text-center text-sm text-slate-500">Waking up the server — this can take up to a minute the first time. Please don’t refresh.</p>
+          )}
+          <button
+            type="button"
+            className="w-full text-center text-sm text-brand-700 hover:underline"
+            onClick={() => {
+              setStep('password');
+              setCode('');
+              setError('');
+            }}
+          >
+            Back to password
+          </button>
+        </form>
+      ) : (
+        <form onSubmit={submit} className="space-y-4">
+          <Field label="Email">
+            <input className={inputCls} type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="admin@school.pk" autoComplete="email" />
+          </Field>
+          <Field label="Password">
+            <input className={inputCls} type="password" required value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" autoComplete="current-password" />
+          </Field>
+          <Button type="submit" disabled={busy} className="w-full">
+            {busy ? 'Logging in…' : 'Log in'}
+          </Button>
+          {busy && waking && (
+            <p className="text-center text-sm text-slate-500">Waking up the server — this can take up to a minute the first time. Please don’t refresh.</p>
+          )}
+        </form>
+      )}
       {notVerified && <ResendVerification key={email} email={email.trim()} />}
       <div className="mt-4 flex justify-between text-sm">
         <Link to="/forgot-password" className="text-brand-700 hover:underline">
